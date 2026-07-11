@@ -1,0 +1,24 @@
+
+# Project Brain Bridge local secrets and state
+experiments/gmail-inbox/credentials.json
+experiments/gmail-inbox/token.json
+experiments/gmail-inbox/bridge-config.json
+experiments/gmail-inbox/processed.json
+experiments/gmail-inbox/results/
+experiments/gmail-inbox/output.json
+experiments/gmail-inbox/.venv/
+
+# Project Brain Bridge local secrets and state
+experiments/gmail-inbox/credentials.json
+experiments/gmail-inbox/token.json
+experiments/gmail-inbox/bridge-config.json
+experiments/gmail-inbox/processed.json
+experiments/gmail-inbox/output.json
+experiments/gmail-inbox/results/
+experiments/gmail-inbox/.venv/
+
+# macOS
+.DS_Store
+
+# Local distribution archives
+*.zip

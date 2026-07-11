@@ -1,0 +1,6 @@
+{
+  "type": "command",
+  "project": "Project-Brain",
+  "command": "test",
+  "commit_message": "test: update generated test artifacts"
+}

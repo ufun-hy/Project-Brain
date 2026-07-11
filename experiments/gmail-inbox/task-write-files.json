@@ -1,0 +1,13 @@
+{
+  "type": "write_files",
+  "project": "Project-Brain",
+  "commit_message": "docs: add bridge write test",
+  "pr_title": "docs: add bridge write test",
+  "pr_body": "Verifies the end-to-end Project Brain Bridge workflow.",
+  "files": [
+    {
+      "path": "docs/bridge-write-test.md",
+      "content": "# Bridge write test\n\nCreated through Project Brain Bridge v2.\n"
+    }
+  ]
+}

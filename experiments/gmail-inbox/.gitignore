@@ -1,0 +1,11 @@
+# Google OAuth secrets and local tokens
+credentials.json
+token.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local test output
+output.json

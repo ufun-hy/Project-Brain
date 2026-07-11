@@ -1,0 +1,7 @@
+{
+  "type": "codex",
+  "project": "Project-Brain",
+  "commit_message": "feat: implement requested change",
+  "pr_title": "feat: implement requested change",
+  "prompt": "Inspect the repository. Implement the requested change safely, update tests, and do not modify unrelated files."
+}
