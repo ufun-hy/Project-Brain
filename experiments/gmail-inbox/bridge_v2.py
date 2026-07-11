@@ -269,8 +269,17 @@ def read_messages(query: str, max_results: int, allowed_sender: str) -> list[dic
 
 
 def parse_task(body: str) -> dict[str, Any]:
+    normalized = html.unescape(body).strip()
+    normalized = (
+        normalized
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
+    )
+
     try:
-        task = json.loads(body)
+        task = json.loads(normalized)
     except json.JSONDecodeError as exc:
         raise BridgeError(f"Task body must be JSON: {exc}") from exc
 
