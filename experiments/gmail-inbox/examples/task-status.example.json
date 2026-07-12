@@ -1,0 +1,11 @@
+{
+  "schema_version": 1, "task_id": "fake-message-123", "gmail_message_id": "fake-message-123",
+  "project": "Project-Brain", "title": "Demonstration task", "state": "awaiting_review",
+  "current_action": "Draft PR ready for review", "created_at": "2026-01-01T00:00:00+00:00",
+  "started_at": "2026-01-01T00:00:10+00:00", "updated_at": "2026-01-01T00:05:00+00:00",
+  "finished_at": null, "last_heartbeat_at": "2026-01-01T00:04:30+00:00", "attempt": 1,
+  "bridge_attempt": 1, "codex_attempt": 1, "branch": "brain/codex-fake123", "commit": "0123456789abcdef",
+  "pr_url": "https://github.com/example/project/pull/42", "pr_number": 42, "error": null, "blocked_reason": null,
+  "evidence_summary": "Execution completed; review required.", "acceptance": {"satisfied": 3, "total": 4},
+  "test_summary": "12 passed", "log_path": "/tmp/project-brain/fake-task.log", "recent_log_tail": ["12 passed"]
+}

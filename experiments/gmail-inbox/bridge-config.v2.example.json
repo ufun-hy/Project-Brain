@@ -14,6 +14,12 @@
       ],
       "codex_timeout_seconds": 1800,
       "command_timeout_seconds": 900,
+      "verification_timeout_seconds": 900,
+      "default_verification": ["python-unit", "swift-tests"],
+      "verification_commands": {
+        "python-unit": ["python3", "-m", "unittest", "discover", "-s", "experiments/gmail-inbox", "-p", "test_*.py"],
+        "swift-tests": ["swift", "test", "--package-path", "experiments/gmail-inbox/MenuBar"]
+      },
       "allowed_commands": {
         "test": [
           "python",

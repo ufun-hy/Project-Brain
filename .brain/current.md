@@ -2,7 +2,7 @@
 
 ## Status
 
-Discovery phase.
+P0 observability and audit implementation is complete and awaiting review.
 
 ## Completed
 
@@ -14,15 +14,18 @@ Discovery phase.
 
 ## Current focus
 
-Validate the minimum project state model using three files:
+Review the trusted verification, durable callback outbox, native status selection,
+and generated audit handoff for Bridge v2.
 
-- `.brain/problem.md`
-- `.brain/current.md`
-- `.brain/decisions.md`
+- `execution_complete` means the process and result handling finished.
+- It advances only to `awaiting_review`; it never means `accepted`.
+- `accepted` and `needs_changes` are explicit later review decisions.
 
 ## Next step
 
-Open a new AI session or switch to another computer, provide only these three files, and test whether the project purpose, current state, important decisions, and next action can be recovered accurately.
+Review the new Draft PR that supersedes #10. Python tests and the Swift release
+build pass; Swift tests require a matching full Xcode toolchain because this Mac's
+selected Command Line Tools installation has no XCTest module.
 
 ## Open questions
 
