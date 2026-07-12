@@ -3,7 +3,9 @@
 experiments/gmail-inbox/credentials.json
 experiments/gmail-inbox/token.json
 experiments/gmail-inbox/bridge-config.json
+experiments/gmail-inbox/bridge-config.json.bak.*
 experiments/gmail-inbox/processed.json
+experiments/gmail-inbox/failures.json
 experiments/gmail-inbox/results/
 experiments/gmail-inbox/output.json
 experiments/gmail-inbox/.venv/

@@ -8,7 +8,8 @@
       "codex_command": [
         "codex",
         "exec",
-        "--full-auto",
+        "--sandbox",
+        "workspace-write",
         "-"
       ],
       "codex_timeout_seconds": 1800,
@@ -36,5 +37,6 @@
         ]
       }
     }
-  }
+  },
+  "max_attempts": 3
 }

@@ -64,6 +64,7 @@ credentials.json
 token.json
 bridge-config.json
 processed.json
+failures.json
 results/
 .venv/
 ```
@@ -123,6 +124,25 @@ defined locally in `allowed_commands`.
 ### Duplicate protection
 
 After a successful apply, the Gmail message ID is added to `processed.json`.
+
+Failures are recorded separately in `failures.json` with the attempt count,
+last error, and timestamp. The bridge retries at most `max_attempts` times
+(default: 3), then reports `retry_limit_reached` without invoking Codex again.
+After fixing the underlying problem, remove only that message ID from
+`failures.json` to allow a deliberate retry.
+
+### Branch cleanup and recovery
+
+After a successful push and Draft PR, the bridge checks out the configured base
+branch and verifies that the worktree is clean; the pushed PR branch is kept.
+On task failure it discards only changes made on the deterministic task branch,
+returns to the base branch, and removes that local task branch. The preflight
+clean-worktree check prevents overwriting existing user work.
+
+If a task branch already exists, the bridge removes it only when it is an
+unchanged, unpushed stale branch. A pushed branch or a local branch containing
+commits stops with an actionable error. Inspect its PR/commits and resolve it
+manually; the bridge never force-deletes a remote PR branch.
 
 ### Push and PR
 

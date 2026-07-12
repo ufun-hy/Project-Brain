@@ -1,6 +1,12 @@
 # Google OAuth secrets and local tokens
 credentials.json
 token.json
+bridge-config.json
+bridge-config.json.bak.*
+processed.json
+failures.json
+results/
+*.log
 
 # Python
 .venv/
