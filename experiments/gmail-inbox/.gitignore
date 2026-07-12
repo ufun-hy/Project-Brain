@@ -6,7 +6,9 @@ bridge-config.json.bak.*
 processed.json
 failures.json
 results/
+runtime/
 *.log
+.build/
 
 # Python
 .venv/

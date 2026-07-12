@@ -1,0 +1,15 @@
+import SwiftUI
+import UserNotifications
+
+@MainActor final class TaskModel:ObservableObject {
+ @Published var tasks:[TaskRecord]=[]; private var timer:Timer?; private var prior:[String:String]=[:]
+ var root:URL { if let p=ProcessInfo.processInfo.environment["PROJECT_BRAIN_RUNTIME_DIR"] { return URL(fileURLWithPath:p) }; return FileManager.default.homeDirectoryForCurrentUser.appending(path:"Library/Application Support/ProjectBrain") }
+ func start(){ load(); timer=Timer.scheduledTimer(withTimeInterval:5,repeats:true){_ in Task{@MainActor in self.load()}} }
+ func load(){ let dir=root.appending(path:"tasks"); let files=(try? FileManager.default.contentsOfDirectory(at:dir,includingPropertiesForKeys:nil)) ?? []; let decoder=JSONDecoder(); let next=files.compactMap{try? decoder.decode(TaskRecord.self,from:Data(contentsOf:$0))}.sorted{$0.updatedAt>$1.updatedAt}; notify(next); tasks=next }
+ func notify(_ next:[TaskRecord]){ let meaningful:Set<String>=["running","awaiting_review","blocked","failed","accepted","needs_changes"]; for t in next { let signal=t.stale ? "stale":t.state; if prior[t.id] != signal && (meaningful.contains(t.state)||t.stale){ let c=UNMutableNotificationContent(); c.title="Project Brain: \(signal)"; c.body=t.title; UNUserNotificationCenter.current().add(UNNotificationRequest(identifier:"\(t.id)-\(signal)",content:c,trigger:nil)) } }; prior=Dictionary(uniqueKeysWithValues:next.map{($0.id,$0.stale ? "stale":$0.state)}) }
+ var icon:String { if tasks.contains(where:{$0.state=="failed"||$0.state=="blocked"}) {return "exclamationmark.circle.fill"}; if tasks.contains(where:{$0.state=="running"}) {return "bolt.circle.fill"}; if tasks.contains(where:{$0.state=="awaiting_review"}) {return "eye.circle.fill"}; return "brain.head.profile" }
+}
+struct ContentView:View { @ObservedObject var model:TaskModel
+ var body:some View { VStack(alignment:.leading,spacing:10){ Text("Project Brain").font(.headline); if model.tasks.isEmpty {Text("Idle").foregroundStyle(.secondary)}; ForEach(model.tasks.prefix(8)){t in VStack(alignment:.leading,spacing:3){Text("\(t.project) · \(t.title)").lineLimit(1); Text("\(t.state)\(t.stale ? " · STALE" : "") · \(t.currentAction)").font(.caption).foregroundStyle(t.stale ? .red:.secondary); Text("Acceptance: \(t.acceptance.satisfied)/\(t.acceptance.total.map(String.init) ?? "?") · \(t.testSummary)").font(.caption2); HStack{if let s=t.startedAt,let d=ISO8601DateFormatter().date(from:s){Text("Elapsed \(Int(Date().timeIntervalSince(d)))s").font(.caption2)}; if let p=t.prUrl,let u=URL(string:p){Link("Open PR",destination:u)}; if let p=t.logPath{Button("Open Log"){NSWorkspace.shared.open(URL(fileURLWithPath:p))}}}}.padding(.vertical,3)}; Divider(); Button("Refresh"){model.load()}; Button("Quit"){NSApplication.shared.terminate(nil)} }.padding().frame(width:430) }
+}
+@main struct AppMain:App { @StateObject var model=TaskModel(); var body:some Scene { MenuBarExtra("Project Brain",systemImage:model.icon){ContentView(model:model).onAppear{model.start()}}.menuBarExtraStyle(.window) } }

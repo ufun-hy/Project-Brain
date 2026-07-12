@@ -33,6 +33,8 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.utils import parseaddr
@@ -44,8 +46,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from gmail_callback import GmailCallback
+from task_status import StatusStore, heartbeat, new_record, transition, write_report
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 SCRIPT_DIR = Path(__file__).resolve().parent
 CREDENTIALS_PATH = SCRIPT_DIR / "credentials.json"
 TOKEN_PATH = SCRIPT_DIR / "token.json"
@@ -189,8 +193,8 @@ def load_json(path: Path, default: Any = None) -> Any:
 
 
 def save_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    from task_status import atomic_json
+    atomic_json(path, value)
 
 
 def load_config() -> dict[str, Any]:
@@ -322,10 +326,17 @@ def read_messages(query: str, max_results: int, allowed_sender: str) -> list[dic
 
         result.append({
             "message_id": message["id"],
+            "thread_id": message.get("threadId", ""),
+            "sender": sender,
+            "message_id_header": h.get("message-id", ""),
             "subject": subject,
             "body": extract_body(payload),
         })
     return result
+
+def send_callback(message: dict[str, str], record: dict[str, Any]) -> None:
+    service=build("gmail","v1",credentials=load_credentials(),cache_discovery=False)
+    GmailCallback(service).send(message,record)
 
 
 def parse_task(body: str) -> dict[str, Any]:
@@ -375,7 +386,7 @@ def write_files(repo: Path, task: dict[str, Any]) -> list[str]:
     return changed
 
 
-def run_codex(repo: Path, task: dict[str, Any], project_cfg: dict[str, Any]) -> list[str]:
+def run_codex(repo: Path, task: dict[str, Any], project_cfg: dict[str, Any], *, record=None, store=None, log_path=None) -> list[str]:
     prompt = task.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise BridgeError("codex task requires prompt")
@@ -384,14 +395,23 @@ def run_codex(repo: Path, task: dict[str, Any], project_cfg: dict[str, Any]) -> 
     if not isinstance(codex_command, list) or not all(isinstance(x, str) for x in codex_command):
         raise BridgeError("codex_command must be an array of strings")
 
-    completed = subprocess.run(
-        codex_command,
-        cwd=str(repo),
-        input=prompt,
-        text=True,
-        capture_output=True,
-        timeout=int(project_cfg.get("codex_timeout_seconds", 1800)),
-    )
+    if record is not None:
+        record["codex_attempt"] = int(record.get("codex_attempt", 0)) + 1
+        heartbeat(record, "Codex process active"); store.save(record)
+    if log_path: log_path.parent.mkdir(parents=True,exist_ok=True)
+    output = open(log_path,"w+",encoding="utf-8") if log_path else tempfile.TemporaryFile(mode="w+",encoding="utf-8")
+    with output:
+        process = subprocess.Popen(codex_command,cwd=str(repo),text=True,stdin=subprocess.PIPE,stdout=output,stderr=subprocess.STDOUT)
+        assert process.stdin is not None
+        process.stdin.write(prompt); process.stdin.close(); process.stdin=None
+        interval=max(5,int(project_cfg.get("heartbeat_interval_seconds",30))); timeout=int(project_cfg.get("codex_timeout_seconds",1800)); started=time.monotonic()
+        while process.poll() is None:
+            if time.monotonic()-started > timeout: process.kill(); raise BridgeError("Codex timed out")
+            time.sleep(min(interval,1) if os.environ.get("PB_TEST_FAST_HEARTBEAT") else interval)
+            if record is not None: heartbeat(record,"Codex process active"); store.save(record)
+        output.seek(0); combined=output.read(); completed=subprocess.CompletedProcess(codex_command,process.returncode,combined,"")
+    if record is not None:
+        record["recent_log_tail"]=combined.splitlines()[-40:]; record["log_path"]=str(log_path) if log_path else None; store.save(record)
     if completed.returncode != 0:
         raise BridgeError(f"Codex failed:\n{completed.stderr or completed.stdout}")
 
@@ -434,7 +454,7 @@ def push_branch(repo: Path, branch: str) -> None:
 def create_pr(repo: Path, branch: str, base: str, task: dict[str, Any]) -> str:
     title = task.get("pr_title") or task.get("commit_message") or f"Project Brain task: {branch}"
     body = task.get("pr_body") or (
-        "Created automatically by Project Brain Bridge.\n\n"
+        "## Project Brain execution handoff\n\n**Status: `awaiting_review` — not accepted.**\n\n"
         f"Source task type: `{task['type']}`"
     )
     completed = run(
@@ -457,6 +477,8 @@ def process_task(
     config: dict[str, Any],
     *,
     apply: bool,
+    status_store: StatusStore | None = None,
+    status_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     repo, project_cfg = resolve_project(config, task["project"])
     base = project_cfg.get("base_branch", "main")
@@ -476,12 +498,14 @@ def process_task(
     branch = task_branch(message["message_id"], task["type"])
     prepare_task_branch(repo, branch, base)
     result["branch"] = branch
+    if status_record is not None:
+        status_record["branch"]=branch; transition(status_record,"running","Executing task",last_heartbeat_at=datetime.now(timezone.utc).isoformat()); status_store.save(status_record)
 
     try:
         if task["type"] == "write_files":
             result["changed_files"] = write_files(repo, task)
         elif task["type"] == "codex":
-            result["changed_files"] = run_codex(repo, task, project_cfg)
+            result["changed_files"] = run_codex(repo, task, project_cfg,record=status_record,store=status_store,log_path=(status_store.root/"logs"/f"{message['message_id']}.log") if status_store else None)
         elif task["type"] == "command":
             result["command_result"] = run_named_command(repo, task, project_cfg)
         else:
@@ -489,6 +513,7 @@ def process_task(
 
         commit = commit_changes(repo, task.get("commit_message", "chore: project brain task"))
         result["commit"] = commit
+        if status_record is not None: status_record.update(commit=commit,current_action="Commit created"); status_store.save(status_record)
 
         if project_cfg.get("auto_push", True):
             push_branch(repo, branch)
@@ -500,6 +525,8 @@ def process_task(
             result["pr_url"] = create_pr(repo, branch, base, task)
 
         return_to_clean_base(repo, base)
+        if status_record is not None:
+            transition(status_record,"awaiting_review","Draft PR ready for review",commit=result.get("commit"),pr_url=result.get("pr_url"),evidence_summary="Execution completed successfully; explicit review is required.",test_summary=(result.get("command_result") or {}).get("command","Not separately run")); status_store.save(status_record)
         return result
 
     except Exception:
@@ -534,6 +561,7 @@ def main() -> int:
 
     try:
         config = load_config()
+        status_store = StatusStore()
         state = load_json(STATE_PATH, {"processed_message_ids": []})
         failures = load_json(FAILURES_PATH, {})
         if not isinstance(failures, dict):
@@ -562,7 +590,10 @@ def main() -> int:
                 continue
             try:
                 task = parse_task(message["body"])
-                result = process_task(message, task, config, apply=args.apply)
+                record = new_record(message_id,task["project"],task.get("pr_title") or message["subject"],attempts+1)
+                status_store.save(record)
+                if args.apply: transition(record,"claimed","Bridge claimed task"); status_store.save(record)
+                result = process_task(message, task, config, apply=args.apply,status_store=status_store,status_record=record)
                 results.append(result)
             except (BridgeError, HttpError) as exc:
                 if not args.apply:
@@ -575,6 +606,14 @@ def main() -> int:
                     **record,
                     "action_required": "Human intervention required." if record["attempt_count"] >= max_attempts else None,
                 })
+                try:
+                    live=status_store.load(message_id)
+                    final="blocked" if record["attempt_count"] >= max_attempts else "failed"
+                    transition(live,final,"Retry exhausted" if final=="blocked" else "Execution failed",error=str(exc),blocked_reason=str(exc) if final=="blocked" else None,evidence_summary=str(exc)); status_store.save(live)
+                    write_report(status_store.root,message_id,{"task_id":message_id,"summary":str(exc),"state":final,"changed_files":[],"branch":live.get("branch"),"commit":live.get("commit"),"pr_url":live.get("pr_url"),"commands_tests":[],"acceptance_criteria":[],"known_gaps":[],"errors":[str(exc)],"started_at":live.get("started_at"),"finished_at":live.get("finished_at"),"bridge_attempt":live.get("bridge_attempt"),"codex_attempt":live.get("codex_attempt")})
+                    try: send_callback(message,live)
+                    except HttpError: pass
+                except (OSError,ValueError): pass
                 continue
 
             if args.apply:
@@ -585,6 +624,11 @@ def main() -> int:
                 save_json(FAILURES_PATH, failures)
                 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
                 save_json(RESULTS_DIR / f"{message_id}.json", result)
+                report={"task_id":message_id,"summary":"Execution complete; awaiting explicit review","state":"awaiting_review","changed_files":result.get("changed_files",[]),"branch":result.get("branch"),"commit":result.get("commit"),"pr_url":result.get("pr_url"),"commands_tests":([{"command":result["command_result"].get("command"),"exit_code":0}] if result.get("command_result") else []),"acceptance_criteria":task.get("acceptance_criteria",[]),"known_gaps":task.get("known_gaps",[]),"errors":[],"started_at":record.get("started_at"),"finished_at":record.get("updated_at"),"bridge_attempt":record.get("bridge_attempt"),"codex_attempt":record.get("codex_attempt")}
+                write_report(status_store.root,message_id,report)
+                try: send_callback(message,record)
+                except HttpError as exc:
+                    print(f"Gmail callback failed for {message_id}: {exc}",file=sys.stderr)
 
         print(json.dumps({
             "mode": "apply" if args.apply else "dry_run",
