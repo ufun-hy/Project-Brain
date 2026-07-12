@@ -20,9 +20,11 @@ Validate the minimum project state model using three files:
 - `.brain/current.md`
 - `.brain/decisions.md`
 
+Register `kefu-ai` as the first external business-project pilot.
+
 ## Next step
 
-Open a new AI session or switch to another computer, provide only these three files, and test whether the project purpose, current state, important decisions, and next action can be recovered accurately.
+Initialize the minimal project state for `kefu-ai`.
 
 ## Open questions
 
