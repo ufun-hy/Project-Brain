@@ -127,4 +127,12 @@ After a successful apply, the Gmail message ID is added to `processed.json`.
 ### Push and PR
 
 When `auto_push` and `auto_pr` are true, the bridge pushes the task branch and
-opens a Draft PR through GitHub CLI.
+opens a Draft PR through GitHub CLI. After a successful task, the local checkout
+returns to the configured base branch and runs `git pull --ff-only`. If that safe
+update cannot be completed, the task still remains successful and the result
+records a `base_update_warning`; the checkout remains on the base branch. The
+successfully pushed task branch and Draft PR are preserved.
+
+If a task fails, the bridge continues to discard its uncommitted changes, return
+to the base branch whenever possible, and delete an unpublished local task
+branch. A task branch that was already pushed is not deleted during cleanup.

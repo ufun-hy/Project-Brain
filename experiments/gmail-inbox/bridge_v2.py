@@ -234,6 +234,26 @@ def ensure_base(repo: Path, base: str) -> None:
     git(repo, "pull", "--ff-only")
 
 
+def return_to_base(repo: Path, base: str, *, update: bool) -> str | None:
+    """Return to base and optionally update it without rewriting history."""
+    git(repo, "checkout", base)
+    if not update:
+        return None
+
+    completed = git(repo, "pull", "--ff-only", check=False)
+    if completed.returncode == 0:
+        return None
+    return (completed.stderr or completed.stdout).strip() or "git pull --ff-only failed"
+
+
+def cleanup_failed_task(repo: Path, base: str, branch: str, *, published: bool) -> None:
+    """Discard failed work and return to base, preserving published branches."""
+    git(repo, "reset", "--hard", check=False)
+    git(repo, "checkout", base, check=False)
+    if not published and current_branch(repo) == base:
+        git(repo, "branch", "-D", branch, check=False)
+
+
 def task_branch(message_id: str, task_type: str) -> str:
     suffix = re.sub(r"[^a-zA-Z0-9-]", "-", message_id[-10:])
     return f"brain/{task_type}-{suffix}"
@@ -416,6 +436,7 @@ def process_task(
     branch = task_branch(message["message_id"], task["type"])
     git(repo, "checkout", "-b", branch)
     result["branch"] = branch
+    published = False
 
     try:
         if task["type"] == "write_files":
@@ -433,19 +454,21 @@ def process_task(
         if project_cfg.get("auto_push", True):
             push_branch(repo, branch)
             result["pushed"] = True
+            published = True
         else:
             result["pushed"] = False
 
         if project_cfg.get("auto_pr", True) and result["pushed"]:
             result["pr_url"] = create_pr(repo, branch, base, task)
 
+        update_error = return_to_base(repo, base, update=True)
+        if update_error:
+            result["base_update_warning"] = update_error
         return result
 
     except Exception:
         try:
-            git(repo, "reset", "--hard")
-            git(repo, "checkout", base)
-            git(repo, "branch", "-D", branch, check=False)
+            cleanup_failed_task(repo, base, branch, published=published)
         except Exception:
             pass
         raise
