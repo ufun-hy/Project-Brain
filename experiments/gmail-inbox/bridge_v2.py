@@ -52,10 +52,13 @@ TOKEN_PATH = SCRIPT_DIR / "token.json"
 CONFIG_PATH = SCRIPT_DIR / "bridge-config.json"
 STATE_PATH = SCRIPT_DIR / "processed.json"
 RESULTS_DIR = SCRIPT_DIR / "results"
+FAILURES_PATH = SCRIPT_DIR / "failures.json"
 
 DEFAULT_QUERY = 'is:unread from:hy404051@gmail.com newer_than:30d'
 DEFAULT_ALLOWED_SENDER = "hy404051@gmail.com"
 PROTECTED_BRANCHES = {"main", "master"}
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_CODEX_COMMAND = ["codex", "exec", "--sandbox", "workspace-write", "-"]
 
 
 class BridgeError(RuntimeError):
@@ -234,6 +237,63 @@ def ensure_base(repo: Path, base: str) -> None:
     git(repo, "pull", "--ff-only")
 
 
+def local_branch_exists(repo: Path, branch: str) -> bool:
+    return git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0
+
+
+def remote_branch_exists(repo: Path, branch: str) -> bool:
+    return git(repo, "ls-remote", "--exit-code", "--heads", "origin", branch, check=False).returncode == 0
+
+
+def pr_for_branch(repo: Path, branch: str) -> str | None:
+    completed = run(
+        ["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "url", "--limit", "1"],
+        cwd=repo,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise BridgeError(f"Unable to inspect pull requests for existing branch {branch}: {completed.stderr or completed.stdout}")
+    try:
+        prs = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise BridgeError(f"Invalid GitHub response while inspecting branch {branch}") from exc
+    return prs[0].get("url") if prs else None
+
+
+def prepare_task_branch(repo: Path, branch: str, base: str) -> None:
+    """Remove only an unchanged, unpushed deterministic branch from an interrupted run."""
+    if not local_branch_exists(repo, branch):
+        git(repo, "checkout", "-b", branch)
+        return
+    if remote_branch_exists(repo, branch):
+        pr_url = pr_for_branch(repo, branch)
+        detail = f" with existing PR {pr_url}" if pr_url else " on origin without a discoverable PR"
+        raise BridgeError(f"Task branch {branch} already exists{detail}; inspect it before retrying")
+    base_sha = git(repo, "rev-parse", base).stdout.strip()
+    branch_sha = git(repo, "rev-parse", branch).stdout.strip()
+    if branch_sha != base_sha:
+        raise BridgeError(
+            f"Local task branch {branch} contains commits and is not pushed; inspect or remove it before retrying"
+        )
+    git(repo, "branch", "-d", branch)
+    git(repo, "checkout", "-b", branch)
+
+
+def return_to_clean_base(repo: Path, base: str) -> None:
+    git(repo, "checkout", base)
+    require_clean_repo(repo)
+
+
+def cleanup_failed_task(repo: Path, base: str, branch: str) -> None:
+    if current_branch(repo) == branch:
+        git(repo, "reset", "--hard")
+        git(repo, "clean", "-fd")
+        git(repo, "checkout", base)
+    require_clean_repo(repo)
+    if local_branch_exists(repo, branch):
+        git(repo, "branch", "-D", branch)
+
+
 def task_branch(message_id: str, task_type: str) -> str:
     suffix = re.sub(r"[^a-zA-Z0-9-]", "-", message_id[-10:])
     return f"brain/{task_type}-{suffix}"
@@ -320,7 +380,7 @@ def run_codex(repo: Path, task: dict[str, Any], project_cfg: dict[str, Any]) -> 
     if not isinstance(prompt, str) or not prompt.strip():
         raise BridgeError("codex task requires prompt")
 
-    codex_command = project_cfg.get("codex_command", ["codex", "exec", "--full-auto", "-"])
+    codex_command = project_cfg.get("codex_command", DEFAULT_CODEX_COMMAND)
     if not isinstance(codex_command, list) or not all(isinstance(x, str) for x in codex_command):
         raise BridgeError("codex_command must be an array of strings")
 
@@ -414,7 +474,7 @@ def process_task(
 
     ensure_base(repo, base)
     branch = task_branch(message["message_id"], task["type"])
-    git(repo, "checkout", "-b", branch)
+    prepare_task_branch(repo, branch, base)
     result["branch"] = branch
 
     try:
@@ -439,16 +499,30 @@ def process_task(
         if project_cfg.get("auto_pr", True) and result["pushed"]:
             result["pr_url"] = create_pr(repo, branch, base, task)
 
+        return_to_clean_base(repo, base)
         return result
 
     except Exception:
         try:
-            git(repo, "reset", "--hard")
-            git(repo, "checkout", base)
-            git(repo, "branch", "-D", branch, check=False)
+            cleanup_failed_task(repo, base, branch)
         except Exception:
             pass
         raise
+
+
+def failure_attempts(failures: dict[str, Any], message_id: str) -> int:
+    record = failures.get(message_id, {})
+    return int(record.get("attempt_count", 0)) if isinstance(record, dict) else 0
+
+
+def record_failure(failures: dict[str, Any], message_id: str, error: Exception) -> dict[str, Any]:
+    record = {
+        "attempt_count": failure_attempts(failures, message_id) + 1,
+        "last_error": str(error),
+        "last_attempt_timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    failures[message_id] = record
+    return record
 
 
 def main() -> int:
@@ -461,7 +535,13 @@ def main() -> int:
     try:
         config = load_config()
         state = load_json(STATE_PATH, {"processed_message_ids": []})
+        failures = load_json(FAILURES_PATH, {})
+        if not isinstance(failures, dict):
+            raise BridgeError("failures.json must contain an object")
         processed = set(state.get("processed_message_ids", []))
+        max_attempts = int(config.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
+        if max_attempts < 1:
+            raise BridgeError("max_attempts must be at least 1")
         allowed_sender = os.environ.get("PB_ALLOWED_SENDER", DEFAULT_ALLOWED_SENDER)
         messages = read_messages(args.query, args.max_results, allowed_sender)
 
@@ -469,16 +549,42 @@ def main() -> int:
         for message in messages:
             if message["message_id"] in processed:
                 continue
-            task = parse_task(message["body"])
-            result = process_task(message, task, config, apply=args.apply)
-            results.append(result)
+            message_id = message["message_id"]
+            attempts = failure_attempts(failures, message_id)
+            if args.apply and attempts >= max_attempts:
+                results.append({
+                    "message_id": message_id,
+                    "status": "retry_limit_reached",
+                    "attempt_count": attempts,
+                    "last_error": failures[message_id].get("last_error", ""),
+                    "action_required": "Inspect failures.json and repository state, then remove this failure record to retry.",
+                })
+                continue
+            try:
+                task = parse_task(message["body"])
+                result = process_task(message, task, config, apply=args.apply)
+                results.append(result)
+            except (BridgeError, HttpError) as exc:
+                if not args.apply:
+                    raise
+                record = record_failure(failures, message_id, exc)
+                save_json(FAILURES_PATH, failures)
+                results.append({
+                    "message_id": message_id,
+                    "status": "retry_pending" if record["attempt_count"] < max_attempts else "retry_limit_reached",
+                    **record,
+                    "action_required": "Human intervention required." if record["attempt_count"] >= max_attempts else None,
+                })
+                continue
 
             if args.apply:
-                processed.add(message["message_id"])
+                processed.add(message_id)
+                failures.pop(message_id, None)
                 state["processed_message_ids"] = sorted(processed)
                 save_json(STATE_PATH, state)
+                save_json(FAILURES_PATH, failures)
                 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-                save_json(RESULTS_DIR / f"{message['message_id']}.json", result)
+                save_json(RESULTS_DIR / f"{message_id}.json", result)
 
         print(json.dumps({
             "mode": "apply" if args.apply else "dry_run",
