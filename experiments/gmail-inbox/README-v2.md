@@ -107,6 +107,55 @@ See:
 
 ## Safety model
 
+## Task status and audit
+
+The versioned schema is `task-status.schema.json`. Live records, bounded log tails,
+logs, and durable execution reports are written atomically below
+`~/Library/Application Support/ProjectBrain/` by default. Override both Bridge,
+CLI, and menu app with `PROJECT_BRAIN_RUNTIME_DIR`. This location is runtime data
+and must never be committed.
+
+Lifecycle: `queued -> claimed -> running -> awaiting_review -> accepted | needs_changes`.
+Exceptional terminal states are `blocked`, `failed`, and `cancelled`. A successful
+process or test means only `awaiting_review`; it can never imply acceptance.
+
+Inspect the same records used by the menu app:
+
+```bash
+python status_cli.py list
+python status_cli.py show MESSAGE_ID
+python status_cli.py review MESSAGE_ID accepted --reason "Reviewed PR and evidence"
+python status_cli.py review MESSAGE_ID needs_changes --reason "Test gap remains"
+```
+
+Running records whose heartbeat is older than 180 seconds display as stale. Inspect
+the log and repository, then record a deliberate recovery/review action; the Bridge
+does not silently reinterpret stale work as successful.
+
+## Native menu bar app
+
+Requires macOS 13+ and a matching Xcode/Command Line Tools installation:
+
+```bash
+cd MenuBar
+swift test
+swift build -c release
+swift run ProjectBrainMenuBar
+```
+
+The app polls the local task records, shows idle/running/review/error icon states,
+task timing, heartbeat/stale state, acceptance counts, tests, PR and log actions.
+It notifies only on running (started), awaiting review, blocked, failed, accepted,
+and needs changes. No binary or `.build` output is committed.
+
+## Gmail callbacks and OAuth
+
+Only `awaiting_review`, `blocked`, and `failed` produce a thread reply; heartbeats
+never send mail. Sending is behind `GmailCallback`, with `FakeCallback` in tests.
+Bridge v2 now requests `gmail.modify`. Existing read-only tokens cannot send: delete
+only the ignored local `token.json`, run `./run_v2.sh dry-run`, and approve the new
+scope once. Credentials and tokens remain local and ignored.
+
 ### Registered projects only
 
 Every repository must exist in `bridge-config.json`.

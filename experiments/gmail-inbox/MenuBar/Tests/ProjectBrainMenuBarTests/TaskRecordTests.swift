@@ -1,0 +1,3 @@
+import XCTest
+@testable import ProjectBrainMenuBar
+final class TaskRecordTests:XCTestCase { func testParseAndStale() throws { let json=#"{"schema_version":1,"task_id":"m","project":"P","title":"T","state":"running","current_action":"Codex","created_at":"2020-01-01T00:00:00Z","started_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z","finished_at":null,"last_heartbeat_at":"2020-01-01T00:00:00Z","attempt":1,"branch":null,"commit":null,"pr_url":null,"error":null,"blocked_reason":null,"evidence_summary":"","acceptance":{"satisfied":0,"total":null},"test_summary":"Not run","log_path":null}"#.data(using:.utf8)!; let r=try JSONDecoder().decode(TaskRecord.self,from:json); XCTAssertEqual(r.taskId,"m"); XCTAssertTrue(r.stale) } }

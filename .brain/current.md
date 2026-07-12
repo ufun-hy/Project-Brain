@@ -2,7 +2,7 @@
 
 ## Status
 
-Discovery phase.
+P0 observability and audit implementation in progress.
 
 ## Completed
 
@@ -14,15 +14,15 @@ Discovery phase.
 
 ## Current focus
 
-Validate the minimum project state model using three files:
+Build the smallest native task status center and durable audit handoff for Bridge v2.
 
-- `.brain/problem.md`
-- `.brain/current.md`
-- `.brain/decisions.md`
+- `execution_complete` means the process and result handling finished.
+- It advances only to `awaiting_review`; it never means `accepted`.
+- `accepted` and `needs_changes` are explicit later review decisions.
 
 ## Next step
 
-Open a new AI session or switch to another computer, provide only these three files, and test whether the project purpose, current state, important decisions, and next action can be recovered accurately.
+Validate the deterministic lifecycle demo, Python suites, native macOS build, and Draft PR evidence.
 
 ## Open questions
 

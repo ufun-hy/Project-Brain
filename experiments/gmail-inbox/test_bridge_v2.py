@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 SPEC = importlib.util.spec_from_file_location("bridge_v2", Path(__file__).with_name("bridge_v2.py"))
@@ -70,8 +70,10 @@ class FailureStateTests(unittest.TestCase):
         self.assertNotIn("message", failures)
 
     def test_default_codex_command(self):
-        completed = subprocess.CompletedProcess(bridge.DEFAULT_CODEX_COMMAND, 0, "", "")
-        with patch.object(bridge.subprocess, "run", return_value=completed) as mocked, \
+        process = MagicMock()
+        process.poll.return_value = 0
+        process.returncode = 0
+        with patch.object(bridge.subprocess, "Popen", return_value=process) as mocked, \
              patch.object(bridge, "git", return_value=subprocess.CompletedProcess([], 0, "", "")):
             bridge.run_codex(Path("/tmp/repo"), {"prompt": "test"}, {})
         self.assertEqual(mocked.call_args.args[0], ["codex", "exec", "--sandbox", "workspace-write", "-"])
