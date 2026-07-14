@@ -25,7 +25,7 @@ The script uses Gmail's read-only OAuth scope and accepts messages only when:
 2. the subject starts with `[Project Brain]`;
 3. the sender exactly matches `PB_ALLOWED_SENDER`.
 
-The allowed sender must be set explicitly with `PB_ALLOWED_SENDER`.
+The default allowed sender is `hy405055@gmail.com`.
 
 Never commit `credentials.json` or `token.json`.
 
@@ -38,12 +38,12 @@ Never commit `credentials.json` or `token.json`.
    Gmail address as a test user.
 5. Create an OAuth client with application type **Desktop app**.
 6. Download the JSON credential.
-7. Rename it to `credentials.json` and place it in the runtime config directory.
+7. Rename it to `credentials.json` and place it in this directory.
 
 Expected location:
 
 ```text
-~/.project-brain/config/credentials.json
+experiments/gmail-inbox/credentials.json
 ```
 
 ## 2. Run
@@ -53,16 +53,16 @@ From the repository root:
 ```bash
 cd experiments/gmail-inbox
 chmod +x run.sh
-PB_ALLOWED_SENDER="trusted-sender@example.com" ./run.sh
+./run.sh
 ```
 
-On the first run, a browser window opens for Google authorization. Choose the
-configured account and approve read-only Gmail access.
+On the first run, a browser window opens for Google authorization. Choose
+`hy405055@gmail.com` and approve read-only Gmail access.
 
 The authorization token is stored locally as:
 
 ```text
-~/.project-brain/config/token.json
+experiments/gmail-inbox/token.json
 ```
 
 ## 3. Expected result
@@ -82,7 +82,7 @@ The terminal should print JSON resembling:
 }
 ```
 
-A copy is saved under `~/.project-brain/results/` by `run.sh`.
+A copy is also saved to `output.json`.
 
 ## 4. Manual run without `run.sh`
 
@@ -90,21 +90,21 @@ A copy is saved under `~/.project-brain/results/` by `run.sh`.
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-export PB_ALLOWED_SENDER="trusted-sender@example.com"
-python bridge.py --once --output ~/.project-brain/results/gmail-read-only-output.json
+export PB_ALLOWED_SENDER="hy405055@gmail.com"
+python bridge.py --once --output output.json
 ```
 
 ## 5. Troubleshooting
 
 ### `Missing credentials.json`
 
-The downloaded OAuth desktop client file is not in the runtime config directory
-or was not renamed correctly.
+The downloaded OAuth desktop client file is not in this directory or was not
+renamed correctly.
 
 ### `Access blocked` or test-user error
 
-Open the Google Auth Platform audience settings and add the configured account
-as a test user.
+Open the Google Auth Platform audience settings and add
+`hy405055@gmail.com` as a test user.
 
 ### No messages found
 
@@ -112,7 +112,7 @@ Confirm that the connectivity test email:
 
 - is still unread;
 - has a subject beginning with `[Project Brain]`;
-- was sent from the exact `PB_ALLOWED_SENDER` address;
+- was sent from `hy405055@gmail.com`;
 - is less than seven days old.
 
 You can broaden the query temporarily:

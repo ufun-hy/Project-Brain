@@ -71,7 +71,7 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(result["status"], TaskStatus.FAILED.value)
         self.assertEqual(result["task"]["attempt_count"], 1)
         self.assertIn("no file or commit changes", result["task"]["last_error"])
-        self.assertEqual(self.fixture.store.get_worktree("noop")["status"], "cleaned")
+        self.assertEqual(self.fixture.store.get_worktree("noop")["status"], "active")
 
     def test_transient_error_retries_only_until_policy_limit(self) -> None:
         self._write_task("transient")
@@ -91,17 +91,27 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(worktrees.create.call_count, 2)
 
     def test_each_criterion_has_independent_evidence(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["verification_commands"] = [
+            {
+                "id": "file-check",
+                "text": "Task file exists",
+                "command": [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; raise SystemExit(not Path('evidence.txt').exists())",
+                ],
+                "always_run": False,
+            }
+        ]
+        self.fixture.store.register_project(project)
         self._write_task(
             "evidence",
             acceptance_criteria=[
                 {
                     "id": "file-exists",
                     "text": "Task file exists",
-                    "command": [
-                        sys.executable,
-                        "-c",
-                        "from pathlib import Path; raise SystemExit(not Path('evidence.txt').exists())",
-                    ],
+                    "verification_id": "file-check",
                 },
                 "Requires human product review",
             ],
@@ -114,13 +124,23 @@ class TaskEngineTests(unittest.TestCase):
         self.assertIsNotNone(evidence[0]["artifact_path"])
 
     def test_failed_verification_enters_verification_failed_and_retains_worktree(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["verification_commands"] = [
+            {
+                "id": "deliberate-check",
+                "text": "Deliberate failure",
+                "command": [sys.executable, "-c", "raise SystemExit(7)"],
+                "always_run": False,
+            }
+        ]
+        self.fixture.store.register_project(project)
         self._write_task(
             "bad-check",
             acceptance_criteria=[
                 {
                     "id": "deliberate-failure",
                     "text": "Deliberate failure",
-                    "command": [sys.executable, "-c", "raise SystemExit(7)"],
+                    "verification_id": "deliberate-check",
                 }
             ],
         )

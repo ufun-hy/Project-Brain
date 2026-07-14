@@ -1,204 +1,158 @@
 # Project Brain Core MVP
 
-Project Brain is a local project control layer between users, planning tools,
-coding agents, and GitHub review. Core owns durable task state and safe local
-execution. Gmail is retained as a compatibility input, not as the task engine.
+Project Brain Core is a local task control plane. It persists canonical tasks,
+runs them in isolated Git worktrees, records independent verification evidence,
+and publishes Draft pull requests without automatically accepting or merging
+them.
 
-## Core guarantees
+The existing live Gmail Bridge under `experiments/gmail-inbox/` is frozen legacy
+behavior and is not part of the Core architecture. This change does not modify,
+migrate, launch, or replace it. A future MCP/DevSpace source adapter will be a
+separate project.
 
-- Stable project and task identities are persisted in SQLite.
-- Every task runs in its own registered Git worktree.
-- The registered main checkout is never checked out, reset, cleaned, or used as
-  the Codex working directory.
-- One runtime lock is shared by manual and scheduled runs.
-- One apply process claims at most one task and exits.
-- Codex commits and ordinary cherry-picks are normalized into a canonical
-  per-attempt commit; unsafe history and branch changes stop the task.
-- Execution success enters `awaiting_review`, never `accepted`.
-- Acceptance criteria keep independent evidence records.
-- GitHub publishing creates Draft PRs only; Core does not merge them.
+## Guarantees
 
-Architecture and decisions are documented in
-[`docs/rfc/RFC-003-core-v3.md`](docs/rfc/RFC-003-core-v3.md). The baseline gap
-analysis is in [`docs/core-v3-gap-analysis.md`](docs/core-v3-gap-analysis.md).
+- Stable project, task, dedupe, criterion, and verification IDs are validated
+  before persistence.
+- Mutable runtime data is private and lives outside source under
+  `~/.project-brain/` by default.
+- Every implementation runs under
+  `<runtime>/worktrees/<project-id>/<task-id>/`; the registered main checkout is
+  never checked out, reset, cleaned, or used as an agent working directory.
+- External tasks can describe criteria and reference trusted project
+  `verification_id` values. They cannot provide executable `command` or `argv`.
+- Implementation, verification, publication, and review are durable attempt
+  phases. A `needs_changes` verdict reruns implementation and appends a new
+  canonical commit.
+- Interrupted processes are reconciled from PID, heartbeat, phase, worktree,
+  branch, HEAD, status, origin, and registered remote state.
+- Verification runs behind a Git state seal. File, commit, branch, origin,
+  fetch-config, conflict, or default-ref mutations block publication.
+- Publishing pushes only the registered task branch and creates or reuses a
+  Draft PR. Core never merges automatically.
 
-## Requirements
+## Install and configure
 
-- Python 3.10+
-- Git
-- GitHub CLI (`gh`) when `auto_push`/`auto_pr` is enabled
-- Codex CLI, or another explicitly configured local agent command
-- Gmail Python dependencies only when the Gmail adapter is used
-
-## Install
-
-Create a dedicated environment outside the source checkout when possible:
+Python 3.10+, Git, Codex (or another explicitly configured local agent), and
+GitHub CLI are required. `gh` is needed only when automatic PR creation is
+enabled.
 
 ```bash
 python3.11 -m venv ~/.project-brain/app/venv
 ~/.project-brain/app/venv/bin/pip install -e .
-```
-
-The installed command is `project-brain`. From a source checkout, the equivalent
-is:
-
-```bash
-PYTHONPATH=src python -m project_brain --help
-```
-
-For Gmail support:
-
-```bash
-~/.project-brain/app/venv/bin/pip install -r experiments/gmail-inbox/requirements.txt
-```
-
-## Runtime layout
-
-Mutable state defaults to `~/.project-brain/`:
-
-```text
-~/.project-brain/
-├── config/
-│   ├── bridge-config.json
-│   ├── credentials.json       # optional Gmail OAuth client; never commit
-│   └── token.json             # optional Gmail token; never commit
-├── project-brain.db
-├── project-brain.lock
-├── logs/
-├── results/
-└── worktrees/<project-id>/<task-id>/
-```
-
-Override it for testing or a separate installation:
-
-```bash
-export PROJECT_BRAIN_RUNTIME_ROOT=/temporary/project-brain-runtime
-```
-
-Tests always provide a temporary runtime root and never write to the real home
-directory.
-
-## Configure projects
-
-Copy the example and edit only the runtime copy:
-
-```bash
 mkdir -p ~/.project-brain/config
-cp config/bridge-config.example.json ~/.project-brain/config/bridge-config.json
+cp config/project-brain.example.json ~/.project-brain/config/project-brain.json
 ```
 
-Every project needs a stable `project_id`. `repo_path` can change later without
-changing task identity. `worktree_root` is optional and defaults to the runtime
-layout. Commands are arrays; remote tasks cannot supply arbitrary shell text.
+The actual repository `origin` must match the registered `remote_url`.
+`worktree_root` is deliberately not configurable outside the managed runtime
+path.
 
-Load the runtime config on the first `apply`, or import a Bridge v2 config
-explicitly:
+## Canonical enqueue
+
+Source adapters translate their messages into a canonical JSON envelope and use
+the source-neutral CLI:
 
 ```bash
-project-brain migrate bridge-v2 \
-  --config ./experiments/gmail-inbox/bridge-config.json
+project-brain tasks enqueue --file ./task.json --json
 ```
 
-Migration reads and imports project definitions. It does not edit or delete the
-source config, `processed.json`, `failures.json`, results, OAuth files, or old
-logs. See [`docs/migration-bridge-v2.md`](docs/migration-bridge-v2.md).
-
-## Operate Core
-
-```bash
-project-brain status
-project-brain status --json
-project-brain projects list
-project-brain projects list --json
-project-brain tasks list
-project-brain tasks show <task-id> --json
-project-brain health
-project-brain health --json
-project-brain cleanup --dry-run
-project-brain cleanup --execute
-project-brain apply --json
-```
-
-`cleanup` defaults to dry-run. Real cleanup requires `--execute`, takes the
-runtime lock, and only acts on a registered terminal worktree whose resolved
-path remains strictly under the configured root. Reviewable and active tasks
-are retained. Remote branches and PRs are never deleted.
-
-## State and review flow
-
-The execution path is:
-
-```text
-pending -> running -> awaiting_review
-                   -> verification_failed
-                   -> retry_pending
-                   -> failed
-```
-
-Review can move a task through `needs_changes`, `ready_to_merge`, `merging`, and
-finally `accepted`. Core MVP defines these transitions but intentionally has no
-automatic merge command. `accepted`, `failed`, `superseded`, and `expired` are
-terminal for automatic execution.
-
-Each acceptance criterion may include its own command:
+Example:
 
 ```json
 {
-  "id": "tests",
-  "text": "The regression suite passes",
-  "command": ["python", "-m", "unittest", "discover", "-s", "tests"]
+  "task_id": "core-recovery-1",
+  "project_id": "project-brain",
+  "dedupe_key": "core-recovery",
+  "revision": 1,
+  "source_type": "local-import",
+  "goal": "Implement deterministic recovery",
+  "task_type": "codex",
+  "acceptance_criteria": [
+    {
+      "id": "tests-pass",
+      "text": "The Core regression suite passes",
+      "verification_id": "core-tests"
+    }
+  ],
+  "payload": {
+    "prompt": "Implement deterministic recovery and add tests."
+  }
 }
 ```
 
-A criterion without an executable check is stored as `not_verified`, not
-silently marked passed. Project-wide commands are separate evidence records.
+Only the command registered as `core-tests` is executable. A criterion without
+a `verification_id` is recorded as `not_verified` for human review.
 
-## Gmail compatibility entry
-
-The existing launcher remains available:
+## Operate
 
 ```bash
-experiments/gmail-inbox/run_v2.sh dry-run
-experiments/gmail-inbox/run_v2.sh apply
+project-brain status --json
+project-brain projects list --json
+project-brain tasks list --json
+project-brain tasks show <task-id> --json
+project-brain tasks recover <task-id> --dry-run --json
+project-brain tasks recover <task-id> --execute --json
+project-brain health --json
+project-brain apply --json
+project-brain cleanup --dry-run --json
+project-brain cleanup --execute --json
 ```
 
-Set `PB_ALLOWED_SENDER` to the exact trusted sender first. Core ships no personal
-sender default.
+`apply` claims at most one task while holding the runtime flock. Startup
+reconciliation restores safe interrupted work to `retry_pending` or
+`awaiting_review`; unsafe state becomes `failed` and its worktree is retained
+for forensics.
 
-New Gmail JSON may include `task_id`, `dedupe_key`, `revision`, `expires_at`, and
-`supersedes`. Legacy JSON remains accepted; a stable task ID is derived from the
-Gmail message ID and a compatibility warning is recorded. A scan imports every
-valid message, then an apply process executes at most one queued task.
+Review findings are JSON bound to the current canonical `head_sha`:
 
-OAuth defaults to runtime config paths. Existing token locations can be used
-during migration without copying:
+```json
+{
+  "head_sha": "<canonical-sha>",
+  "verdict": "needs_changes",
+  "findings": [
+    {
+      "severity": "blocker",
+      "file": "src/project_brain/recovery.py",
+      "evidence": "Interrupted verification is left running.",
+      "requirement": "Reconcile it deterministically on startup."
+    }
+  ]
+}
+```
 
 ```bash
-export PB_GMAIL_CREDENTIALS=/path/to/legacy/credentials.json
-export PB_GMAIL_TOKEN=/path/to/legacy/token.json
+project-brain tasks review <task-id> --file ./review.json --json
 ```
 
-## Scheduled execution
+Active findings are included in the next Codex prompt. They automatically stop
+being active after a new canonical commit changes the task head.
 
-Install code at the documented stable app location, customize the supplied
-launchd template if needed, and schedule `bridge_v2.py --apply`. Each launch
-imports mail, executes no more than one task, and exits. There is no long-lived
-Python polling loop; launchd reloads current code on the next interval.
+## Runtime layout and permissions
 
-## Recovery and troubleshooting
+```text
+~/.project-brain/                         0700
+├── config/project-brain.json
+├── project-brain.db                     0600
+├── project-brain.lock                   0600
+├── logs/                                0700
+├── results/<task-id>/...                0700 / 0600
+└── worktrees/<project-id>/<task-id>/    0700
+```
 
-Use `project-brain health`, then `tasks show <task-id> --json`. Do not infer
-liveness from a lock file: Core tests the actual flock, task state, registered
-worktree, owner PID, and heartbeat. Detailed recovery steps and error categories
-are in [`docs/troubleshooting-recovery.md`](docs/troubleshooting-recovery.md).
+Override the root for tests or isolated installations with
+`PROJECT_BRAIN_RUNTIME_ROOT`. Result and worktree paths reject traversal and
+symlink escape.
 
-## Test
+## Validation
 
 ```bash
-PYTHONPATH=src python -m compileall -q src tests experiments/gmail-inbox
-PYTHONPATH=src python -m unittest discover -s tests -v
-PYTHONPATH=src python experiments/gmail-inbox/test_bridge_v2.py -v
+scripts/verify-core.sh
 ```
 
-All tests use temporary repositories, bare remotes, and runtime roots. They do
-not require Gmail, GitHub, Codex, or the user's home directory.
+The same command runs in CI. Tests use temporary repositories, bare remotes,
+and runtime roots; no Gmail, GitHub, Codex, or user-home credentials are needed.
+
+Architecture and recovery details are in
+[`docs/rfc/RFC-003-core-v3.md`](docs/rfc/RFC-003-core-v3.md) and
+[`docs/troubleshooting-recovery.md`](docs/troubleshooting-recovery.md).

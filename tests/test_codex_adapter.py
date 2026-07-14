@@ -39,7 +39,7 @@ class CodexAdapterTests(unittest.TestCase):
             payload={"prompt": "worktree only\n", "commit_message": "canonical"},
         )
         task = self.fixture.store.claim_next()
-        manager = WorktreeManager(self.fixture.store)
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
         record = manager.create(task, self.project)
         task = self.fixture.store.get_task("adapter-task")
         normalizer = GitHistoryNormalizer()

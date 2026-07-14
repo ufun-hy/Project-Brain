@@ -9,16 +9,15 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>mkdir -p "$HOME/.project-brain/logs" &amp;&amp; exec "$HOME/.project-brain/app/venv/bin/python" "$HOME/.project-brain/app/experiments/gmail-inbox/bridge_v2.py" --apply &gt;&gt;"$HOME/.project-brain/logs/gmail-bridge.out.log" 2&gt;&gt;"$HOME/.project-brain/logs/gmail-bridge.err.log"</string>
+    <string>cd /Users/ufun/code/2026/Project-Brain/experiments/gmail-inbox &amp;&amp; ./run_v2.sh apply</string>
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PB_ALLOWED_SENDER</key>
-    <string>trusted-sender@example.com</string>
-  </dict>
   <key>StartInterval</key>
   <integer>60</integer>
   <key>RunAtLoad</key>
   <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/project-brain-bridge.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/project-brain-bridge.err.log</string>
 </dict>
 </plist>

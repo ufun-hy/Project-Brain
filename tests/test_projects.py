@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 import unittest
 
 from project_brain.errors import ConfigurationError
-from project_brain.projects import ProjectRegistry, stable_legacy_project_id
+from project_brain.projects import ProjectRegistry
 
 from tests.helpers import CoreFixture, create_remote_clone
 
@@ -40,38 +39,18 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual({item["project_id"] for item in projects}, {"one-id", "two-id"})
         self.assertNotEqual(projects[0]["repo_path"], projects[0]["project_id"])
 
-    def test_legacy_import_preserves_source_file(self) -> None:
-        repo, remote = create_remote_clone(self.fixture.root, "legacy")
-        source = self.fixture.root / "bridge-config.json"
-        source.write_text(
-            json.dumps(
+    def test_external_worktree_root_is_rejected(self) -> None:
+        repo, remote = create_remote_clone(self.fixture.root, "external-root")
+        with self.assertRaises(ConfigurationError):
+            self.registry.register(
                 {
-                    "projects": {
-                        "Project-Brain": {
-                            "path": str(repo),
-                            "base_branch": "main",
-                            "remote_url": str(remote),
-                            "auto_push": False,
-                            "auto_pr": False,
-                        }
-                    }
+                    "project_id": "external-root",
+                    "name": "external-root",
+                    "repo_path": str(repo),
+                    "remote_url": str(remote),
+                    "worktree_root": str(self.fixture.root / "elsewhere"),
                 }
-            ),
-            encoding="utf-8",
-        )
-        before = source.read_bytes()
-        processed = self.fixture.root / "processed.json"
-        failures = self.fixture.root / "failures.json"
-        processed.write_text('{"processed_message_ids":["old"]}\n', encoding="utf-8")
-        failures.write_text('{"old":{"attempt_count":2}}\n', encoding="utf-8")
-        processed_before = processed.read_bytes()
-        failures_before = failures.read_bytes()
-        imported = self.registry.import_bridge_v2(source)
-        self.assertEqual(source.read_bytes(), before)
-        self.assertEqual(processed.read_bytes(), processed_before)
-        self.assertEqual(failures.read_bytes(), failures_before)
-        self.assertEqual(imported[0]["project_id"], stable_legacy_project_id("Project-Brain"))
-        self.assertFalse(imported[0]["auto_push"])
+            )
 
     def test_worktree_root_cannot_overlap_registered_checkout(self) -> None:
         repo, remote = create_remote_clone(self.fixture.root, "overlap")

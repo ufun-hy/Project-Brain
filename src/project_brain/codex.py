@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import uuid
 from pathlib import Path
+import json
 from typing import Any
 
 from .errors import ExternalCommandError, InvalidTaskError, TransientTaskError
@@ -29,6 +30,25 @@ class CodexAdapter:
         prompt = task["payload"].get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             raise InvalidTaskError("codex task requires a non-empty prompt")
+        findings = self.store.active_review_findings(task["task_id"])
+        if findings:
+            prompt += (
+                "\n\nActive review findings for the current canonical commit. "
+                "Address every requirement and preserve the prior commit as an ancestor:\n"
+                + json.dumps(
+                    [
+                        {
+                            "severity": item["severity"],
+                            "file": item.get("file"),
+                            "evidence": item["evidence"],
+                            "requirement": item["requirement"],
+                        }
+                        for item in findings
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         command = project.get("codex_command")
         if not isinstance(command, list) or not command or not all(
             isinstance(item, str) and item for item in command

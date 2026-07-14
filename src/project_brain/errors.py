@@ -57,6 +57,14 @@ class StateTransitionError(ProjectBrainError):
     category = "state_transition"
 
 
+class MigrationError(ProjectBrainError):
+    category = "migration"
+
+
+class RecoveryError(ProjectBrainError):
+    category = "recovery"
+
+
 class ExternalCommandError(ProjectBrainError):
     category = "external_command"
 

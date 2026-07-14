@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import sys
+import os
+import stat
 import unittest
 from pathlib import Path
 
-from project_brain.errors import InvalidTaskError
+from project_brain.errors import InvalidPathError, InvalidTaskError
+from project_brain.locking import RuntimeLock
 from project_brain.security import redact_text
 from project_brain.verification import VerificationRunner
 
@@ -29,17 +32,27 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.fixture.store.list_tasks(), [])
 
     def test_verification_output_is_redacted_in_artifact_and_database(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["verification_commands"] = [
+            {
+                "id": "redaction-check",
+                "text": "Output is captured safely",
+                "command": [
+                    sys.executable,
+                    "-c",
+                    "print('api_' + 'key=' + ''.join(map(chr, range(97, 119))))",
+                ],
+                "always_run": False,
+            }
+        ]
+        self.fixture.store.register_project(project)
         task = self.fixture.add_task(
             "redaction",
             acceptance_criteria=[
                 {
                     "id": "redact",
                     "text": "Output is captured safely",
-                    "command": [
-                        sys.executable,
-                        "-c",
-                        "print('api_' + 'key=' + ''.join(map(chr, range(97, 119))))",
-                    ],
+                    "verification_id": "redaction-check",
                 }
             ],
         )
@@ -58,6 +71,53 @@ class SecurityTests(unittest.TestCase):
         self.assertNotIn(
             b"abcdefghijklmnopqrstuv", self.fixture.runtime.database.read_bytes()
         )
+        self.assertEqual(stat.S_IMODE(Path(results[0]["artifact_path"]).stat().st_mode), 0o600)
+
+    def test_runtime_state_permissions_are_private(self) -> None:
+        with RuntimeLock(self.fixture.runtime.lock_file):
+            pass
+        for directory in (
+            self.fixture.runtime.root,
+            self.fixture.runtime.config_dir,
+            self.fixture.runtime.logs_dir,
+            self.fixture.runtime.results_dir,
+            self.fixture.runtime.worktrees_dir,
+        ):
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.fixture.runtime.database.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.fixture.runtime.lock_file.stat().st_mode), 0o600)
+
+    def test_result_symlink_escape_is_rejected(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["verification_commands"] = [
+            {
+                "id": "safe-check",
+                "text": "Safe check",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "always_run": False,
+            }
+        ]
+        self.fixture.store.register_project(project)
+        task = self.fixture.add_task(
+            "symlink-result",
+            acceptance_criteria=[
+                {"id": "safe", "text": "Safe", "verification_id": "safe-check"}
+            ],
+        )
+        outside = self.fixture.root / "outside-results"
+        outside.mkdir()
+        (self.fixture.runtime.results_dir / "symlink-result").symlink_to(
+            outside, target_is_directory=True
+        )
+        worktree = self.fixture.root / "result-worktree"
+        worktree.mkdir()
+        with self.assertRaises(InvalidPathError):
+            VerificationRunner(self.fixture.store, self.fixture.runtime).run(
+                task=task,
+                project=self.fixture.store.get_project("project-one"),
+                worktree=worktree,
+            )
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_common_token_formats_are_redacted(self) -> None:
         token = "github_" + "pat_" + "".join(map(chr, range(97, 123))) + "123456"

@@ -38,6 +38,7 @@ class StoreTests(unittest.TestCase):
             revision=1,
             source_type="test",
             goal="first",
+            payload={"prompt": "test"},
         )
         first, created = self.fixture.store.insert_task(task)
         second, created_again = self.fixture.store.insert_task(task)
@@ -56,6 +57,7 @@ class StoreTests(unittest.TestCase):
                 revision=1,
                 source_type="test",
                 goal="duplicate",
+                payload={"prompt": "test"},
             )
         )
         self.assertFalse(created)
@@ -72,6 +74,7 @@ class StoreTests(unittest.TestCase):
                 source_type="test",
                 goal="revision two",
                 supersedes="old",
+                payload={"prompt": "test"},
             )
         )
         self.assertTrue(created)

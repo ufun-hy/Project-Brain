@@ -12,9 +12,11 @@ GitHub is currently used to version and synchronize Project Brain files across c
 
 ChatGPT is used primarily for planning, clarification, and reasoning. Codex is used only when code execution or repository-level implementation is needed.
 
-## D-004: Use a local Bridge for execution
+## D-004: Use a local Bridge for execution (legacy)
 
 Because the ChatGPT GitHub connection is read-only, a local Bridge receives structured tasks through Gmail and performs controlled Git operations.
+This records the original experiment; D-012 supersedes Gmail as a Core
+architecture decision while leaving the live legacy implementation frozen.
 
 ## D-005: Keep the first state model minimal
 
@@ -25,7 +27,9 @@ now owned by Core SQLite rather than added to the context documents.
 
 ## D-006: Do not execute arbitrary remote shell commands
 
-The Bridge may write files, invoke Codex in registered repositories, or run locally allowlisted commands. It must not execute arbitrary shell text received from email.
+Core may write files, invoke Codex in registered repositories, or run locally
+allowlisted commands. It must not execute command or argv supplied by any
+external source adapter.
 
 ## D-007: Separate runtime state from source
 
@@ -37,9 +41,8 @@ tests.
 ## D-008: Use stable identities and SQLite events
 
 Projects use stable `project_id` values and tasks use `task_id`, `dedupe_key`,
-and revision. Gmail message IDs are source metadata only. Transactional SQLite
-state and append-only events replace processed/failure JSON as the Core source
-of truth.
+and revision. Transport-specific message IDs are source metadata only.
+Transactional SQLite state and append-only events are the Core source of truth.
 
 ## D-009: Execute only in registered task worktrees
 
@@ -57,3 +60,22 @@ and merge authorization. Core does not automatically merge.
 
 Manual and scheduled apply commands share a runtime `flock`. Each process
 claims at most one task and exits so the next launch loads current code.
+
+## D-012: Keep Core source-neutral and freeze the live Gmail Bridge
+
+Core accepts canonical task envelopes and trusted verification IDs. The live
+legacy Gmail Bridge remains unchanged and outside Core. Future MCP/DevSpace
+transport work requires its own adapter decision and review.
+
+## D-013: Model attempts by phase and bind review to commits
+
+Implementation, verification, publication, and review are durable phases.
+Review findings bind to a canonical SHA; `needs_changes` reruns implementation
+and appends a new canonical commit, while publication-only failures resume
+publication.
+
+## D-014: Prefer deterministic recovery over implicit reclamation
+
+Interrupted tasks are reconciled from runtime and Git evidence under the flock.
+Only exact registered remote branches can reconstruct released worktrees.
+Unsafe state fails closed and is retained for forensics.

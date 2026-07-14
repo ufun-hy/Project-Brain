@@ -12,6 +12,8 @@ from typing import Any
 from .commands import git
 from .errors import ExternalCommandError, FetchError, InvalidPathError, WorktreeError
 from .models import TERMINAL_STATUSES, TaskStatus
+from .repository import assert_registered_origin
+from .runtime import RuntimePaths
 from .store import TaskStore
 
 
@@ -54,21 +56,27 @@ def heartbeat_age_seconds(value: str | None) -> int | None:
 
 
 class WorktreeManager:
-    def __init__(self, store: TaskStore) -> None:
+    def __init__(self, store: TaskStore, runtime: RuntimePaths) -> None:
         self.store = store
+        self.runtime = runtime
 
     def create(self, task: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
         existing = self.store.get_worktree(task["task_id"])
         if existing and existing["status"] != "cleaned":
             path = self.validate_managed_path(project, existing["path"])
             if not path.exists():
-                raise WorktreeError(f"Registered task worktree is missing: {path}")
+                return self._recover_registered(task, project, existing, path)
+            self._validate_existing(task, project, existing, path)
             self.store.heartbeat_worktree(task["task_id"], owner_pid=os.getpid())
             return self.store.get_worktree(task["task_id"]) or existing
+        if existing and existing["status"] == "cleaned":
+            path = self.validate_managed_path(project, existing["path"])
+            return self._recover_registered(task, project, existing, path)
 
         repo = Path(project["repo_path"]).expanduser().resolve()
         if not (repo / ".git").exists():
             raise WorktreeError(f"Registered repository is missing: {repo}")
+        assert_registered_origin(repo, project["remote_url"])
         default_branch = project["default_branch"]
         try:
             git(repo, "fetch", "--prune", "origin", default_branch, retryable=True)
@@ -82,6 +90,7 @@ class WorktreeManager:
         branch = task_branch(task["task_id"])
         root = self._validated_root(project)
         root.mkdir(parents=True, exist_ok=True)
+        os.chmod(root, 0o700)
         path = self.validate_managed_path(project, root / task_component(task["task_id"]))
         if path.exists() or path.is_symlink():
             raise WorktreeError(f"Unregistered worktree path already exists: {path}")
@@ -112,6 +121,7 @@ class WorktreeManager:
             )
         try:
             git(repo, "worktree", "add", "-b", branch, str(path), base_sha)
+            os.chmod(path, 0o700)
         except Exception:
             if path.exists() and not any(path.iterdir()):
                 path.rmdir()
@@ -133,8 +143,92 @@ class WorktreeManager:
         return worktree
 
     @staticmethod
-    def validate_managed_path(project: dict[str, Any], candidate: str | Path) -> Path:
+    def _validate_existing(
+        task: dict[str, Any],
+        project: dict[str, Any],
+        record: dict[str, Any],
+        path: Path,
+    ) -> None:
+        assert_registered_origin(path, project["remote_url"])
+        branch = git(path, "branch", "--show-current", check=False).stdout.strip()
+        head = git(path, "rev-parse", "HEAD", check=False).stdout.strip()
+        status = git(path, "status", "--porcelain=v1", "--untracked-files=all", check=False).stdout
+        conflicts = git(path, "diff", "--name-only", "--diff-filter=U", check=False).stdout
+        expected = task.get("commit") or record["base_sha"]
+        if branch != record["branch"] or head != expected or status or conflicts:
+            raise WorktreeError(
+                "Registered task worktree differs from its canonical branch, HEAD, or clean status"
+            )
+
+    def _recover_registered(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        record: dict[str, Any],
+        path: Path,
+    ) -> dict[str, Any]:
+        branch = record["branch"]
+        trusted_branch = task.get("branch")
+        trusted_sha = task.get("commit") or task.get("head_sha")
+        if trusted_branch != branch:
+            raise WorktreeError("Remote recovery requires a registered branch and canonical commit")
+        repo = Path(project["repo_path"]).expanduser().resolve()
+        assert_registered_origin(repo, project["remote_url"])
+        git(repo, "fetch", "origin", project["default_branch"], retryable=True)
+        remote = git(repo, "ls-remote", "--heads", "origin", branch, retryable=True)
+        fields = remote.stdout.strip().split()
+        if trusted_sha and task.get("commit"):
+            if len(fields) != 2 or fields[0] != trusted_sha:
+                raise WorktreeError(
+                    f"Registered remote branch does not match canonical commit: {branch}"
+                )
+            git(repo, "fetch", "origin", branch, retryable=True)
+        elif fields:
+            raise WorktreeError("Unpublished interrupted task unexpectedly has a remote branch")
+        else:
+            trusted_sha = record["base_sha"]
+        if git(repo, "merge-base", "--is-ancestor", record["base_sha"], trusted_sha, check=False).returncode:
+            raise WorktreeError("Remote task commit is not descended from its registered base")
+        git(repo, "worktree", "prune")
+        if path.exists() or path.is_symlink():
+            raise WorktreeError(f"Registered recovery path is occupied: {path}")
+        local_ref = f"refs/heads/{branch}"
+        if git(repo, "show-ref", "--verify", "--quiet", local_ref, check=False).returncode == 0:
+            local_sha = git(repo, "rev-parse", local_ref).stdout.strip()
+            if local_sha != trusted_sha:
+                raise WorktreeError("Registered local task branch differs from canonical commit")
+            git(repo, "worktree", "add", str(path), branch)
+        else:
+            git(repo, "worktree", "add", "-b", branch, str(path), trusted_sha)
+        os.chmod(path, 0o700)
+        worktree = self.store.bind_worktree(
+            task_id=task["task_id"],
+            project_id=project["project_id"],
+            path=str(path),
+            branch=branch,
+            base_sha=record["base_sha"],
+            owner_pid=os.getpid(),
+        )
+        self.store.set_task_fields(
+            task["task_id"],
+            head_sha=trusted_sha,
+            **({"commit": trusted_sha} if task.get("commit") else {}),
+        )
+        self.store.record_event(
+            task_id=task["task_id"],
+            event_type="worktree_recovered_from_remote",
+            payload={"branch": branch, "head_sha": trusted_sha},
+        )
+        return worktree
+
+    def validate_managed_path(self, project: dict[str, Any], candidate: str | Path) -> Path:
         root = Path(project["worktree_root"]).expanduser().resolve()
+        expected_root = self.runtime.project_worktree_root(project["project_id"]).resolve()
+        runtime_root = self.runtime.worktrees_dir.resolve()
+        if root != expected_root or runtime_root not in root.parents:
+            raise InvalidPathError(
+                f"Configured worktree root is outside managed runtime: {root}"
+            )
         repo = Path(project["repo_path"]).expanduser().resolve()
         if root == repo or root in repo.parents or repo in root.parents:
             raise InvalidPathError(
@@ -147,11 +241,10 @@ class WorktreeManager:
             )
         return path
 
-    @staticmethod
-    def _validated_root(project: dict[str, Any]) -> Path:
+    def _validated_root(self, project: dict[str, Any]) -> Path:
         root = Path(project["worktree_root"]).expanduser().resolve()
         # Reuse the same overlap check with a guaranteed child candidate.
-        WorktreeManager.validate_managed_path(project, root / ".boundary-check")
+        self.validate_managed_path(project, root / ".boundary-check")
         return root
 
     def cleanup_task(self, task_id: str, *, dry_run: bool = True) -> dict[str, Any]:
@@ -211,6 +304,42 @@ class WorktreeManager:
             payload={"path": str(path), "branch": record["branch"]},
         )
         return result
+
+    def release_review_worktree(self, task_id: str) -> dict[str, Any]:
+        """Release a safely published review worktree while retaining remote history."""
+        task = self.store.get_task(task_id)
+        if task["status"] != TaskStatus.AWAITING_REVIEW.value:
+            raise WorktreeError(f"Task is not awaiting review: {task_id}")
+        project = self.store.get_project(task["project_id"])
+        if not project.get("auto_push"):
+            raise WorktreeError("Unpublished task worktrees cannot be released")
+        if project.get("auto_pr") and not task.get("pr_url"):
+            raise WorktreeError("Task worktree cannot be released before Draft PR creation")
+        record = self.store.get_worktree(task_id)
+        if not record or record["status"] == "cleaned":
+            return {"task_id": task_id, "action": "already_released"}
+        path = self.validate_managed_path(project, record["path"])
+        branch = git(path, "branch", "--show-current").stdout.strip()
+        head = git(path, "rev-parse", "HEAD").stdout.strip()
+        status = git(path, "status", "--porcelain=v1", "--untracked-files=all").stdout
+        if branch != record["branch"] or head != task.get("commit") or status:
+            raise WorktreeError("Published review worktree is not clean at its canonical commit")
+        remote = git(path, "ls-remote", "--heads", "origin", branch, retryable=True)
+        fields = remote.stdout.strip().split()
+        if len(fields) != 2 or fields[0] != head:
+            raise WorktreeError("Remote review branch does not match the canonical commit")
+        repo = Path(project["repo_path"]).expanduser().resolve()
+        git(repo, "worktree", "remove", str(path))
+        git(repo, "worktree", "prune")
+        git(repo, "branch", "-D", branch)
+        self.store.mark_worktree_cleaned(task_id)
+        self.store.set_task_fields(task_id, worktree_path=None)
+        self.store.record_event(
+            task_id=task_id,
+            event_type="review_worktree_released",
+            payload={"branch": branch, "head_sha": head},
+        )
+        return {"task_id": task_id, "action": "released", "branch": branch, "head_sha": head}
 
     def cleanup_preview(self) -> list[dict[str, Any]]:
         previews: list[dict[str, Any]] = []

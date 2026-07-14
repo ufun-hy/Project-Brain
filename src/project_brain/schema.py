@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -115,4 +115,37 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
-MIGRATIONS = {1: MIGRATION_1}
+MIGRATION_2 = """
+ALTER TABLE tasks ADD COLUMN attempt_phase TEXT NOT NULL DEFAULT 'implementation';
+ALTER TABLE task_attempts ADD COLUMN phase TEXT NOT NULL DEFAULT 'implementation';
+ALTER TABLE task_attempts ADD COLUMN base_sha TEXT;
+ALTER TABLE task_attempts ADD COLUMN head_sha TEXT;
+ALTER TABLE verification_results ADD COLUMN attempt_number INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE reviews (
+    review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    head_sha TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK(verdict IN ('approved', 'needs_changes')),
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE review_findings (
+    finding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id INTEGER NOT NULL REFERENCES reviews(review_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    head_sha TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    file TEXT,
+    evidence TEXT NOT NULL,
+    requirement TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX reviews_task_head_idx ON reviews(task_id, head_sha);
+CREATE INDEX review_findings_task_head_idx ON review_findings(task_id, head_sha);
+CREATE INDEX verification_task_attempt_idx
+    ON verification_results(task_id, attempt_number);
+"""
+
+MIGRATIONS = {1: MIGRATION_1, 2: MIGRATION_2}

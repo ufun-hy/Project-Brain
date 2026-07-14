@@ -12,7 +12,9 @@ from .git_history import GitHistoryNormalizer, NormalizedHistory
 from .commands import git
 from .errors import TaskHistoryError
 from .github import GitHubAdapter
-from .models import TaskStatus
+from .models import AttemptPhase, TaskStatus
+from .repository import RepositorySeal
+from .recovery import RecoveryManager
 from .runtime import RuntimePaths
 from .store import TaskStore
 from .verification import VerificationRunner
@@ -35,7 +37,7 @@ class TaskEngine:
         self.store = store
         self.runtime = runtime
         self.max_transient_attempts = max(1, max_transient_attempts)
-        self.worktrees = worktrees or WorktreeManager(store)
+        self.worktrees = worktrees or WorktreeManager(store, runtime)
         self.normalizer = normalizer or GitHistoryNormalizer()
         self.codex = codex or CodexAdapter(store, self.normalizer)
         self.verification = verification or VerificationRunner(store, runtime)
@@ -45,7 +47,7 @@ class TaskEngine:
         """Claim and execute no more than one task, then return structured state."""
         # Production entrypoints hold RuntimeLock around this call. Cleanup uses
         # database registration, task state, PID, heartbeat, and path checks.
-        self.worktrees.cleanup_stale(dry_run=False)
+        RecoveryManager(self.store, self.worktrees).reconcile(execute=True)
         task = self.store.claim_next()
         if task is None:
             return {"status": "idle", "task": None}
@@ -54,35 +56,62 @@ class TaskEngine:
             worktree_record = self.worktrees.create(task, project)
             task = self.store.get_task(task["task_id"])
             worktree = Path(worktree_record["path"])
-            if task.get("commit"):
-                history = self._resume_publication(task, worktree_record, worktree)
-                evidence = self.store.list_verifications(task["task_id"])
-            else:
+            self.store.heartbeat_worktree(task["task_id"])
+            phase = AttemptPhase(task["attempt_phase"])
+            if phase is AttemptPhase.IMPLEMENTATION:
                 snapshot = self.normalizer.capture(
                     worktree,
                     expected_branch=worktree_record["branch"],
                     base_sha=worktree_record["base_sha"],
                 )
                 history = self._execute_action(task, project, worktree, snapshot)
+                self.store.heartbeat_worktree(task["task_id"])
                 task = self.store.set_task_fields(
                     task["task_id"], head_sha=history.commit, commit=history.commit
+                )
+                task = self.store.set_attempt_phase(task["task_id"], AttemptPhase.VERIFICATION)
+            else:
+                history = self._resume_canonical(task, worktree_record, worktree)
+
+            if AttemptPhase(task["attempt_phase"]) is AttemptPhase.VERIFICATION:
+                seal = RepositorySeal.capture(
+                    worktree,
+                    project=project,
+                    expected_branch=worktree_record["branch"],
+                    expected_head=history.commit,
                 )
                 evidence = self.verification.run(
                     task=task, project=project, worktree=worktree
                 )
-            failed_evidence = [item for item in evidence if item["status"] == "failed"]
-            if failed_evidence:
-                names = ", ".join(item["criterion_id"] for item in failed_evidence)
-                raise VerificationFailedError(f"Verification failed: {names}")
+                self.store.heartbeat_worktree(task["task_id"])
+                seal.verify(worktree, project=project)
+                failed_evidence = [item for item in evidence if item["status"] == "failed"]
+                if failed_evidence:
+                    names = ", ".join(item["criterion_id"] for item in failed_evidence)
+                    raise VerificationFailedError(f"Verification failed: {names}")
+                task = self.store.set_attempt_phase(task["task_id"], AttemptPhase.PUBLICATION)
+            else:
+                evidence = self.store.list_verifications(task["task_id"])
+
+            publication: dict[str, Any] = {"pushed": False, "pr_url": task.get("pr_url")}
             if project.get("auto_push", True):
+                publication_seal = RepositorySeal.capture(
+                    worktree,
+                    project=project,
+                    expected_branch=worktree_record["branch"],
+                    expected_head=history.commit,
+                )
                 publication = self.github.publish(
                     task=task, project=project, worktree=worktree
                 )
+                self.store.heartbeat_worktree(task["task_id"])
+                publication_seal.verify(worktree, project=project)
                 if publication.get("pr_url"):
                     task = self.store.set_task_fields(
                         task["task_id"], pr_url=publication["pr_url"]
                     )
             self.store.heartbeat_worktree(task["task_id"])
+            self.store.set_attempt_phase(task["task_id"], AttemptPhase.REVIEW)
             task = self.store.transition(
                 task["task_id"],
                 TaskStatus.AWAITING_REVIEW,
@@ -95,7 +124,19 @@ class TaskEngine:
                 },
             )
             self.store.finish_attempt(task["task_id"], status="completed")
-            return {"status": task["status"], "task": task, "evidence": evidence}
+            release: dict[str, Any] | None = None
+            if publication.get("pushed"):
+                try:
+                    release = self.worktrees.release_review_worktree(task["task_id"])
+                    task = self.store.get_task(task["task_id"])
+                except Exception as exc:
+                    release = {"action": "retained", "reason": str(exc)}
+            return {
+                "status": task["status"],
+                "task": task,
+                "evidence": evidence,
+                "worktree_release": release,
+            }
         except VerificationFailedError as exc:
             task = self.store.transition(
                 task["task_id"],
@@ -142,7 +183,7 @@ class TaskEngine:
         return self.normalizer.normalize(worktree, snapshot, message=str(message))
 
     @staticmethod
-    def _resume_publication(
+    def _resume_canonical(
         task: dict[str, Any],
         worktree_record: dict[str, Any],
         worktree: Path,
@@ -173,6 +214,11 @@ class TaskEngine:
         else:
             target = TaskStatus.FAILED
             attempt_status = "failed"
+        if target is TaskStatus.RETRY_PENDING and current["attempt_phase"] not in {
+            AttemptPhase.VERIFICATION.value,
+            AttemptPhase.PUBLICATION.value,
+        }:
+            self.store.set_attempt_phase(task["task_id"], AttemptPhase.IMPLEMENTATION)
         updated = self.store.transition(
             task["task_id"],
             target,
@@ -186,13 +232,5 @@ class TaskEngine:
             error_category=category,
             error_message=str(exc),
         )
-        cleanup_error: str | None = None
-        if target == TaskStatus.FAILED and self.store.get_worktree(task["task_id"]):
-            try:
-                self.worktrees.cleanup_task(task["task_id"], dry_run=False)
-            except Exception as cleanup_exc:
-                cleanup_error = str(cleanup_exc)
         result: dict[str, Any] = {"status": updated["status"], "task": updated}
-        if cleanup_error:
-            result["cleanup_error"] = cleanup_error
         return result

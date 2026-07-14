@@ -15,28 +15,13 @@
       ],
       "verification_commands": [
         {
-          "id": "unit-tests",
+          "id": "core-tests",
           "text": "Project unit tests pass",
-          "command": [
-            "python",
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "tests"
-          ]
+          "command": ["python3", "-m", "unittest", "discover", "-s", "tests"],
+          "always_run": true
         }
       ],
-      "allowed_commands": {
-        "test": [
-          "python",
-          "-m",
-          "unittest",
-          "discover",
-          "-s",
-          "tests"
-        ]
-      },
+      "allowed_commands": {},
       "auto_push": true,
       "auto_pr": true
     }

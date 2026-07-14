@@ -1,37 +1,20 @@
-# Project Brain Core v3 gap analysis
+# Project Brain Core v3 review closure matrix
 
-Date: 2026-07-14
-Baseline: `3417dec` (`origin/main`)
+Updated: 2026-07-14
+Review input: `Project-Brain-Core-MVP-PR12-Review-v2.md`
 
-## Existing behavior
-
-Bridge v2 can read trusted Gmail messages, validate three task types, run a task
-in a registered repository, commit, push, and create a Draft pull request. Its
-six automated tests cover the previous single-checkout branch cleanup and retry
-helpers.
-
-## Gaps addressed by Core MVP
-
-| Area | Bridge v2 baseline | Core MVP target |
+| Review area | Implemented boundary | Regression evidence |
 | --- | --- | --- |
-| Runtime boundary | Config, JSON state, results, logs, and OAuth files live beside source | All mutable non-secret state lives under an overridable runtime root |
-| Project identity | Config key and local path | Stable `project_id` persisted in SQLite |
-| Task identity | Gmail `message_id` | Stable `task_id`, logical `dedupe_key`, and revision |
-| Persistence | Several mutable JSON files | Versioned SQLite schema with append-only events |
-| Repository isolation | Switches and cleans the main checkout | One registered task worktree per task |
-| Execution state | Processed/failed JSON and uniform retry count | Explicit state machine and classified retry behavior |
-| Codex result | Only inspects dirty files | Normalizes uncommitted changes, commits, and cherry-picks; rejects unsafe history |
-| Review | A successful run is treated as done | Evidence is recorded and success stops at `awaiting_review` |
-| Process safety | Polling daemon can overlap | `flock` singleton and at most one claimed task per apply process |
-| Operations | Inspect JSON/log files manually | Human and JSON CLI status, health, task, project, and cleanup views |
-| Gmail ownership | Gmail loop directly performs Git/Codex work | Gmail only parses and enqueues canonical tasks |
+| External validation commands | Canonical criteria contain text plus optional trusted `verification_id`; `command`/`argv` are rejected | `test_ingress`, `test_engine` |
+| `needs_changes` execution | Durable attempt phases rerun Codex and append a canonical commit; only publication resumes publication | `test_review_lifecycle`, `test_engine` |
+| Structured feedback | Reviews/findings bind verdict, severity, file, evidence, requirement to canonical `head_sha` and enter the next Codex prompt | `test_review_lifecycle` |
+| Crash recovery | Startup and CLI reconcile PID, heartbeat, phase, worktree, Git and remote state | `test_recovery` including a terminated real process |
+| Remote worktree/PR recovery | Exact registered remote SHA and ancestry are required; local worktree can be released and rebuilt; Draft PR is reused | `test_remote_recovery`, `test_github` |
+| ID and path containment | Strict stable IDs, managed runtime roots, resolved containment, symlink rejection | `test_ingress`, `test_security`, `test_worktrees` |
+| Worktree ownership | Project worktrees are confined to `<runtime>/worktrees/<project-id>/` | `test_projects`, `test_worktrees` |
+| Verification mutation | A Git seal blocks file, commit, branch, origin, fetch/default-ref and conflict mutations before push | `test_repository_seal` |
+| Gmail scope | Core Gmail module/tests/migration were removed; legacy `experiments/gmail-inbox/` matches `origin/main` | Git diff check plus Core-only validation |
+| Migrations and permissions | Atomic schema v2 migration, future-schema rejection, `0700` dirs and `0600` state/artifacts | `test_migrations`, `test_security` |
+| Dirty main checkout | Worktree creation, mutation blocking, remote recovery, and cleanup preserve main state | `test_worktrees`, `test_repository_seal`, `test_remote_recovery` |
 
-## Compatibility constraints
-
-- Legacy Gmail JSON remains accepted.
-- Legacy Bridge v2 config can be imported explicitly and is never deleted.
-- Existing OAuth files and JSON state are not migrated or removed automatically.
-- PR #10 and PR #11 are separate open Draft PRs and are not modified by this
-  implementation.
-- The old main-checkout cleanup behavior is intentionally retired because Core
-  never runs a task in the main checkout.
+The existing Gmail Bridge, PR #10, and PR #11 remain outside this change.

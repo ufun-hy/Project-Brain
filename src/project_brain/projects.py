@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -13,16 +11,6 @@ from .models import Project, STABLE_ID_PATTERN
 from .runtime import RuntimePaths
 from .security import command_contains_secret, contains_known_secret
 from .store import TaskStore
-
-
-def _slug(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug or "project"
-
-
-def stable_legacy_project_id(name: str) -> str:
-    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
-    return f"{_slug(name)}-{digest}"
 
 
 class ProjectRegistry:
@@ -44,6 +32,11 @@ class ProjectRegistry:
         worktree_root = Path(
             str(value.get("worktree_root") or self.runtime.project_worktree_root(project_id))
         ).expanduser().resolve()
+        expected_root = self.runtime.project_worktree_root(project_id).resolve()
+        if worktree_root != expected_root:
+            raise ConfigurationError(
+                f"worktree_root must be the managed runtime path: {expected_root}"
+            )
         if (
             worktree_root == repo
             or worktree_root in repo.parents
@@ -55,6 +48,11 @@ class ProjectRegistry:
         remote_url = str(value.get("remote_url") or "")
         if not remote_url:
             remote_url = self._remote_url(repo)
+        actual_remote = self._remote_url(repo)
+        if self._normalize_remote(remote_url) != self._normalize_remote(actual_remote):
+            raise ConfigurationError(
+                f"registered remote_url does not match repository origin: {remote_url}"
+            )
         codex_command = value.get("codex_command") or [
             "codex", "exec", "--sandbox", "workspace-write", "-"
         ]
@@ -71,20 +69,41 @@ class ProjectRegistry:
         raw_verification = value.get("verification_commands") or []
         if not isinstance(raw_verification, list):
             raise ConfigurationError("verification_commands must be an array")
-        verification_commands = list(raw_verification)
+        verification_commands: list[dict[str, Any]] = []
+        verification_ids: set[str] = set()
         commands_to_check = [codex_command, *allowed_commands.values()]
-        for check in verification_commands:
+        for index, check in enumerate(raw_verification, start=1):
             if isinstance(check, list):
                 if not self._valid_command(check):
                     raise ConfigurationError("Invalid verification command array")
                 commands_to_check.append(check)
+                check_id = f"project-check-{index}"
+                verification_commands.append(
+                    {"id": check_id, "text": f"Project check {index}", "command": list(check)}
+                )
             elif isinstance(check, dict):
                 command = check.get("command") or check.get("argv")
                 if not self._valid_command(command):
                     raise ConfigurationError("Invalid verification command object")
+                check_id = check.get("id") or f"project-check-{index}"
+                if not isinstance(check_id, str) or not STABLE_ID_PATTERN.fullmatch(check_id):
+                    raise ConfigurationError("verification command id must be a stable ID")
+                if set(check).difference({"id", "text", "name", "command", "argv", "always_run"}):
+                    raise ConfigurationError("Unsupported verification command field")
                 commands_to_check.append(command)
+                verification_commands.append(
+                    {
+                        "id": check_id,
+                        "text": str(check.get("text") or check.get("name") or check_id),
+                        "command": list(command),
+                        "always_run": bool(check.get("always_run", True)),
+                    }
+                )
             else:
                 raise ConfigurationError("Invalid verification command entry")
+            if check_id in verification_ids:
+                raise ConfigurationError(f"Duplicate verification command id: {check_id}")
+            verification_ids.add(check_id)
         if any(command_contains_secret(command) for command in commands_to_check):
             raise ConfigurationError(
                 "Project commands must obtain credentials from the environment, not literal arguments"
@@ -121,40 +140,6 @@ class ProjectRegistry:
             raise ConfigurationError("Config requires a projects array")
         return [self.register(project) for project in projects]
 
-    def import_bridge_v2(self, path: str | Path) -> list[dict[str, Any]]:
-        """Import legacy config without editing, moving, or deleting the source file."""
-        source = Path(path).expanduser().resolve()
-        try:
-            data = json.loads(source.read_text(encoding="utf-8"))
-        except FileNotFoundError as exc:
-            raise ConfigurationError(f"Missing legacy config: {source}") from exc
-        except json.JSONDecodeError as exc:
-            raise ConfigurationError(f"Invalid JSON in {source}: {exc}") from exc
-        projects = data.get("projects")
-        if not isinstance(projects, dict):
-            raise ConfigurationError("Legacy bridge config requires a projects object")
-        imported: list[dict[str, Any]] = []
-        for name, old in projects.items():
-            if not isinstance(old, dict):
-                raise ConfigurationError(f"Invalid legacy project: {name}")
-            imported.append(
-                self.register(
-                    {
-                        "project_id": stable_legacy_project_id(name),
-                        "name": name,
-                        "repo_path": old.get("path"),
-                        "remote_url": old.get("remote_url", ""),
-                        "default_branch": old.get("base_branch", "main"),
-                        "codex_command": old.get("codex_command"),
-                        "verification_commands": old.get("verification_commands", []),
-                        "allowed_commands": old.get("allowed_commands", {}),
-                        "auto_push": old.get("auto_push", True),
-                        "auto_pr": old.get("auto_pr", True),
-                    }
-                )
-            )
-        return imported
-
     @staticmethod
     def _remote_url(repo: Path) -> str:
         import subprocess
@@ -175,3 +160,10 @@ class ProjectRegistry:
             and bool(value)
             and all(isinstance(item, str) and bool(item) for item in value)
         )
+
+    @staticmethod
+    def _normalize_remote(value: str) -> str:
+        raw = value.strip().rstrip("/")
+        if "://" not in raw and not raw.startswith("git@"):
+            return str(Path(raw).expanduser().resolve())
+        return raw[:-4] if raw.endswith(".git") else raw

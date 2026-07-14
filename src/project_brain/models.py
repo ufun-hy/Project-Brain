@@ -13,6 +13,14 @@ from .errors import InvalidTaskError
 STABLE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
+def validate_stable_id(label: str, value: Any) -> str:
+    if not isinstance(value, str) or not STABLE_ID_PATTERN.fullmatch(value):
+        raise InvalidTaskError(
+            f"{label} must use 1-128 letters, numbers, dots, underscores, or hyphens"
+        )
+    return value
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -43,6 +51,13 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
     SUPERSEDED = "superseded"
     EXPIRED = "expired"
+
+
+class AttemptPhase(str, Enum):
+    IMPLEMENTATION = "implementation"
+    VERIFICATION = "verification"
+    PUBLICATION = "publication"
+    REVIEW = "review"
 
 
 TERMINAL_STATUSES = {
@@ -145,10 +160,39 @@ class Project:
     updated_at: str = field(default_factory=utc_now)
 
     def as_record(self) -> dict[str, Any]:
-        if not STABLE_ID_PATTERN.fullmatch(self.project_id):
-            raise InvalidTaskError(
-                "project_id must use 1-128 letters, numbers, dots, underscores, or hyphens"
-            )
+        validate_stable_id("project_id", self.project_id)
+        if not isinstance(self.codex_command, list) or not self.codex_command or not all(
+            isinstance(item, str) and item for item in self.codex_command
+        ):
+            raise InvalidTaskError("codex_command must be a non-empty array of strings")
+        if not isinstance(self.allowed_commands, dict):
+            raise InvalidTaskError("allowed_commands must be an object")
+        for name, command in self.allowed_commands.items():
+            validate_stable_id("allowed command name", name)
+            if not isinstance(command, list) or not command or not all(
+                isinstance(item, str) and item for item in command
+            ):
+                raise InvalidTaskError(f"Invalid allowed command: {name}")
+        if not isinstance(self.verification_commands, list):
+            raise InvalidTaskError("verification_commands must be an array")
+        verification_ids: set[str] = set()
+        for index, check in enumerate(self.verification_commands, start=1):
+            if isinstance(check, list):
+                check_id = f"project-check-{index}"
+                command = check
+            elif isinstance(check, dict):
+                check_id = check.get("id") or f"project-check-{index}"
+                command = check.get("command") or check.get("argv")
+            else:
+                raise InvalidTaskError(f"Invalid verification command at index {index}")
+            validate_stable_id("verification command id", check_id)
+            if check_id in verification_ids:
+                raise InvalidTaskError(f"Duplicate verification command id: {check_id}")
+            verification_ids.add(check_id)
+            if not isinstance(command, list) or not command or not all(
+                isinstance(item, str) and item for item in command
+            ):
+                raise InvalidTaskError(f"Invalid verification command: {check_id}")
         return asdict(self)
 
 
@@ -168,24 +212,67 @@ class CanonicalTask:
     supersedes: str | None = None
 
     def validate(self) -> None:
-        for label, value in (
-            ("task_id", self.task_id),
-            ("project_id", self.project_id),
-            ("dedupe_key", self.dedupe_key),
-            ("source_type", self.source_type),
-            ("goal", self.goal),
-            ("task_type", self.task_type),
-        ):
+        for label, value in (("source_type", self.source_type), ("goal", self.goal)):
             if not isinstance(value, str) or not value.strip():
                 raise InvalidTaskError(f"{label} must be a non-empty string")
+        validate_stable_id("task_id", self.task_id)
+        validate_stable_id("project_id", self.project_id)
+        validate_stable_id("dedupe_key", self.dedupe_key)
+        if self.supersedes is not None:
+            validate_stable_id("supersedes", self.supersedes)
         if self.revision < 1:
             raise InvalidTaskError("revision must be at least 1")
         if self.task_type not in {"codex", "write_files", "command"}:
             raise InvalidTaskError("task_type must be codex, write_files, or command")
         if not isinstance(self.acceptance_criteria, list):
             raise InvalidTaskError("acceptance_criteria must be an array")
+        seen_criteria: set[str] = set()
+        for index, criterion in enumerate(self.acceptance_criteria, start=1):
+            if isinstance(criterion, str):
+                if not criterion.strip():
+                    raise InvalidTaskError(f"acceptance criterion {index} must not be empty")
+                seen_criteria.add(f"criterion-{index}")
+                continue
+            if not isinstance(criterion, dict):
+                raise InvalidTaskError(f"acceptance criterion {index} must be a string or object")
+            forbidden = {"command", "argv"}.intersection(criterion)
+            if forbidden:
+                raise InvalidTaskError(
+                    "External acceptance criteria cannot contain command or argv"
+                )
+            allowed = {"id", "text", "criterion", "verification_id"}
+            unknown = set(criterion).difference(allowed)
+            if unknown:
+                raise InvalidTaskError(
+                    f"Unsupported acceptance criterion fields: {', '.join(sorted(unknown))}"
+                )
+            criterion_id = criterion.get("id") or f"criterion-{index}"
+            validate_stable_id("criterion id", criterion_id)
+            if criterion_id in seen_criteria:
+                raise InvalidTaskError(f"Duplicate criterion id: {criterion_id}")
+            seen_criteria.add(criterion_id)
+            text = criterion.get("text") or criterion.get("criterion")
+            if not isinstance(text, str) or not text.strip():
+                raise InvalidTaskError(f"acceptance criterion {criterion_id} requires text")
+            verification_id = criterion.get("verification_id")
+            if verification_id is not None:
+                validate_stable_id("verification_id", verification_id)
         if not isinstance(self.payload, dict):
             raise InvalidTaskError("payload must be an object")
+        timeout = self.payload.get("timeout_seconds")
+        if timeout is not None and (
+            not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600
+        ):
+            raise InvalidTaskError("timeout_seconds must be an integer from 1 to 3600")
+        if self.task_type == "command":
+            command_name = self.payload.get("command")
+            validate_stable_id("command name", command_name)
+            if "argv" in self.payload:
+                raise InvalidTaskError("command tasks may reference only an allowlisted command name")
+        elif self.task_type == "codex":
+            prompt = self.payload.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip():
+                raise InvalidTaskError("codex task requires a non-empty prompt")
         parse_timestamp(self.expires_at)
 
     def as_record(self) -> dict[str, Any]:

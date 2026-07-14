@@ -54,7 +54,57 @@ class CLITests(unittest.TestCase):
         value = json.loads(shown)
         self.assertIn("attempts", value)
         self.assertIn("verification", value)
+        self.assertIn("reviews", value)
         self.assertIn("events", value)
+
+    def test_source_neutral_enqueue_and_commit_bound_review_commands(self) -> None:
+        task_file = self.fixture.root / "task.json"
+        task_file.write_text(
+            json.dumps(
+                {
+                    "task_id": "cli-enqueue",
+                    "project_id": "project-one",
+                    "dedupe_key": "cli-enqueue",
+                    "revision": 1,
+                    "source_type": "file",
+                    "goal": "Exercise CLI ingress",
+                    "payload": {"prompt": "implement"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        code, output = self.invoke("tasks", "enqueue", "--file", str(task_file), "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["status"], "created")
+        self.fixture.store.claim_next()
+        head = "a" * 40
+        self.fixture.store.set_task_fields("cli-enqueue", head_sha=head, commit=head)
+        self.fixture.store.transition("cli-enqueue", TaskStatus.AWAITING_REVIEW)
+        review_file = self.fixture.root / "review.json"
+        review_file.write_text(
+            json.dumps(
+                {
+                    "head_sha": head,
+                    "verdict": "needs_changes",
+                    "findings": [
+                        {
+                            "severity": "major",
+                            "file": "src/example.py",
+                            "evidence": "Missing behavior",
+                            "requirement": "Add behavior",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        code, output = self.invoke(
+            "tasks", "review", "cli-enqueue", "--file", str(review_file), "--json"
+        )
+        value = json.loads(output)
+        self.assertEqual(code, 0)
+        self.assertEqual(value["status"], TaskStatus.NEEDS_CHANGES.value)
+        self.assertEqual(value["review"]["findings"][0]["severity"], "major")
 
     def test_health_reports_runtime_database_and_registered_project(self) -> None:
         code, output = self.invoke("health", "--json")
@@ -68,7 +118,7 @@ class CLITests(unittest.TestCase):
     def test_cleanup_defaults_to_dry_run_and_requires_execute(self) -> None:
         self.fixture.add_task("cleanup-task")
         task = self.fixture.store.claim_next()
-        manager = WorktreeManager(self.fixture.store)
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
         record = manager.create(task, self.project)
         self.fixture.store.transition("cleanup-task", TaskStatus.FAILED)
         _, preview = self.invoke("cleanup", "--json")

@@ -18,7 +18,7 @@ class WorktreeManagerTests(unittest.TestCase):
         self.project = self.fixture.add_project(
             repo_path=str(self.repo), remote_url=str(self.remote)
         )
-        self.manager = WorktreeManager(self.fixture.store)
+        self.manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
 
     def tearDown(self) -> None:
         self.fixture.close()
@@ -65,9 +65,7 @@ class WorktreeManagerTests(unittest.TestCase):
     def test_fetch_failure_is_classified_and_does_not_switch_main(self) -> None:
         git(self.repo, "remote", "set-url", "origin", str(self.fixture.root / "missing.git"))
         task = self._running_task()
-        from project_brain.errors import FetchError
-
-        with self.assertRaises(FetchError):
+        with self.assertRaises(WorktreeError):
             self.manager.create(task, self.project)
         self.assertEqual(git(self.repo, "branch", "--show-current").stdout.strip(), "main")
 
@@ -143,6 +141,16 @@ class WorktreeManagerTests(unittest.TestCase):
         with self.assertRaises(WorktreeError):
             self.manager.cleanup_task(task["task_id"], dry_run=False)
         self.assertTrue(Path(record["path"]).exists())
+
+    def test_existing_task_worktree_must_match_registered_head_before_reuse(self) -> None:
+        task = self._running_task()
+        record = self.manager.create(task, self.project)
+        worktree = Path(record["path"])
+        (worktree / "untrusted.txt").write_text("unexpected\n", encoding="utf-8")
+        git(worktree, "add", ".")
+        git(worktree, "commit", "-m", "unexpected commit")
+        with self.assertRaises(WorktreeError):
+            self.manager.create(self.fixture.store.get_task(task["task_id"]), self.project)
 
     def test_terminal_task_can_be_cleaned_and_pruned(self) -> None:
         task = self._running_task()

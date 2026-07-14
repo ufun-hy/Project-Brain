@@ -33,19 +33,11 @@ from googleapiclient.errors import HttpError
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 SCRIPT_DIR = Path(__file__).resolve().parent
-RUNTIME_ROOT = Path(
-    os.environ.get("PROJECT_BRAIN_RUNTIME_ROOT", "~/.project-brain")
-).expanduser().resolve()
-CONFIG_DIR = RUNTIME_ROOT / "config"
-CREDENTIALS_PATH = Path(
-    os.environ.get("PB_GMAIL_CREDENTIALS", CONFIG_DIR / "credentials.json")
-).expanduser()
-TOKEN_PATH = Path(
-    os.environ.get("PB_GMAIL_TOKEN", CONFIG_DIR / "token.json")
-).expanduser()
+CREDENTIALS_PATH = SCRIPT_DIR / "credentials.json"
+TOKEN_PATH = SCRIPT_DIR / "token.json"
 
-DEFAULT_QUERY = "is:unread newer_than:30d"
-DEFAULT_ALLOWED_SENDER = ""
+DEFAULT_QUERY = 'is:unread from:hy404051@gmail.com newer_than:30d'
+DEFAULT_ALLOWED_SENDER = "hy404051@gmail.com"
 
 
 def decode_header_value(value: str | None) -> str:
@@ -141,7 +133,6 @@ def load_credentials() -> Credentials:
             )
             creds = flow.run_local_server(port=0)
 
-        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
         TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
 
     return creds
@@ -247,9 +238,6 @@ def main() -> int:
     allowed_sender = os.environ.get(
         "PB_ALLOWED_SENDER", DEFAULT_ALLOWED_SENDER
     )
-    if not allowed_sender:
-        print("Configuration error: PB_ALLOWED_SENDER is required", file=sys.stderr)
-        return 2
 
     try:
         messages = read_messages(

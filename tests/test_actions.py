@@ -31,6 +31,17 @@ class ActionSafetyTests(unittest.TestCase):
                 {"files": [{"path": ".git/config", "content": "no"}]},
             )
 
+    def test_write_files_rejects_parent_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as outside_temp:
+            outside = Path(outside_temp)
+            (self.worktree / "linked").symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(InvalidPathError):
+                write_files(
+                    self.worktree,
+                    {"files": [{"path": "linked/escape.txt", "content": "no"}]},
+                )
+            self.assertFalse((outside / "escape.txt").exists())
+
     def test_command_task_accepts_only_local_allowlist_names(self) -> None:
         project = {"allowed_commands": {"safe": [sys.executable, "-c", "print('ok')"]}}
         result = run_named_command(self.worktree, {"command": "safe"}, project)

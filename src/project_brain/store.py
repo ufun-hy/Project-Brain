@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .errors import InvalidTaskError, StateTransitionError
+from .errors import InvalidTaskError, MigrationError, StateTransitionError
 from .models import (
     ALLOWED_TRANSITIONS,
+    AttemptPhase,
     CLAIMABLE_STATUSES,
     CanonicalTask,
     Project,
@@ -33,12 +35,22 @@ def _loads(value: str | None, default: Any) -> Any:
 
 
 class TaskStore:
-    def __init__(self, database: str | Path) -> None:
+    def __init__(
+        self,
+        database: str | Path,
+        *,
+        migrations: dict[int, str] | None = None,
+        schema_version: int | None = None,
+    ) -> None:
         self.database = Path(database).expanduser().resolve()
+        self.migrations = dict(MIGRATIONS if migrations is None else migrations)
+        self.supported_schema_version = SCHEMA_VERSION if schema_version is None else schema_version
 
     def connect(self) -> sqlite3.Connection:
         self.database.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.database.parent, 0o700)
         connection = sqlite3.connect(self.database, timeout=30)
+        os.chmod(self.database, 0o600)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
@@ -59,6 +71,12 @@ class TaskStore:
 
     def initialize(self) -> None:
         with self.transaction(immediate=True) as connection:
+            user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if user_version > self.supported_schema_version:
+                raise MigrationError(
+                    f"Database schema {user_version} is newer than supported "
+                    f"{self.supported_schema_version}"
+                )
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
                 "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -67,15 +85,38 @@ class TaskStore:
                 int(row["version"])
                 for row in connection.execute("SELECT version FROM schema_migrations")
             }
-            for version, migration in MIGRATIONS.items():
+            if applied and max(applied) > self.supported_schema_version:
+                raise MigrationError(
+                    f"Database migration {max(applied)} is newer than supported "
+                    f"{self.supported_schema_version}"
+                )
+            for version, migration in sorted(self.migrations.items()):
+                if version > self.supported_schema_version:
+                    continue
                 if version in applied:
                     continue
-                connection.executescript(migration)
+                for statement in self._migration_statements(migration):
+                    connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, utc_now()),
                 )
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute(f"PRAGMA user_version = {self.supported_schema_version}")
+
+    @staticmethod
+    def _migration_statements(script: str) -> list[str]:
+        statements: list[str] = []
+        pending = ""
+        for character in script:
+            pending += character
+            if character == ";" and sqlite3.complete_statement(pending):
+                statement = pending.strip()
+                if statement:
+                    statements.append(statement)
+                pending = ""
+        if pending.strip():
+            raise MigrationError("Incomplete SQL migration statement")
+        return statements
 
     def schema_version(self) -> int:
         with self.connect() as connection:
@@ -83,7 +124,13 @@ class TaskStore:
             return int(row[0])
 
     def register_project(self, project: Project | dict[str, Any]) -> dict[str, Any]:
-        record = project.as_record() if isinstance(project, Project) else dict(project)
+        if isinstance(project, Project):
+            record = project.as_record()
+        else:
+            try:
+                record = Project(**dict(project)).as_record()
+            except TypeError as exc:
+                raise InvalidTaskError(f"Invalid project record: {exc}") from exc
         commands = [record.get("codex_command") or []]
         commands.extend((record.get("allowed_commands") or {}).values())
         for check in record.get("verification_commands") or []:
@@ -205,10 +252,25 @@ class TaskStore:
             ).fetchone()
             if logical is not None:
                 return self._task(logical), False
-            if connection.execute(
-                "SELECT 1 FROM projects WHERE project_id = ?", (record["project_id"],)
-            ).fetchone() is None:
+            project_row = connection.execute(
+                "SELECT verification_commands_json FROM projects WHERE project_id = ?",
+                (record["project_id"],),
+            ).fetchone()
+            if project_row is None:
                 raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
+            trusted_ids = {
+                check.get("id")
+                for check in _loads(project_row["verification_commands_json"], [])
+                if isinstance(check, dict) and check.get("id")
+            }
+            for criterion in record.get("acceptance_criteria", []):
+                if not isinstance(criterion, dict) or not criterion.get("verification_id"):
+                    continue
+                if criterion["verification_id"] not in trusted_ids:
+                    raise InvalidTaskError(
+                        f"Unknown trusted verification_id for {record['project_id']}: "
+                        f"{criterion['verification_id']}"
+                    )
             if record.get("supersedes"):
                 old = connection.execute(
                     "SELECT * FROM tasks WHERE task_id = ?", (record["supersedes"],)
@@ -326,9 +388,21 @@ class TaskStore:
                     f"Invalid task transition: {current.value} -> {target.value}"
                 )
             now = utc_now()
+            phase = (
+                AttemptPhase.IMPLEMENTATION.value
+                if target is TaskStatus.NEEDS_CHANGES
+                else row["attempt_phase"]
+            )
             connection.execute(
-                "UPDATE tasks SET status = ?, updated_at = ?, last_error = ? WHERE task_id = ?",
-                (target.value, now, redact_text(last_error) if last_error else None, task_id),
+                "UPDATE tasks SET status = ?, attempt_phase = ?, updated_at = ?, "
+                "last_error = ? WHERE task_id = ?",
+                (
+                    target.value,
+                    phase,
+                    now,
+                    redact_text(last_error) if last_error else None,
+                    task_id,
+                ),
             )
             self._event(
                 connection,
@@ -375,22 +449,36 @@ class TaskStore:
             ).fetchone()
             if row is None:
                 return None
+            phase = (
+                AttemptPhase.IMPLEMENTATION.value
+                if row["status"] in {TaskStatus.PENDING.value, TaskStatus.NEEDS_CHANGES.value}
+                else row["attempt_phase"]
+            )
             attempt_number = int(row["attempt_count"]) + 1
             connection.execute(
-                "UPDATE tasks SET status = ?, attempt_count = ?, updated_at = ?, last_error = NULL "
+                "UPDATE tasks SET status = ?, attempt_count = ?, attempt_phase = ?, "
+                "updated_at = ?, last_error = NULL "
                 "WHERE task_id = ? AND status = ?",
                 (
                     TaskStatus.RUNNING.value,
                     attempt_number,
+                    phase,
                     claimed_at,
                     row["task_id"],
                     row["status"],
                 ),
             )
             connection.execute(
-                "INSERT INTO task_attempts(task_id, attempt_number, status, started_at) "
-                "VALUES (?, ?, 'running', ?)",
-                (row["task_id"], attempt_number, claimed_at),
+                "INSERT INTO task_attempts(task_id, attempt_number, status, phase, base_sha, "
+                "head_sha, started_at) VALUES (?, ?, 'running', ?, ?, ?, ?)",
+                (
+                    row["task_id"],
+                    attempt_number,
+                    phase,
+                    row["commit_sha"] or row["base_sha"],
+                    row["head_sha"],
+                    claimed_at,
+                ),
             )
             self._event(
                 connection,
@@ -425,12 +513,34 @@ class TaskStore:
                 (
                     status,
                     error_category,
-                    error_message,
+                    redact_text(error_message) if error_message else None,
                     utc_now(),
                     task_id,
                     task["attempt_count"],
                 ),
             )
+
+    def set_attempt_phase(self, task_id: str, phase: AttemptPhase | str) -> dict[str, Any]:
+        phase_value = AttemptPhase(phase).value
+        task = self.get_task(task_id)
+        with self.transaction(immediate=True) as connection:
+            now = utc_now()
+            connection.execute(
+                "UPDATE tasks SET attempt_phase = ?, updated_at = ? WHERE task_id = ?",
+                (phase_value, now, task_id),
+            )
+            connection.execute(
+                "UPDATE task_attempts SET phase = ?, base_sha = COALESCE(base_sha, ?), "
+                "head_sha = ? WHERE task_id = ? AND attempt_number = ?",
+                (
+                    phase_value,
+                    task.get("commit") or task.get("base_sha"),
+                    task.get("head_sha"),
+                    task_id,
+                    task["attempt_count"],
+                ),
+            )
+        return self.get_task(task_id)
 
     def set_task_fields(self, task_id: str, **fields: Any) -> dict[str, Any]:
         aliases = {"commit": "commit_sha"}
@@ -443,6 +553,7 @@ class TaskStore:
             "commit_sha",
             "pr_url",
             "last_error",
+            "attempt_phase",
         }
         normalized = {aliases.get(key, key): value for key, value in fields.items()}
         if not normalized or any(key not in allowed for key in normalized):
@@ -615,13 +726,15 @@ class TaskStore:
             )
 
     def record_verification(self, task_id: str, result: dict[str, Any]) -> None:
+        task = self.get_task(task_id)
         with self.transaction(immediate=True) as connection:
             connection.execute(
                 """
                 INSERT INTO verification_results(
                     task_id, criterion_id, criterion_text, status, evidence_type,
-                    evidence_summary, command_json, exit_code, artifact_path, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    evidence_summary, command_json, exit_code, artifact_path,
+                    attempt_number, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -633,15 +746,23 @@ class TaskStore:
                     _json(result.get("command")) if result.get("command") else None,
                     result.get("exit_code"),
                     result.get("artifact_path"),
+                    task["attempt_count"],
                     result.get("created_at") or utc_now(),
                 ),
             )
 
-    def list_verifications(self, task_id: str) -> list[dict[str, Any]]:
+    def list_verifications(
+        self, task_id: str, *, attempt_number: int | None = None
+    ) -> list[dict[str, Any]]:
+        where = "task_id = ?"
+        values: list[Any] = [task_id]
+        if attempt_number is not None:
+            where += " AND attempt_number = ?"
+            values.append(attempt_number)
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM verification_results WHERE task_id = ? ORDER BY verification_id",
-                (task_id,),
+                f"SELECT * FROM verification_results WHERE {where} ORDER BY verification_id",
+                values,
             ).fetchall()
         values: list[dict[str, Any]] = []
         for row in rows:
@@ -649,6 +770,187 @@ class TaskStore:
             value["command"] = _loads(value.pop("command_json"), None)
             values.append(value)
         return values
+
+    def record_review(
+        self,
+        task_id: str,
+        *,
+        verdict: str,
+        findings: list[dict[str, Any]],
+        head_sha: str | None = None,
+    ) -> dict[str, Any]:
+        if verdict not in {"approved", "needs_changes"}:
+            raise InvalidTaskError("review verdict must be approved or needs_changes")
+        task = self.get_task(task_id)
+        bound_head = head_sha or task.get("commit") or task.get("head_sha")
+        if not bound_head or bound_head != (task.get("commit") or task.get("head_sha")):
+            raise InvalidTaskError("review head_sha must match the task canonical commit")
+        if not isinstance(findings, list):
+            raise InvalidTaskError("review findings must be an array")
+        normalized: list[dict[str, Any]] = []
+        for index, finding in enumerate(findings, start=1):
+            if not isinstance(finding, dict):
+                raise InvalidTaskError(f"review finding {index} must be an object")
+            unknown = set(finding).difference({"severity", "file", "evidence", "requirement"})
+            if unknown:
+                raise InvalidTaskError(
+                    f"Unsupported review finding fields: {', '.join(sorted(unknown))}"
+                )
+            severity = finding.get("severity")
+            evidence = finding.get("evidence")
+            requirement = finding.get("requirement")
+            file_value = finding.get("file")
+            if severity not in {"blocker", "critical", "major", "minor", "nit"}:
+                raise InvalidTaskError(f"Invalid review finding severity: {severity}")
+            if not isinstance(evidence, str) or not evidence.strip():
+                raise InvalidTaskError("review finding evidence must be non-empty")
+            if not isinstance(requirement, str) or not requirement.strip():
+                raise InvalidTaskError("review finding requirement must be non-empty")
+            if file_value is not None and (
+                not isinstance(file_value, str) or not file_value.strip()
+            ):
+                raise InvalidTaskError("review finding file must be a non-empty string")
+            normalized.append(
+                {
+                    "severity": severity,
+                    "file": redact_text(file_value) if file_value else None,
+                    "evidence": redact_text(evidence),
+                    "requirement": redact_text(requirement),
+                }
+            )
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            cursor = connection.execute(
+                "INSERT INTO reviews(task_id, head_sha, verdict, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, bound_head, verdict, now),
+            )
+            review_id = int(cursor.lastrowid)
+            for finding in normalized:
+                connection.execute(
+                    """
+                    INSERT INTO review_findings(
+                        review_id, task_id, head_sha, severity, file, evidence,
+                        requirement, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        review_id,
+                        task_id,
+                        bound_head,
+                        finding["severity"],
+                        finding["file"],
+                        finding["evidence"],
+                        finding["requirement"],
+                        now,
+                    ),
+                )
+            self._event(
+                connection,
+                task_id,
+                "review_recorded",
+                task["status"],
+                task["status"],
+                {"review_id": review_id, "head_sha": bound_head, "verdict": verdict},
+            )
+        return self.get_review(review_id)
+
+    def get_review(self, review_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+            ).fetchone()
+            findings = connection.execute(
+                "SELECT * FROM review_findings WHERE review_id = ? ORDER BY finding_id",
+                (review_id,),
+            ).fetchall()
+        if row is None:
+            raise InvalidTaskError(f"Unknown review: {review_id}")
+        value = dict(row)
+        value["findings"] = [dict(item) for item in findings]
+        return value
+
+    def list_reviews(self, task_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT review_id FROM reviews WHERE task_id = ? ORDER BY review_id",
+                (task_id,),
+            ).fetchall()
+        return [self.get_review(int(row["review_id"])) for row in rows]
+
+    def active_review_findings(self, task_id: str) -> list[dict[str, Any]]:
+        task = self.get_task(task_id)
+        head_sha = task.get("commit") or task.get("head_sha")
+        if not head_sha:
+            return []
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT review_findings.*
+                FROM review_findings
+                JOIN reviews USING(review_id)
+                WHERE review_findings.task_id = ?
+                  AND review_findings.head_sha = ?
+                  AND reviews.verdict = 'needs_changes'
+                ORDER BY finding_id
+                """,
+                (task_id, head_sha),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recover_running_task(
+        self,
+        task_id: str,
+        *,
+        target: TaskStatus | str,
+        reason: str,
+    ) -> dict[str, Any]:
+        target_status = TaskStatus(target)
+        if target_status not in {
+            TaskStatus.RETRY_PENDING,
+            TaskStatus.AWAITING_REVIEW,
+            TaskStatus.FAILED,
+        }:
+            raise InvalidTaskError(f"Unsupported recovery target: {target_status.value}")
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if row["status"] != TaskStatus.RUNNING.value:
+                raise StateTransitionError(f"Task is not running: {task_id}")
+            now = utc_now()
+            message = redact_text(reason)
+            connection.execute(
+                "UPDATE tasks SET status = ?, updated_at = ?, last_error = ? WHERE task_id = ?",
+                (target_status.value, now, message, task_id),
+            )
+            connection.execute(
+                """
+                UPDATE task_attempts
+                SET status = 'interrupted', error_category = 'recovery',
+                    error_message = ?, finished_at = ?
+                WHERE task_id = ? AND attempt_number = ? AND status = 'running'
+                """,
+                (message, now, task_id, row["attempt_count"]),
+            )
+            connection.execute(
+                """
+                UPDATE agent_sessions
+                SET status = 'interrupted', output_summary = ?, finished_at = ?
+                WHERE task_id = ? AND status = 'running'
+                """,
+                (message, now, task_id),
+            )
+            self._event(
+                connection,
+                task_id,
+                "task_recovered",
+                TaskStatus.RUNNING.value,
+                target_status.value,
+                {"reason": message, "phase": row["attempt_phase"]},
+            )
+        return self.get_task(task_id)
 
     def list_attempts(self, task_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:

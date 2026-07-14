@@ -16,7 +16,9 @@ from .engine import TaskEngine
 from .errors import AlreadyRunningError, ProjectBrainError
 from .locking import RuntimeLock
 from .models import TaskStatus, parse_timestamp
+from .ingress import TaskImporter
 from .projects import ProjectRegistry
+from .recovery import RecoveryManager
 from .runtime import RuntimePaths
 from .store import SCHEMA_VERSION, TaskStore
 from .worktrees import WorktreeManager
@@ -66,6 +68,19 @@ def build_parser() -> argparse.ArgumentParser:
     task_show = task_sub.add_parser("show")
     task_show.add_argument("task_id")
     _add_json(task_show)
+    task_enqueue = task_sub.add_parser("enqueue", help="Import a canonical task JSON file")
+    task_enqueue.add_argument("--file", type=Path, required=True)
+    _add_json(task_enqueue)
+    task_review = task_sub.add_parser("review", help="Record commit-bound review findings")
+    task_review.add_argument("task_id")
+    task_review.add_argument("--file", type=Path, required=True)
+    _add_json(task_review)
+    task_recover = task_sub.add_parser("recover", help="Reconcile an interrupted task")
+    task_recover.add_argument("task_id")
+    recovery_mode = task_recover.add_mutually_exclusive_group()
+    recovery_mode.add_argument("--dry-run", action="store_true", default=True)
+    recovery_mode.add_argument("--execute", action="store_true")
+    _add_json(task_recover)
 
     health = sub.add_parser("health", help="Check runtime and project prerequisites")
     _add_json(health)
@@ -80,11 +95,6 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--max-transient-attempts", type=int, default=3)
     _add_json(apply)
 
-    migrate = sub.add_parser("migrate", help="Import legacy state without deleting it")
-    migrate_sub = migrate.add_subparsers(dest="migrate_command", required=True)
-    bridge = migrate_sub.add_parser("bridge-v2")
-    bridge.add_argument("--config", type=Path, required=True)
-    _add_json(bridge)
     return parser
 
 
@@ -185,7 +195,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     runtime = RuntimePaths.from_value(args.runtime_root).ensure()
     store = TaskStore(runtime.database)
-    store.initialize()
+    try:
+        store.initialize()
+    except ProjectBrainError as exc:
+        value = {"status": "error", "error_category": exc.category, "error": str(exc)}
+        print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
+        return 2
     try:
         if args.command == "status":
             value = _status(store)
@@ -209,8 +224,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             task = _task_view(store.get_task(args.task_id), projects)
             task["attempts"] = store.list_attempts(args.task_id)
             task["verification"] = store.list_verifications(args.task_id)
+            task["reviews"] = store.list_reviews(args.task_id)
             task["events"] = store.list_events(args.task_id)
             _render(task, json_output=args.json_output)
+        elif args.command == "tasks" and args.tasks_command == "enqueue":
+            with RuntimeLock(runtime.lock_file):
+                task, created = TaskImporter(store).import_file(args.file)
+            _render(
+                {"status": "created" if created else "duplicate", "task": task},
+                json_output=args.json_output,
+            )
+        elif args.command == "tasks" and args.tasks_command == "review":
+            try:
+                review_value = json.loads(args.file.expanduser().resolve().read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError) as exc:
+                raise ProjectBrainError(f"Invalid review file: {exc}") from exc
+            if not isinstance(review_value, dict):
+                raise ProjectBrainError("Review file must contain a JSON object")
+            with RuntimeLock(runtime.lock_file):
+                review = store.record_review(
+                    args.task_id,
+                    verdict=review_value.get("verdict"),
+                    head_sha=review_value.get("head_sha"),
+                    findings=review_value.get("findings", []),
+                )
+                target = (
+                    TaskStatus.NEEDS_CHANGES
+                    if review["verdict"] == "needs_changes"
+                    else TaskStatus.READY_TO_MERGE
+                )
+                task = store.transition(
+                    args.task_id,
+                    target,
+                    event_type="review_verdict_applied",
+                    payload={"review_id": review["review_id"], "head_sha": review["head_sha"]},
+                )
+            _render({"status": task["status"], "task": task, "review": review}, json_output=args.json_output)
+        elif args.command == "tasks" and args.tasks_command == "recover":
+            manager = WorktreeManager(store, runtime)
+            with RuntimeLock(runtime.lock_file):
+                actions = RecoveryManager(store, manager).reconcile(
+                    args.task_id, execute=args.execute
+                )
+            _render(
+                {"mode": "execute" if args.execute else "dry_run", "actions": actions},
+                json_output=args.json_output,
+            )
         elif args.command == "health":
             value = _health(store, runtime)
             human = "\n".join(
@@ -220,7 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render(value, json_output=args.json_output, human=human)
             return 0 if value["status"] == "healthy" else 1
         elif args.command == "cleanup":
-            manager = WorktreeManager(store)
+            manager = WorktreeManager(store, runtime)
             if not args.execute:
                 value = {"mode": "dry_run", "worktrees": manager.cleanup_preview()}
             else:
@@ -243,15 +302,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     runtime,
                     max_transient_attempts=args.max_transient_attempts,
                 ).apply_once()
-            _render(value, json_output=args.json_output)
-        elif args.command == "migrate" and args.migrate_command == "bridge-v2":
-            with RuntimeLock(runtime.lock_file):
-                imported = ProjectRegistry(store, runtime).import_bridge_v2(args.config)
-            value = {
-                "status": "imported",
-                "source_preserved": str(args.config.expanduser().resolve()),
-                "projects": imported,
-            }
             _render(value, json_output=args.json_output)
         return 0
     except AlreadyRunningError:

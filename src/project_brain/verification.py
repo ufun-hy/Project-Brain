@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,24 @@ class VerificationRunner:
         worktree: str | Path,
     ) -> list[dict[str, Any]]:
         specs: list[dict[str, Any]] = []
+        trusted: dict[str, dict[str, Any]] = {}
+        for index, check in enumerate(project.get("verification_commands") or [], start=1):
+            if isinstance(check, list):
+                trusted[f"project-check-{index}"] = {
+                    "id": f"project-check-{index}",
+                    "text": f"Project check {index}",
+                    "command": check,
+                    "always_run": True,
+                }
+            elif isinstance(check, dict):
+                check_id = str(check.get("id") or f"project-check-{index}")
+                trusted[check_id] = {
+                    "id": check_id,
+                    "text": str(check.get("text") or check.get("name") or check_id),
+                    "command": check.get("command") or check.get("argv"),
+                    "always_run": bool(check.get("always_run", True)),
+                }
+        referenced: set[str] = set()
         for index, criterion in enumerate(task.get("acceptance_criteria") or [], start=1):
             if isinstance(criterion, str):
                 specs.append(
@@ -36,14 +55,24 @@ class VerificationRunner:
                     }
                 )
             elif isinstance(criterion, dict):
+                verification_id = criterion.get("verification_id")
+                command = None
+                evidence_type = "manual_required"
+                if verification_id:
+                    trusted_check = trusted.get(str(verification_id))
+                    if trusted_check is not None:
+                        command = trusted_check["command"]
+                        evidence_type = "trusted_project_command"
+                        referenced.add(str(verification_id))
                 specs.append(
                     {
                         "criterion_id": str(criterion.get("id") or f"criterion-{index}"),
                         "criterion_text": str(
                             criterion.get("text") or criterion.get("criterion") or f"Criterion {index}"
                         ),
-                        "command": criterion.get("command"),
-                        "evidence_type": "command" if criterion.get("command") else "manual_required",
+                        "verification_id": verification_id,
+                        "command": command,
+                        "evidence_type": evidence_type,
                     }
                 )
             else:
@@ -55,25 +84,16 @@ class VerificationRunner:
                         "evidence_type": "manual_required",
                     }
                 )
-        for index, check in enumerate(project.get("verification_commands") or [], start=1):
-            if isinstance(check, list):
-                command = check
-                check_id = f"project-check-{index}"
-                text = "Project verification: " + " ".join(check)
-            elif isinstance(check, dict):
-                command = check.get("command") or check.get("argv")
-                check_id = str(check.get("id") or f"project-check-{index}")
-                text = str(check.get("text") or check.get("name") or f"Project check {index}")
-            else:
-                command = None
-                check_id = f"project-check-{index}"
-                text = f"Invalid project verification at index {index}"
+        for check_id, check in trusted.items():
+            if check_id in referenced or not check["always_run"]:
+                continue
             specs.append(
                 {
                     "criterion_id": check_id,
-                    "criterion_text": text,
-                    "command": command,
-                    "evidence_type": "project_command" if command else "manual_required",
+                    "criterion_text": check["text"],
+                    "verification_id": check_id,
+                    "command": check["command"],
+                    "evidence_type": "trusted_project_command",
                 }
             )
 
@@ -111,6 +131,12 @@ class VerificationRunner:
                 text=True,
                 capture_output=True,
                 timeout=900,
+                env={
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_SYSTEM": os.devnull,
+                    "GIT_TERMINAL_PROMPT": "0",
+                },
             )
             status = "passed" if completed.returncode == 0 else "failed"
             exit_code: int | None = completed.returncode
@@ -123,14 +149,19 @@ class VerificationRunner:
             status = "failed"
             exit_code = None
             output = "Verification timed out after 900 seconds"
-        artifact_dir = self.runtime.results_dir / task_id
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            artifact_dir = self.runtime.task_result_dir(task_id, create=True)
+        except ValueError as exc:
+            from .errors import InvalidPathError
+
+            raise InvalidPathError(str(exc)) from exc
         safe_id = "".join(
             character if character.isalnum() or character in "-_" else "-"
             for character in spec["criterion_id"]
         )
         artifact = artifact_dir / f"verification-{safe_id}.txt"
         artifact.write_text(output[-20000:] + ("\n" if output else ""), encoding="utf-8")
+        os.chmod(artifact, 0o600)
         summary = (
             f"Command {status}; exit_code={exit_code}; artifact={artifact.name}"
         )
