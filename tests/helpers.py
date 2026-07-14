@@ -89,13 +89,15 @@ def create_remote_clone(root: Path, name: str = "repo") -> tuple[Path, Path]:
     git(seed, "add", "README.md")
     git(seed, "commit", "-m", "base")
     run("git", "init", "--bare", str(remote))
+    # Set the bare remote HEAD before cloning so hosts whose default initial
+    # branch is still `master` check out the intended `main` branch.
+    run("git", "--git-dir", str(remote), "symbolic-ref", "HEAD", "refs/heads/main")
     git(seed, "remote", "add", "origin", str(remote))
     git(seed, "push", "-u", "origin", "main")
     run("git", "clone", str(remote), str(clone))
     git(clone, "config", "user.email", "test@example.com")
     git(clone, "config", "user.name", "Project Brain Test")
-    # A bare repository initialized without an explicit default can leave clone detached.
-    run("git", "--git-dir", str(remote), "symbolic-ref", "HEAD", "refs/heads/main")
+    # Retain a fallback for older Git clone behavior.
     if not git(clone, "branch", "--show-current").stdout.strip():
         git(clone, "checkout", "-B", "main", "origin/main")
     return clone, remote
