@@ -8,7 +8,7 @@ if [[ ! -x .venv/bin/python ]]; then
   exit 1
 fi
 
-export PB_ALLOWED_SENDER="${PB_ALLOWED_SENDER:-hy404051@gmail.com}"
+: "${PB_ALLOWED_SENDER:?Set PB_ALLOWED_SENDER to the exact trusted sender address}"
 
 case "${1:-dry-run}" in
   dry-run)
@@ -18,7 +18,8 @@ case "${1:-dry-run}" in
     exec .venv/bin/python bridge_v2.py --apply
     ;;
   daemon)
-    exec .venv/bin/python daemon.py
+    echo "daemon mode is one-shot; schedule this command with launchd" >&2
+    exec .venv/bin/python bridge_v2.py --apply
     ;;
   *)
     echo "Usage: ./run_v2.sh [dry-run|apply|daemon]" >&2

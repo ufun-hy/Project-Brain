@@ -1,0 +1,198 @@
+"""One-task-per-process application service for Core execution."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .actions import run_named_command, write_files
+from .codex import CodexAdapter
+from .errors import ProjectBrainError, VerificationFailedError
+from .git_history import GitHistoryNormalizer, NormalizedHistory
+from .commands import git
+from .errors import TaskHistoryError
+from .github import GitHubAdapter
+from .models import TaskStatus
+from .runtime import RuntimePaths
+from .store import TaskStore
+from .verification import VerificationRunner
+from .worktrees import WorktreeManager
+
+
+class TaskEngine:
+    def __init__(
+        self,
+        store: TaskStore,
+        runtime: RuntimePaths,
+        *,
+        max_transient_attempts: int = 3,
+        worktrees: WorktreeManager | None = None,
+        normalizer: GitHistoryNormalizer | None = None,
+        codex: CodexAdapter | None = None,
+        verification: VerificationRunner | None = None,
+        github: GitHubAdapter | None = None,
+    ) -> None:
+        self.store = store
+        self.runtime = runtime
+        self.max_transient_attempts = max(1, max_transient_attempts)
+        self.worktrees = worktrees or WorktreeManager(store)
+        self.normalizer = normalizer or GitHistoryNormalizer()
+        self.codex = codex or CodexAdapter(store, self.normalizer)
+        self.verification = verification or VerificationRunner(store, runtime)
+        self.github = github or GitHubAdapter()
+
+    def apply_once(self) -> dict[str, Any]:
+        """Claim and execute no more than one task, then return structured state."""
+        # Production entrypoints hold RuntimeLock around this call. Cleanup uses
+        # database registration, task state, PID, heartbeat, and path checks.
+        self.worktrees.cleanup_stale(dry_run=False)
+        task = self.store.claim_next()
+        if task is None:
+            return {"status": "idle", "task": None}
+        project = self.store.get_project(task["project_id"])
+        try:
+            worktree_record = self.worktrees.create(task, project)
+            task = self.store.get_task(task["task_id"])
+            worktree = Path(worktree_record["path"])
+            if task.get("commit"):
+                history = self._resume_publication(task, worktree_record, worktree)
+                evidence = self.store.list_verifications(task["task_id"])
+            else:
+                snapshot = self.normalizer.capture(
+                    worktree,
+                    expected_branch=worktree_record["branch"],
+                    base_sha=worktree_record["base_sha"],
+                )
+                history = self._execute_action(task, project, worktree, snapshot)
+                task = self.store.set_task_fields(
+                    task["task_id"], head_sha=history.commit, commit=history.commit
+                )
+                evidence = self.verification.run(
+                    task=task, project=project, worktree=worktree
+                )
+            failed_evidence = [item for item in evidence if item["status"] == "failed"]
+            if failed_evidence:
+                names = ", ".join(item["criterion_id"] for item in failed_evidence)
+                raise VerificationFailedError(f"Verification failed: {names}")
+            if project.get("auto_push", True):
+                publication = self.github.publish(
+                    task=task, project=project, worktree=worktree
+                )
+                if publication.get("pr_url"):
+                    task = self.store.set_task_fields(
+                        task["task_id"], pr_url=publication["pr_url"]
+                    )
+            self.store.heartbeat_worktree(task["task_id"])
+            task = self.store.transition(
+                task["task_id"],
+                TaskStatus.AWAITING_REVIEW,
+                event_type="execution_completed",
+                payload={
+                    "commit": history.commit,
+                    "source_commits": history.source_commits,
+                    "changed_files": history.changed_files,
+                    "verification_count": len(evidence),
+                },
+            )
+            self.store.finish_attempt(task["task_id"], status="completed")
+            return {"status": task["status"], "task": task, "evidence": evidence}
+        except VerificationFailedError as exc:
+            task = self.store.transition(
+                task["task_id"],
+                TaskStatus.VERIFICATION_FAILED,
+                event_type="verification_failed",
+                payload={"category": exc.category},
+                last_error=str(exc),
+            )
+            self.store.finish_attempt(
+                task["task_id"],
+                status="verification_failed",
+                error_category=exc.category,
+                error_message=str(exc),
+            )
+            return {
+                "status": task["status"],
+                "task": task,
+                "evidence": self.store.list_verifications(task["task_id"]),
+            }
+        except Exception as exc:
+            return self._handle_error(task, exc)
+
+    def _execute_action(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        worktree: Path,
+        snapshot: Any,
+    ) -> NormalizedHistory:
+        if task["task_type"] == "codex":
+            return self.codex.execute(
+                task=task,
+                project=project,
+                worktree=worktree,
+                snapshot=snapshot,
+            )
+        if task["task_type"] == "write_files":
+            write_files(worktree, task["payload"])
+        elif task["task_type"] == "command":
+            run_named_command(worktree, task["payload"], project)
+        else:
+            raise ProjectBrainError(f"Unsupported task type: {task['task_type']}")
+        message = task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        return self.normalizer.normalize(worktree, snapshot, message=str(message))
+
+    @staticmethod
+    def _resume_publication(
+        task: dict[str, Any],
+        worktree_record: dict[str, Any],
+        worktree: Path,
+    ) -> NormalizedHistory:
+        branch = git(
+            worktree, "symbolic-ref", "--quiet", "--short", "HEAD", check=False
+        ).stdout.strip()
+        head = git(worktree, "rev-parse", "HEAD").stdout.strip()
+        status = git(worktree, "status", "--porcelain").stdout.strip()
+        if branch != worktree_record["branch"] or head != task["commit"] or status:
+            raise TaskHistoryError(
+                "Cannot resume publication because the recorded canonical worktree changed"
+            )
+        return NormalizedHistory(
+            commit=task["commit"],
+            head_before=head,
+            source_commits=[],
+            changed_files=[],
+        )
+
+    def _handle_error(self, task: dict[str, Any], exc: Exception) -> dict[str, Any]:
+        category = getattr(exc, "category", "unexpected")
+        retryable = bool(getattr(exc, "retryable", False))
+        current = self.store.get_task(task["task_id"])
+        if retryable and current["attempt_count"] < self.max_transient_attempts:
+            target = TaskStatus.RETRY_PENDING
+            attempt_status = "retry_pending"
+        else:
+            target = TaskStatus.FAILED
+            attempt_status = "failed"
+        updated = self.store.transition(
+            task["task_id"],
+            target,
+            event_type="execution_failed",
+            payload={"category": category, "retryable": retryable},
+            last_error=str(exc),
+        )
+        self.store.finish_attempt(
+            task["task_id"],
+            status=attempt_status,
+            error_category=category,
+            error_message=str(exc),
+        )
+        cleanup_error: str | None = None
+        if target == TaskStatus.FAILED and self.store.get_worktree(task["task_id"]):
+            try:
+                self.worktrees.cleanup_task(task["task_id"], dry_run=False)
+            except Exception as cleanup_exc:
+                cleanup_error = str(cleanup_exc)
+        result: dict[str, Any] = {"status": updated["status"], "task": updated}
+        if cleanup_error:
+            result["cleanup_error"] = cleanup_error
+        return result

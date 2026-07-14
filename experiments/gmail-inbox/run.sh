@@ -29,5 +29,7 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
-export PB_ALLOWED_SENDER="${PB_ALLOWED_SENDER:-hy404051@gmail.com}"
-python bridge.py --once --output output.json
+: "${PB_ALLOWED_SENDER:?Set PB_ALLOWED_SENDER to the exact trusted sender address}"
+RUNTIME_ROOT="${PROJECT_BRAIN_RUNTIME_ROOT:-$HOME/.project-brain}"
+mkdir -p "$RUNTIME_ROOT/results"
+python bridge.py --once --output "$RUNTIME_ROOT/results/gmail-read-only-output.json"

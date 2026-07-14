@@ -1,11 +1,11 @@
 {
-  "projects": {
-    "Project-Brain": {
-      "path": "~/code/Project-Brain",
-      "base_branch": "main",
+  "projects": [
+    {
+      "project_id": "project-brain",
+      "name": "Project-Brain",
+      "repo_path": "~/code/Project-Brain",
       "remote_url": "git@github.com:example/Project-Brain.git",
-      "auto_push": true,
-      "auto_pr": true,
+      "default_branch": "main",
       "codex_command": [
         "codex",
         "exec",
@@ -15,8 +15,8 @@
       ],
       "verification_commands": [
         {
-          "id": "tests",
-          "text": "Unit tests pass",
+          "id": "unit-tests",
+          "text": "Project unit tests pass",
           "command": [
             "python",
             "-m",
@@ -36,8 +36,9 @@
           "-s",
           "tests"
         ]
-      }
+      },
+      "auto_push": true,
+      "auto_pr": true
     }
-  },
-  "max_attempts": 3
+  ]
 }

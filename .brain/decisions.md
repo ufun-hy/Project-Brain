@@ -18,8 +18,42 @@ Because the ChatGPT GitHub connection is read-only, a local Bridge receives stru
 
 ## D-005: Keep the first state model minimal
 
-The first experiment uses only `problem.md`, `current.md`, and `decisions.md`. Tasks, events, databases, knowledge graphs, and MCP integrations are deferred until real usage proves they are necessary.
+The first context experiment used only `problem.md`, `current.md`, and
+`decisions.md`. Those project-owned context files remain minimal. Bridge usage
+subsequently proved the need for operational task/event persistence, which is
+now owned by Core SQLite rather than added to the context documents.
 
 ## D-006: Do not execute arbitrary remote shell commands
 
 The Bridge may write files, invoke Codex in registered repositories, or run locally allowlisted commands. It must not execute arbitrary shell text received from email.
+
+## D-007: Separate runtime state from source
+
+Configuration, SQLite state, worktrees, evidence artifacts, logs, OAuth tokens,
+and other mutable runtime files live under an overridable
+`~/.project-brain/`. Git contains only source, examples, documentation, and
+tests.
+
+## D-008: Use stable identities and SQLite events
+
+Projects use stable `project_id` values and tasks use `task_id`, `dedupe_key`,
+and revision. Gmail message IDs are source metadata only. Transactional SQLite
+state and append-only events replace processed/failure JSON as the Core source
+of truth.
+
+## D-009: Execute only in registered task worktrees
+
+Core fetches the latest remote default branch and creates one worktree per task.
+The registered main checkout may be dirty or on any branch and must never be
+checked out, reset, cleaned, or used as the Codex working directory.
+
+## D-010: Separate execution from review and acceptance
+
+A successful execution records criterion-specific evidence and enters
+`awaiting_review`. ChatGPT can review evidence, but the user controls acceptance
+and merge authorization. Core does not automatically merge.
+
+## D-011: Use one-shot locked execution
+
+Manual and scheduled apply commands share a runtime `flock`. Each process
+claims at most one task and exits so the next launch loads current code.

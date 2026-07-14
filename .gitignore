@@ -24,3 +24,13 @@ experiments/gmail-inbox/.venv/
 
 # Local distribution archives
 *.zip
+
+# Python and Core local runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+*.db
+*.db-shm
+*.db-wal
+.project-brain/
