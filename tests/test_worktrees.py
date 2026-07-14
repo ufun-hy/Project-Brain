@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import stat
 import unittest
 from pathlib import Path
 
 from project_brain.errors import InvalidPathError, WorktreeError
+from project_brain.forensics import FailureForensics, TerminalWorktreeReconciler
 from project_brain.models import TaskStatus
 from project_brain.worktrees import WorktreeManager
 
@@ -156,7 +158,16 @@ class WorktreeManagerTests(unittest.TestCase):
         task = self._running_task()
         record = self.manager.create(task, self.project)
         self.fixture.store.transition(task["task_id"], TaskStatus.FAILED)
-        result = self.manager.cleanup_task(task["task_id"], dry_run=False)
+        with self.assertRaises(WorktreeError):
+            self.manager.cleanup_task(task["task_id"], dry_run=False)
+        archive = FailureForensics(
+            self.fixture.store, self.fixture.runtime, self.manager
+        ).capture(task["task_id"])
+        result = self.manager.cleanup_task(
+            task["task_id"],
+            dry_run=False,
+            forensic_archive_id=archive["archive_id"],
+        )
         self.assertEqual(result["action"], "cleaned")
         self.assertFalse(Path(record["path"]).exists())
         self.assertEqual(self.fixture.store.get_worktree(task["task_id"])["status"], "cleaned")
@@ -175,19 +186,46 @@ class WorktreeManagerTests(unittest.TestCase):
             self.manager.cleanup_task(task["task_id"], dry_run=False)
         self.assertTrue(Path(record["path"]).exists())
 
-    def test_startup_cleanup_removes_terminal_worktree_with_dead_owner(self) -> None:
+    def test_reconciler_archives_terminal_worktree_before_cleanup(self) -> None:
         task = self._running_task()
         record = self.manager.create(task, self.project)
+        worktree = Path(record["path"])
+        (worktree / "README.md").write_text("failed tracked change\n", encoding="utf-8")
+        (worktree / "untracked.txt").write_text("failed untracked change\n", encoding="utf-8")
         with self.fixture.store.transaction(immediate=True) as connection:
             connection.execute(
                 "UPDATE worktrees SET owner_pid = 99999999 WHERE task_id = ?",
                 (task["task_id"],),
             )
         self.fixture.store.transition(task["task_id"], TaskStatus.FAILED)
-        results = self.manager.cleanup_stale(dry_run=False)
+        results = TerminalWorktreeReconciler(
+            self.fixture.store, self.fixture.runtime, self.manager
+        ).reconcile(execute=True)
         cleaned = next(item for item in results if item["task_id"] == task["task_id"])
         self.assertEqual(cleaned["action"], "cleaned")
+        archive = self.fixture.store.get_forensic_archive(task["task_id"])
+        self.assertIsNotNone(archive)
+        archive_path = Path(archive["artifact_path"])
+        self.assertTrue((archive_path / "manifest.json").is_file())
+        self.assertIn(
+            "failed tracked change",
+            (archive_path / "worktree.diff").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            (archive_path / "untracked" / "untracked.txt").read_text(encoding="utf-8"),
+            "failed untracked change\n",
+        )
+        for evidence in archive_path.rglob("*"):
+            if evidence.is_file():
+                self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o600)
         self.assertFalse(Path(record["path"]).exists())
+        event_types = [
+            event["event_type"] for event in self.fixture.store.list_events(task["task_id"])
+        ]
+        self.assertLess(
+            event_types.index("forensic_archive_created"),
+            event_types.index("worktree_cleaned"),
+        )
 
     def test_cleanup_never_deletes_pushed_remote_branch(self) -> None:
         task = self._running_task()
@@ -198,7 +236,14 @@ class WorktreeManagerTests(unittest.TestCase):
         git(worktree, "commit", "-m", "pushed task")
         git(worktree, "push", "-u", "origin", record["branch"])
         self.fixture.store.transition(task["task_id"], TaskStatus.FAILED)
-        self.manager.cleanup_task(task["task_id"], dry_run=False)
+        archive = FailureForensics(
+            self.fixture.store, self.fixture.runtime, self.manager
+        ).capture(task["task_id"])
+        self.manager.cleanup_task(
+            task["task_id"],
+            dry_run=False,
+            forensic_archive_id=archive["archive_id"],
+        )
         remote = git(
             self.repo,
             "ls-remote",

@@ -470,13 +470,15 @@ class TaskStore:
             )
             connection.execute(
                 "INSERT INTO task_attempts(task_id, attempt_number, status, phase, base_sha, "
-                "head_sha, started_at) VALUES (?, ?, 'running', ?, ?, ?, ?)",
+                "head_sha, verification_set_id, started_at) "
+                "VALUES (?, ?, 'running', ?, ?, ?, ?, ?)",
                 (
                     row["task_id"],
                     attempt_number,
                     phase,
                     row["commit_sha"] or row["base_sha"],
                     row["head_sha"],
+                    row["verification_set_id"],
                     claimed_at,
                 ),
             )
@@ -700,15 +702,84 @@ class TaskStore:
             connection.execute(
                 """
                 INSERT INTO agent_sessions(
-                    session_id, task_id, adapter, command_json, status, started_at
-                ) VALUES (?, ?, ?, ?, 'running', ?)
+                    session_id, task_id, adapter, command_json, status,
+                    started_at, heartbeat_at
+                ) VALUES (?, ?, ?, ?, 'starting', ?, ?)
                 """,
-                (session_id, task_id, adapter, _json(command), utc_now()),
+                (session_id, task_id, adapter, _json(command), utc_now(), utc_now()),
             )
             connection.execute(
                 "UPDATE tasks SET agent_session_id = ?, updated_at = ? WHERE task_id = ?",
                 (session_id, utc_now(), task_id),
             )
+
+    def start_agent_session(
+        self,
+        session_id: str,
+        *,
+        child_pid: int,
+        child_pgid: int,
+    ) -> None:
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE agent_sessions
+                SET status = 'running', child_pid = ?, child_pgid = ?, heartbeat_at = ?
+                WHERE session_id = ? AND status = 'starting'
+                """,
+                (child_pid, child_pgid, now, session_id),
+            )
+            if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                raise InvalidTaskError(f"Agent session is not starting: {session_id}")
+
+    def heartbeat_agent_session(self, session_id: str, *, task_id: str) -> None:
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE agent_sessions SET heartbeat_at = ?
+                WHERE session_id = ? AND task_id = ? AND status = 'running'
+                """,
+                (now, session_id, task_id),
+            )
+            if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                raise InvalidTaskError(f"Agent session is not running: {session_id}")
+            connection.execute(
+                """
+                UPDATE worktrees SET heartbeat_at = ?
+                WHERE task_id = ? AND status = 'active'
+                """,
+                (now, task_id),
+            )
+
+    def get_agent_session(self, session_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            raise InvalidTaskError(f"Unknown agent session: {session_id}")
+        value = dict(row)
+        value["command"] = _loads(value.pop("command_json"), [])
+        return value
+
+    def active_agent_session(self, task_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT sessions.*
+                FROM agent_sessions AS sessions
+                JOIN tasks ON tasks.agent_session_id = sessions.session_id
+                WHERE tasks.task_id = ? AND sessions.status IN ('starting', 'running')
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        value["command"] = _loads(value.pop("command_json"), [])
+        return value
 
     def finish_agent_session(
         self,
@@ -721,20 +792,132 @@ class TaskStore:
         with self.transaction(immediate=True) as connection:
             connection.execute(
                 "UPDATE agent_sessions SET status = ?, exit_code = ?, output_summary = ?, "
-                "finished_at = ? WHERE session_id = ?",
-                (status, exit_code, output_summary, utc_now(), session_id),
+                "heartbeat_at = ?, finished_at = ? WHERE session_id = ?",
+                (status, exit_code, output_summary, utc_now(), utc_now(), session_id),
             )
 
-    def record_verification(self, task_id: str, result: dict[str, Any]) -> None:
-        task = self.get_task(task_id)
+    def create_verification_set(
+        self,
+        task_id: str,
+        *,
+        canonical_head_sha: str,
+    ) -> dict[str, Any]:
+        if not isinstance(canonical_head_sha, str) or not canonical_head_sha:
+            raise InvalidTaskError("verification set requires a canonical head")
+        now = utc_now()
         with self.transaction(immediate=True) as connection:
+            task = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if task["status"] != TaskStatus.RUNNING.value:
+                raise StateTransitionError(f"Task is not running: {task_id}")
+            if task["attempt_phase"] != AttemptPhase.VERIFICATION.value:
+                raise StateTransitionError(f"Task is not in verification phase: {task_id}")
+            if canonical_head_sha != task["commit_sha"]:
+                raise InvalidTaskError(
+                    "verification set head must match the task canonical commit"
+                )
+            cursor = connection.execute(
+                """
+                INSERT INTO verification_sets(
+                    task_id, canonical_head_sha, source_attempt_number, status, created_at
+                ) VALUES (?, ?, ?, 'running', ?)
+                """,
+                (task_id, canonical_head_sha, task["attempt_count"], now),
+            )
+            verification_set_id = int(cursor.lastrowid)
+            connection.execute(
+                "UPDATE tasks SET verification_set_id = ?, updated_at = ? WHERE task_id = ?",
+                (verification_set_id, now, task_id),
+            )
+            connection.execute(
+                """
+                UPDATE task_attempts SET verification_set_id = ?
+                WHERE task_id = ? AND attempt_number = ? AND status = 'running'
+                """,
+                (verification_set_id, task_id, task["attempt_count"]),
+            )
+            self._event(
+                connection,
+                task_id,
+                "verification_set_created",
+                task["status"],
+                task["status"],
+                {
+                    "verification_set_id": verification_set_id,
+                    "canonical_head_sha": canonical_head_sha,
+                    "source_attempt_number": task["attempt_count"],
+                },
+            )
+            row = connection.execute(
+                "SELECT * FROM verification_sets WHERE verification_set_id = ?",
+                (verification_set_id,),
+            ).fetchone()
+            assert row is not None
+            return dict(row)
+
+    def get_verification_set(self, verification_set_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM verification_sets WHERE verification_set_id = ?",
+                (verification_set_id,),
+            ).fetchone()
+        if row is None:
+            raise InvalidTaskError(f"Unknown verification set: {verification_set_id}")
+        return dict(row)
+
+    def finalize_verification_set(self, verification_set_id: int, *, status: str) -> None:
+        if status not in {"completed", "failed"}:
+            raise InvalidTaskError("verification set status must be completed or failed")
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE verification_sets SET status = ?, completed_at = ?
+                WHERE verification_set_id = ? AND status = 'running'
+                """,
+                (status, now, verification_set_id),
+            )
+            if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                raise StateTransitionError(
+                    f"Verification set is not running: {verification_set_id}"
+                )
+
+    def record_verification(
+        self,
+        task_id: str,
+        verification_set_id: int,
+        result: dict[str, Any],
+    ) -> None:
+        with self.transaction(immediate=True) as connection:
+            task = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            verification_set = connection.execute(
+                "SELECT * FROM verification_sets WHERE verification_set_id = ?",
+                (verification_set_id,),
+            ).fetchone()
+            if task is None or verification_set is None:
+                raise InvalidTaskError("Unknown task or verification set")
+            if (
+                verification_set["task_id"] != task_id
+                or verification_set["status"] != "running"
+                or task["verification_set_id"] != verification_set_id
+                or task["commit_sha"] != verification_set["canonical_head_sha"]
+                or task["attempt_count"] != verification_set["source_attempt_number"]
+            ):
+                raise StateTransitionError(
+                    "Verification evidence does not match the active canonical verification set"
+                )
             connection.execute(
                 """
                 INSERT INTO verification_results(
                     task_id, criterion_id, criterion_text, status, evidence_type,
                     evidence_summary, command_json, exit_code, artifact_path,
-                    attempt_number, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    attempt_number, verification_set_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -746,19 +929,31 @@ class TaskStore:
                     _json(result.get("command")) if result.get("command") else None,
                     result.get("exit_code"),
                     result.get("artifact_path"),
-                    task["attempt_count"],
+                    verification_set["source_attempt_number"],
+                    verification_set_id,
                     result.get("created_at") or utc_now(),
                 ),
             )
 
     def list_verifications(
-        self, task_id: str, *, attempt_number: int | None = None
+        self,
+        task_id: str,
+        *,
+        attempt_number: int | None = None,
+        verification_set_id: int | None = None,
     ) -> list[dict[str, Any]]:
+        if attempt_number is not None and verification_set_id is not None:
+            raise InvalidTaskError(
+                "Filter verification evidence by attempt or verification set, not both"
+            )
         where = "task_id = ?"
         values: list[Any] = [task_id]
         if attempt_number is not None:
             where += " AND attempt_number = ?"
             values.append(attempt_number)
+        if verification_set_id is not None:
+            where += " AND verification_set_id = ?"
+            values.append(verification_set_id)
         with self.connect() as connection:
             rows = connection.execute(
                 f"SELECT * FROM verification_results WHERE {where} ORDER BY verification_id",
@@ -771,20 +966,106 @@ class TaskStore:
             values.append(value)
         return values
 
-    def record_review(
+    def publication_evidence(self, task_id: str) -> list[dict[str, Any]]:
+        """Return evidence bound to the task's exact canonical head and set."""
+        with self.connect() as connection:
+            task = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            verification_set_id = task["verification_set_id"]
+            if verification_set_id is None:
+                raise StateTransitionError(
+                    f"Task has no canonical verification set: {task_id}"
+                )
+            verification_set = connection.execute(
+                "SELECT * FROM verification_sets WHERE verification_set_id = ?",
+                (verification_set_id,),
+            ).fetchone()
+            if (
+                verification_set is None
+                or verification_set["task_id"] != task_id
+                or verification_set["canonical_head_sha"] != task["commit_sha"]
+                or verification_set["status"] != "completed"
+            ):
+                raise StateTransitionError(
+                    "Publication evidence is not a completed set for the canonical head"
+                )
+        return self.list_verifications(
+            task_id, verification_set_id=int(verification_set_id)
+        )
+
+    def record_forensic_archive(
+        self,
+        *,
+        task_id: str,
+        worktree_id: int,
+        artifact_path: str,
+        manifest_sha256: str,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO forensic_archives(
+                    task_id, worktree_id, artifact_path, manifest_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (task_id, worktree_id, artifact_path, manifest_sha256, now),
+            )
+            archive_id = int(cursor.lastrowid)
+            self._event(
+                connection,
+                task_id,
+                "forensic_archive_created",
+                None,
+                None,
+                {
+                    "archive_id": archive_id,
+                    "worktree_id": worktree_id,
+                    "artifact_path": artifact_path,
+                    "manifest_sha256": manifest_sha256,
+                },
+            )
+            row = connection.execute(
+                "SELECT * FROM forensic_archives WHERE archive_id = ?", (archive_id,)
+            ).fetchone()
+            assert row is not None
+            return dict(row)
+
+    def get_forensic_archive(self, task_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM forensic_archives
+                WHERE task_id = ? ORDER BY archive_id DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_forensic_archive_by_id(self, archive_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM forensic_archives WHERE archive_id = ?", (archive_id,)
+            ).fetchone()
+        if row is None:
+            raise InvalidTaskError(f"Unknown forensic archive: {archive_id}")
+        return dict(row)
+
+    def apply_review_verdict(
         self,
         task_id: str,
         *,
         verdict: str,
         findings: list[dict[str, Any]],
-        head_sha: str | None = None,
+        head_sha: str,
     ) -> dict[str, Any]:
         if verdict not in {"approved", "needs_changes"}:
             raise InvalidTaskError("review verdict must be approved or needs_changes")
-        task = self.get_task(task_id)
-        bound_head = head_sha or task.get("commit") or task.get("head_sha")
-        if not bound_head or bound_head != (task.get("commit") or task.get("head_sha")):
-            raise InvalidTaskError("review head_sha must match the task canonical commit")
+        if not isinstance(head_sha, str) or not head_sha:
+            raise InvalidTaskError("review head_sha is required")
         if not isinstance(findings, list):
             raise InvalidTaskError("review findings must be an array")
         normalized: list[dict[str, Any]] = []
@@ -818,11 +1099,50 @@ class TaskStore:
                     "requirement": redact_text(requirement),
                 }
             )
+        if verdict == "needs_changes" and not normalized:
+            raise InvalidTaskError("needs_changes review requires at least one finding")
+        if verdict == "approved" and any(
+            finding["severity"] in {"blocker", "critical"} for finding in normalized
+        ):
+            raise InvalidTaskError(
+                "approved review cannot contain blocker or critical findings"
+            )
         now = utc_now()
         with self.transaction(immediate=True) as connection:
+            task = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            current = TaskStatus(task["status"])
+            if current not in {
+                TaskStatus.AWAITING_REVIEW,
+                TaskStatus.VERIFICATION_FAILED,
+            }:
+                raise StateTransitionError(
+                    f"Task cannot receive a review verdict in state: {current.value}"
+                )
+            if current is TaskStatus.VERIFICATION_FAILED and verdict != "needs_changes":
+                raise StateTransitionError(
+                    "verification_failed task requires a needs_changes verdict"
+                )
+            canonical_head = task["commit_sha"] or task["head_sha"]
+            if not canonical_head or head_sha != canonical_head:
+                raise InvalidTaskError(
+                    "review head_sha must exactly match the task canonical commit"
+                )
+            target = (
+                TaskStatus.NEEDS_CHANGES
+                if verdict == "needs_changes"
+                else TaskStatus.READY_TO_MERGE
+            )
+            if target not in ALLOWED_TRANSITIONS[current]:
+                raise StateTransitionError(
+                    f"Invalid review transition: {current.value} -> {target.value}"
+                )
             cursor = connection.execute(
                 "INSERT INTO reviews(task_id, head_sha, verdict, created_at) VALUES (?, ?, ?, ?)",
-                (task_id, bound_head, verdict, now),
+                (task_id, head_sha, verdict, now),
             )
             review_id = int(cursor.lastrowid)
             for finding in normalized:
@@ -836,7 +1156,7 @@ class TaskStore:
                     (
                         review_id,
                         task_id,
-                        bound_head,
+                        head_sha,
                         finding["severity"],
                         finding["file"],
                         finding["evidence"],
@@ -844,15 +1164,31 @@ class TaskStore:
                         now,
                     ),
                 )
+            phase = (
+                AttemptPhase.IMPLEMENTATION.value
+                if target is TaskStatus.NEEDS_CHANGES
+                else task["attempt_phase"]
+            )
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = ?, attempt_phase = ?, updated_at = ?, last_error = NULL
+                WHERE task_id = ?
+                """,
+                (target.value, phase, now, task_id),
+            )
             self._event(
                 connection,
                 task_id,
-                "review_recorded",
-                task["status"],
-                task["status"],
-                {"review_id": review_id, "head_sha": bound_head, "verdict": verdict},
+                "review_verdict_applied",
+                current.value,
+                target.value,
+                {"review_id": review_id, "head_sha": head_sha, "verdict": verdict},
             )
-        return self.get_review(review_id)
+        return {
+            "review": self.get_review(review_id),
+            "task": self.get_task(task_id),
+        }
 
     def get_review(self, review_id: int) -> dict[str, Any]:
         with self.connect() as connection:

@@ -78,4 +78,14 @@ publication.
 
 Interrupted tasks are reconciled from runtime and Git evidence under the flock.
 Only exact registered remote branches can reconstruct released worktrees.
-Unsafe state fails closed and is retained for forensics.
+Unsafe running state fails closed. Terminal worktrees are removed only after
+their failure evidence is persisted in an immutable manifest-hashed archive;
+archive or cleanup safety failure retains the worktree.
+
+## D-015: Supervise agents and bind evidence to canonical state
+
+Codex owns a persisted process group with background heartbeats. Recovery never
+starts a concurrent attempt while that group may be alive. Verification results
+belong to append-only verification sets identified independently from retry
+attempt counts and bound to one canonical commit. Review verdicts are applied as
+one transaction against that same canonical head.

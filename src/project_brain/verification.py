@@ -24,6 +24,7 @@ class VerificationRunner:
         task: dict[str, Any],
         project: dict[str, Any],
         worktree: str | Path,
+        verification_set: dict[str, Any],
     ) -> list[dict[str, Any]]:
         specs: list[dict[str, Any]] = []
         trusted: dict[str, dict[str, Any]] = {}
@@ -98,9 +99,18 @@ class VerificationRunner:
             )
 
         results: list[dict[str, Any]] = []
-        for spec in specs:
-            result = self._run_one(task["task_id"], spec, Path(worktree).resolve())
-            self.store.record_verification(task["task_id"], result)
+        for index, spec in enumerate(specs, start=1):
+            result = self._run_one(
+                task["task_id"],
+                spec,
+                Path(worktree).resolve(),
+                verification_set=verification_set,
+                artifact_index=index,
+            )
+            result["verification_set_id"] = verification_set["verification_set_id"]
+            self.store.record_verification(
+                task["task_id"], verification_set["verification_set_id"], result
+            )
             results.append(result)
         return results
 
@@ -109,6 +119,9 @@ class VerificationRunner:
         task_id: str,
         spec: dict[str, Any],
         worktree: Path,
+        *,
+        verification_set: dict[str, Any],
+        artifact_index: int,
     ) -> dict[str, Any]:
         command = spec.get("command")
         created_at = utc_now()
@@ -150,7 +163,12 @@ class VerificationRunner:
             exit_code = None
             output = "Verification timed out after 900 seconds"
         try:
-            artifact_dir = self.runtime.task_result_dir(task_id, create=True)
+            artifact_dir = self.runtime.verification_set_dir(
+                task_id,
+                attempt_number=verification_set["source_attempt_number"],
+                verification_set_id=verification_set["verification_set_id"],
+                create=True,
+            )
         except ValueError as exc:
             from .errors import InvalidPathError
 
@@ -159,8 +177,10 @@ class VerificationRunner:
             character if character.isalnum() or character in "-_" else "-"
             for character in spec["criterion_id"]
         )
-        artifact = artifact_dir / f"verification-{safe_id}.txt"
-        artifact.write_text(output[-20000:] + ("\n" if output else ""), encoding="utf-8")
+        artifact = artifact_dir / f"verification-{artifact_index:03d}-{safe_id}.txt"
+        descriptor = os.open(artifact, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(output[-20000:] + ("\n" if output else ""))
         os.chmod(artifact, 0o600)
         summary = (
             f"Command {status}; exit_code={exit_code}; artifact={artifact.name}"

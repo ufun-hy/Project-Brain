@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -48,7 +47,7 @@ class RecoveryTests(unittest.TestCase):
         blocking = (
             "import os,pathlib,time; "
             f"pathlib.Path({str(child_pid_file)!r}).write_text(str(os.getpid())); "
-            "time.sleep(60)"
+            "time.sleep(1.5)"
         )
         self.fixture.add_project(
             repo_path=str(self.repo),
@@ -87,10 +86,37 @@ class RecoveryTests(unittest.TestCase):
         process.terminate()
         process.communicate(timeout=5)
         child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-        try:
-            os.kill(child_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        session_id = self.fixture.store.get_task("interrupted")["agent_session_id"]
+        session = self.fixture.store.get_agent_session(session_id)
+        self.assertEqual(session["child_pid"], child_pid)
+        self.assertEqual(session["child_pgid"], child_pid)
+
+        # The Codex child owns an independent process group and survives the
+        # Bridge parent. Startup recovery must not claim a second attempt while
+        # that persisted child is still alive.
+        immediate = subprocess.run(
+            command,
+            cwd=str(self.fixture.root),
+            env=pythonpath_env(self.source_root),
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(immediate.returncode, 0, immediate.stderr)
+        self.assertEqual(json.loads(immediate.stdout)["status"], "idle")
+        still_running = self.fixture.store.get_task("interrupted")
+        self.assertEqual(still_running["status"], TaskStatus.RUNNING.value)
+        self.assertEqual(still_running["attempt_count"], 1)
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("orphaned Codex child did not exit naturally")
 
         recovered = subprocess.run(
             [
@@ -138,6 +164,17 @@ class RecoveryTests(unittest.TestCase):
         )
         attempts = self.fixture.store.list_attempts("interrupted")
         self.assertEqual([item["status"] for item in attempts], ["interrupted", "completed"])
+        final_worktree = Path(self.fixture.store.get_task("interrupted")["worktree_path"])
+        base_sha = self.fixture.store.get_worktree("interrupted")["base_sha"]
+        self.assertEqual(
+            git(
+                final_worktree,
+                "rev-list",
+                "--count",
+                f"{base_sha}..HEAD",
+            ).stdout.strip(),
+            "1",
+        )
 
     def test_interrupted_review_with_released_worktree_restores_awaiting_review(self) -> None:
         project = self.fixture.add_project(

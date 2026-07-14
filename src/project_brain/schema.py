@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -148,4 +148,133 @@ CREATE INDEX verification_task_attempt_idx
     ON verification_results(task_id, attempt_number);
 """
 
-MIGRATIONS = {1: MIGRATION_1, 2: MIGRATION_2}
+MIGRATION_3 = """
+ALTER TABLE agent_sessions ADD COLUMN child_pid INTEGER;
+ALTER TABLE agent_sessions ADD COLUMN child_pgid INTEGER;
+ALTER TABLE agent_sessions ADD COLUMN heartbeat_at TEXT;
+UPDATE agent_sessions SET heartbeat_at = started_at WHERE heartbeat_at IS NULL;
+
+CREATE TABLE verification_sets (
+    verification_set_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    canonical_head_sha TEXT NOT NULL,
+    source_attempt_number INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed')),
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(task_id, canonical_head_sha, source_attempt_number)
+);
+
+ALTER TABLE tasks ADD COLUMN verification_set_id INTEGER REFERENCES verification_sets(verification_set_id);
+ALTER TABLE task_attempts ADD COLUMN verification_set_id INTEGER REFERENCES verification_sets(verification_set_id);
+ALTER TABLE verification_results ADD COLUMN verification_set_id INTEGER REFERENCES verification_sets(verification_set_id);
+
+INSERT INTO verification_sets(
+    task_id, canonical_head_sha, source_attempt_number, status, created_at, completed_at
+)
+SELECT
+    results.task_id,
+    COALESCE(
+        attempts.head_sha,
+        CASE WHEN results.attempt_number = tasks.attempt_count
+             THEN COALESCE(tasks.commit_sha, tasks.head_sha) END
+    ),
+    results.attempt_number,
+    CASE WHEN SUM(CASE WHEN results.status = 'failed' THEN 1 ELSE 0 END) > 0
+         THEN 'failed' ELSE 'completed' END,
+    MIN(results.created_at),
+    MAX(results.created_at)
+FROM verification_results AS results
+JOIN tasks ON tasks.task_id = results.task_id
+LEFT JOIN task_attempts AS attempts
+  ON attempts.task_id = results.task_id
+ AND attempts.attempt_number = results.attempt_number
+WHERE COALESCE(
+    attempts.head_sha,
+    CASE WHEN results.attempt_number = tasks.attempt_count
+         THEN COALESCE(tasks.commit_sha, tasks.head_sha) END
+) IS NOT NULL
+GROUP BY
+    results.task_id,
+    COALESCE(
+        attempts.head_sha,
+        CASE WHEN results.attempt_number = tasks.attempt_count
+             THEN COALESCE(tasks.commit_sha, tasks.head_sha) END
+    ),
+    results.attempt_number;
+
+INSERT INTO verification_sets(
+    task_id, canonical_head_sha, source_attempt_number, status, created_at, completed_at
+)
+SELECT
+    tasks.task_id,
+    tasks.commit_sha,
+    tasks.attempt_count,
+    'completed',
+    tasks.updated_at,
+    tasks.updated_at
+FROM tasks
+WHERE tasks.commit_sha IS NOT NULL
+  AND tasks.attempt_phase IN ('publication', 'review')
+  AND NOT EXISTS (
+      SELECT 1 FROM verification_sets AS existing
+      WHERE existing.task_id = tasks.task_id
+        AND existing.canonical_head_sha = tasks.commit_sha
+  );
+
+UPDATE verification_results
+SET verification_set_id = (
+    SELECT sets.verification_set_id
+    FROM verification_sets AS sets
+    JOIN tasks ON tasks.task_id = verification_results.task_id
+    LEFT JOIN task_attempts AS attempts
+      ON attempts.task_id = verification_results.task_id
+     AND attempts.attempt_number = verification_results.attempt_number
+    WHERE sets.task_id = verification_results.task_id
+      AND sets.source_attempt_number = verification_results.attempt_number
+      AND sets.canonical_head_sha = COALESCE(
+          attempts.head_sha,
+          CASE WHEN verification_results.attempt_number = tasks.attempt_count
+               THEN COALESCE(tasks.commit_sha, tasks.head_sha) END
+      )
+    ORDER BY sets.verification_set_id DESC
+    LIMIT 1
+);
+
+UPDATE tasks
+SET verification_set_id = (
+    SELECT sets.verification_set_id
+    FROM verification_sets AS sets
+    WHERE sets.task_id = tasks.task_id
+      AND sets.canonical_head_sha = COALESCE(tasks.commit_sha, tasks.head_sha)
+    ORDER BY sets.verification_set_id DESC
+    LIMIT 1
+);
+
+UPDATE task_attempts
+SET verification_set_id = (
+    SELECT sets.verification_set_id
+    FROM verification_sets AS sets
+    WHERE sets.task_id = task_attempts.task_id
+      AND sets.source_attempt_number = task_attempts.attempt_number
+    ORDER BY sets.verification_set_id DESC
+    LIMIT 1
+);
+
+CREATE INDEX verification_sets_task_head_idx
+    ON verification_sets(task_id, canonical_head_sha, verification_set_id);
+CREATE INDEX verification_results_set_idx
+    ON verification_results(verification_set_id, verification_id);
+
+CREATE TABLE forensic_archives (
+    archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    worktree_id INTEGER NOT NULL REFERENCES worktrees(worktree_id),
+    artifact_path TEXT NOT NULL UNIQUE,
+    manifest_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, worktree_id)
+);
+"""
+
+MIGRATIONS = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3}

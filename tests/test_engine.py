@@ -72,6 +72,20 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(result["task"]["attempt_count"], 1)
         self.assertIn("no file or commit changes", result["task"]["last_error"])
         self.assertEqual(self.fixture.store.get_worktree("noop")["status"], "active")
+        with self.fixture.store.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE worktrees SET owner_pid = 99999999 WHERE task_id = 'noop'"
+            )
+
+        # The next startup first persists immutable failure evidence, then
+        # safely removes the terminal worktree before looking for new work.
+        idle = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
+        self.assertEqual(idle["status"], "idle")
+        archive = self.fixture.store.get_forensic_archive("noop")
+        self.assertIsNotNone(archive)
+        self.assertTrue(Path(archive["artifact_path"], "manifest.json").is_file())
+        self.assertFalse(Path(result["task"]["worktree_path"]).exists())
+        self.assertEqual(self.fixture.store.get_worktree("noop")["status"], "cleaned")
 
     def test_transient_error_retries_only_until_policy_limit(self) -> None:
         self._write_task("transient")
@@ -154,6 +168,14 @@ class TaskEngineTests(unittest.TestCase):
     def test_transient_publication_failure_resumes_without_reexecuting_task(self) -> None:
         project = self.fixture.store.get_project("project-one")
         project["auto_push"] = True
+        project["verification_commands"] = [
+            {
+                "id": "publication-check",
+                "text": "Canonical publication evidence",
+                "command": [sys.executable, "-c", "print('canonical evidence')"],
+                "always_run": True,
+            }
+        ]
         self.fixture.store.register_project(project)
         self._write_task("publish-resume")
 
@@ -176,11 +198,51 @@ class TaskEngineTests(unittest.TestCase):
         first = engine.apply_once()
         self.assertEqual(first["status"], TaskStatus.RETRY_PENDING.value)
         commit = first["task"]["commit"]
+        verification_set_id = first["task"]["verification_set_id"]
+        first_evidence = self.fixture.store.list_verifications(
+            "publish-resume", verification_set_id=verification_set_id
+        )
+        self.assertEqual(len(first_evidence), 1)
+        self.assertEqual(first_evidence[0]["attempt_number"], 1)
+
+        # A different historical head/set must never leak into a publication
+        # retry merely because the task's current attempt_count changed.
+        with self.fixture.store.transaction(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO verification_sets(
+                    task_id, canonical_head_sha, source_attempt_number,
+                    status, created_at, completed_at
+                ) VALUES ('publish-resume', ?, 0, 'completed', '2026-01-01', '2026-01-01')
+                """,
+                ("b" * 40,),
+            )
+            historical_set_id = int(cursor.lastrowid)
+            connection.execute(
+                """
+                INSERT INTO verification_results(
+                    task_id, criterion_id, criterion_text, status, evidence_type,
+                    evidence_summary, attempt_number, verification_set_id, created_at
+                ) VALUES (
+                    'publish-resume', 'historical', 'Wrong historical head', 'passed',
+                    'trusted_project_command', 'must not publish', 0, ?, '2026-01-01'
+                )
+                """,
+                (historical_set_id,),
+            )
         second = engine.apply_once()
         self.assertEqual(second["status"], TaskStatus.AWAITING_REVIEW.value)
         self.assertEqual(second["task"]["commit"], commit)
         self.assertEqual(second["task"]["pr_url"], "https://example.test/pr/1")
         self.assertEqual(publisher.calls, 2)
+        self.assertEqual(second["task"]["verification_set_id"], verification_set_id)
+        self.assertEqual(
+            [item["verification_set_id"] for item in second["evidence"]],
+            [verification_set_id],
+        )
+        attempts = self.fixture.store.list_attempts("publish-resume")
+        self.assertEqual(attempts[1]["attempt_number"], 2)
+        self.assertEqual(attempts[1]["verification_set_id"], verification_set_id)
         worktree = Path(second["task"]["worktree_path"])
         self.assertEqual(
             git(worktree, "rev-list", "--count", f"{second['task']['base_sha']}..HEAD").stdout.strip(),

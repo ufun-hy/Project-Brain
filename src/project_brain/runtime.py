@@ -68,6 +68,50 @@ class RuntimePaths:
             os.chmod(resolved, 0o700)
         return resolved
 
+    def verification_set_dir(
+        self,
+        task_id: str,
+        *,
+        attempt_number: int,
+        verification_set_id: int,
+        create: bool = False,
+    ) -> Path:
+        if attempt_number < 1 or verification_set_id < 1:
+            raise ValueError("Verification attempt and set identifiers must be positive")
+        task_root = self.task_result_dir(task_id, create=create)
+        attempt = task_root / f"attempt-{attempt_number:04d}"
+        target = attempt / f"verification-set-{verification_set_id:06d}"
+        for candidate in (attempt, target):
+            if candidate.is_symlink():
+                raise ValueError(f"Verification result path cannot be a symlink: {candidate}")
+        resolved = target.resolve()
+        if task_root.resolve() not in resolved.parents:
+            raise ValueError(f"Verification result path escapes task results: {resolved}")
+        if create:
+            resolved.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(attempt, 0o700)
+            os.chmod(resolved, 0o700)
+        return resolved
+
+    def forensic_archive_dir(
+        self,
+        task_id: str,
+        *,
+        worktree_id: int,
+    ) -> Path:
+        if worktree_id < 1:
+            raise ValueError("Forensic worktree identifier must be positive")
+        task_root = self.task_result_dir(task_id, create=True)
+        parent = task_root / "forensics"
+        target = parent / f"worktree-{worktree_id:06d}"
+        for candidate in (parent, target):
+            if candidate.is_symlink():
+                raise ValueError(f"Forensic result path cannot be a symlink: {candidate}")
+        resolved = target.resolve()
+        if task_root.resolve() not in resolved.parents:
+            raise ValueError(f"Forensic result path escapes task results: {resolved}")
+        return resolved
+
     def ensure(self) -> "RuntimePaths":
         for path in (
             self.root,

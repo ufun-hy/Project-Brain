@@ -12,6 +12,7 @@ from typing import Any
 from .commands import git
 from .errors import ExternalCommandError, FetchError, InvalidPathError, WorktreeError
 from .models import TERMINAL_STATUSES, TaskStatus
+from .process_supervision import agent_process_group_alive, process_alive
 from .repository import assert_registered_origin
 from .runtime import RuntimePaths
 from .store import TaskStore
@@ -29,18 +30,6 @@ def task_component(task_id: str) -> str:
 
 def task_branch(task_id: str) -> str:
     return f"brain/{task_component(task_id)}"
-
-
-def process_alive(pid: int | None) -> bool:
-    if not pid or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def heartbeat_age_seconds(value: str | None) -> int | None:
@@ -247,7 +236,13 @@ class WorktreeManager:
         self.validate_managed_path(project, root / ".boundary-check")
         return root
 
-    def cleanup_task(self, task_id: str, *, dry_run: bool = True) -> dict[str, Any]:
+    def cleanup_task(
+        self,
+        task_id: str,
+        *,
+        dry_run: bool = True,
+        forensic_archive_id: int | None = None,
+    ) -> dict[str, Any]:
         task = self.store.get_task(task_id)
         project = self.store.get_project(task["project_id"])
         record = self.store.get_worktree(task_id)
@@ -273,6 +268,17 @@ class WorktreeManager:
                 f"Worktree has no owner PID but its heartbeat is recent: task={task_id} "
                 f"heartbeat_age_seconds={heartbeat_age}"
             )
+        session = self.store.active_agent_session(task_id)
+        if session and (
+            not session.get("child_pid")
+            or agent_process_group_alive(
+                session.get("child_pid"), session.get("child_pgid")
+            )
+        ):
+            raise WorktreeError(
+                f"Active Codex process group prevents cleanup: task={task_id} "
+                f"pid={session.get('child_pid')} pgid={session.get('child_pgid')}"
+            )
         result = {
             "task_id": task_id,
             "project_id": task["project_id"],
@@ -284,6 +290,16 @@ class WorktreeManager:
         }
         if dry_run:
             return result
+        if forensic_archive_id is None:
+            raise WorktreeError(
+                f"Cleanup requires a persisted forensic archive: {task_id}"
+            )
+        archive = self.store.get_forensic_archive_by_id(forensic_archive_id)
+        if (
+            archive["task_id"] != task_id
+            or archive["worktree_id"] != record["worktree_id"]
+        ):
+            raise WorktreeError("Forensic archive does not match the terminal worktree")
         repo = Path(project["repo_path"]).expanduser().resolve()
         if path.exists() or path.is_symlink():
             git(repo, "worktree", "remove", "--force", str(path))
@@ -301,7 +317,11 @@ class WorktreeManager:
         self.store.record_event(
             task_id=task_id,
             event_type="worktree_cleaned",
-            payload={"path": str(path), "branch": record["branch"]},
+            payload={
+                "path": str(path),
+                "branch": record["branch"],
+                "forensic_archive_id": forensic_archive_id,
+            },
         )
         return result
 
@@ -340,37 +360,3 @@ class WorktreeManager:
             payload={"branch": branch, "head_sha": head},
         )
         return {"task_id": task_id, "action": "released", "branch": branch, "head_sha": head}
-
-    def cleanup_preview(self) -> list[dict[str, Any]]:
-        previews: list[dict[str, Any]] = []
-        for record in self.store.list_worktrees():
-            task_id = record["task_id"]
-            try:
-                previews.append(self.cleanup_task(task_id, dry_run=True))
-            except (WorktreeError, InvalidPathError) as exc:
-                previews.append(
-                    {
-                        "task_id": task_id,
-                        "path": record["path"],
-                        "action": "retained",
-                        "reason": str(exc),
-                    }
-                )
-        return previews
-
-    def cleanup_stale(self, *, dry_run: bool = False) -> list[dict[str, Any]]:
-        """Clean only safe terminal records; callers must hold RuntimeLock."""
-        results: list[dict[str, Any]] = []
-        for record in self.store.list_worktrees():
-            try:
-                results.append(self.cleanup_task(record["task_id"], dry_run=dry_run))
-            except (WorktreeError, InvalidPathError) as exc:
-                results.append(
-                    {
-                        "task_id": record["task_id"],
-                        "path": record["path"],
-                        "action": "retained",
-                        "reason": str(exc),
-                    }
-                )
-        return results

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from project_brain.errors import InvalidPathError, InvalidTaskError
 from project_brain.locking import RuntimeLock
+from project_brain.models import AttemptPhase
 from project_brain.security import redact_text
 from project_brain.verification import VerificationRunner
 
@@ -21,6 +22,17 @@ class SecurityTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.fixture.close()
+
+    def _verification_context(self, task_id: str):
+        task = self.fixture.store.claim_next()
+        task = self.fixture.store.set_task_fields(
+            task_id, commit="a" * 40, head_sha="a" * 40
+        )
+        task = self.fixture.store.set_attempt_phase(task_id, AttemptPhase.VERIFICATION)
+        verification_set = self.fixture.store.create_verification_set(
+            task_id, canonical_head_sha="a" * 40
+        )
+        return task, verification_set
 
     def test_known_secret_in_task_is_rejected_before_database_write(self) -> None:
         token = "Authorization: Bearer " + "".join(map(chr, range(97, 123)))
@@ -46,7 +58,7 @@ class SecurityTests(unittest.TestCase):
             }
         ]
         self.fixture.store.register_project(project)
-        task = self.fixture.add_task(
+        self.fixture.add_task(
             "redaction",
             acceptance_criteria=[
                 {
@@ -58,10 +70,12 @@ class SecurityTests(unittest.TestCase):
         )
         worktree = self.fixture.root / "verification-worktree"
         worktree.mkdir()
+        task, verification_set = self._verification_context("redaction")
         results = VerificationRunner(self.fixture.store, self.fixture.runtime).run(
             task=task,
             project=self.fixture.store.get_project("project-one"),
             worktree=worktree,
+            verification_set=verification_set,
         )
         artifact = Path(results[0]["artifact_path"]).read_text(encoding="utf-8")
         persisted = self.fixture.store.list_verifications("redaction")[0]
@@ -98,7 +112,7 @@ class SecurityTests(unittest.TestCase):
             }
         ]
         self.fixture.store.register_project(project)
-        task = self.fixture.add_task(
+        self.fixture.add_task(
             "symlink-result",
             acceptance_criteria=[
                 {"id": "safe", "text": "Safe", "verification_id": "safe-check"}
@@ -111,11 +125,13 @@ class SecurityTests(unittest.TestCase):
         )
         worktree = self.fixture.root / "result-worktree"
         worktree.mkdir()
+        task, verification_set = self._verification_context("symlink-result")
         with self.assertRaises(InvalidPathError):
             VerificationRunner(self.fixture.store, self.fixture.runtime).run(
                 task=task,
                 project=self.fixture.store.get_project("project-one"),
                 worktree=worktree,
+                verification_set=verification_set,
             )
         self.assertEqual(list(outside.iterdir()), [])
 

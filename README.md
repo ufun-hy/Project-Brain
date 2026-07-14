@@ -24,12 +24,18 @@ separate project.
 - Implementation, verification, publication, and review are durable attempt
   phases. A `needs_changes` verdict reruns implementation and appends a new
   canonical commit.
-- Interrupted processes are reconciled from PID, heartbeat, phase, worktree,
-  branch, HEAD, status, origin, and registered remote state.
+- Codex runs in a dedicated process group. Child PID/PGID and a live heartbeat
+  are persisted, so an orphaned child blocks a concurrent recovery attempt.
+- Verification evidence belongs to an immutable, attempt-scoped verification
+  set bound to one canonical head. Publication retries reuse that exact set.
+- Review verdict validation, findings, task transition, phase update, and event
+  are committed in one transaction.
 - Verification runs behind a Git state seal. File, commit, branch, origin,
-  fetch-config, conflict, or default-ref mutations block publication.
+  fetch-config, conflict, remote default-ref, or local default-branch-ref
+  mutations block publication.
 - Publishing pushes only the registered task branch and creates or reuses a
-  Draft PR. Core never merges automatically.
+  Draft PR after exact base/head/SHA/repository validation. Core never merges
+  automatically.
 
 ## Install and configure
 
@@ -93,6 +99,7 @@ project-brain tasks list --json
 project-brain tasks show <task-id> --json
 project-brain tasks recover <task-id> --dry-run --json
 project-brain tasks recover <task-id> --execute --json
+project-brain tasks recover <task-id> --execute --terminate-agent --json
 project-brain health --json
 project-brain apply --json
 project-brain cleanup --dry-run --json
@@ -101,8 +108,14 @@ project-brain cleanup --execute --json
 
 `apply` claims at most one task while holding the runtime flock. Startup
 reconciliation restores safe interrupted work to `retry_pending` or
-`awaiting_review`; unsafe state becomes `failed` and its worktree is retained
-for forensics.
+`awaiting_review`. A live persisted Codex process group is left running and no
+second attempt is claimed. `--terminate-agent` is the explicit operator action
+that terminates/kills the whole group before recovery.
+
+Before claiming new work, startup also preflights terminal worktrees. It writes
+private, manifest-hashed failure evidence under `results` first, records the
+archive in SQLite, and only then removes the safe managed worktree. Archive
+failure or any PID/path/state safety failure retains the worktree.
 
 Review findings are JSON bound to the current canonical `head_sha`:
 
@@ -136,7 +149,9 @@ being active after a new canonical commit changes the task head.
 ├── project-brain.db                     0600
 ├── project-brain.lock                   0600
 ├── logs/                                0700
-├── results/<task-id>/...                0700 / 0600
+├── results/<task-id>/                   0700
+│   ├── attempt-<N>/verification-set-*/  0700 / 0600
+│   └── forensics/worktree-*/            0700 / 0600
 └── worktrees/<project-id>/<task-id>/    0700
 ```
 

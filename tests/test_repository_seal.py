@@ -14,7 +14,14 @@ from tests.helpers import CoreFixture, create_remote_clone, git
 
 class RepositorySealTests(unittest.TestCase):
     def test_verification_git_mutations_block_publication_and_preserve_main(self) -> None:
-        for mutation in ("file", "commit", "branch", "origin", "default_ref"):
+        for mutation in (
+            "file",
+            "commit",
+            "branch",
+            "origin",
+            "default_ref",
+            "local_default_ref",
+        ):
             with self.subTest(mutation=mutation):
                 fixture = CoreFixture()
                 try:
@@ -39,10 +46,15 @@ class RepositorySealTests(unittest.TestCase):
                             "import subprocess; "
                             f"subprocess.run(['git','remote','set-url','origin',{str(changed_remote)!r}],check=True)"
                         )
-                    else:
+                    elif mutation == "default_ref":
                         code = (
                             "import subprocess; "
                             "subprocess.run(['git','update-ref','refs/remotes/origin/main','HEAD'],check=True)"
+                        )
+                    else:
+                        code = (
+                            "import subprocess; "
+                            "subprocess.run(['git','update-ref','refs/heads/main','HEAD'],check=True)"
                         )
                     fixture.add_project(
                         repo_path=str(repo),
@@ -81,6 +93,10 @@ class RepositorySealTests(unittest.TestCase):
                     self.assertIn("publication blocked", result["task"]["last_error"])
                     publisher.publish.assert_not_called()
                     self.assertEqual(git(repo, "rev-parse", "HEAD").stdout.strip(), main_head)
+                    self.assertEqual(
+                        git(repo, "rev-parse", "refs/heads/main").stdout.strip(),
+                        main_head,
+                    )
                     self.assertEqual(
                         git(repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
                         main_status,

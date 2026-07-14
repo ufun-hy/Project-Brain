@@ -27,7 +27,7 @@ class GitHubAdapterTests(unittest.TestCase):
         self.project = {
             "default_branch": "main",
             "auto_pr": True,
-            "remote_url": "https://example.test/repo.git",
+            "remote_url": "git@github.com:ufun-hy/Project-Brain.git",
         }
 
     def tearDown(self) -> None:
@@ -39,7 +39,10 @@ class GitHubAdapterTests(unittest.TestCase):
     def test_existing_open_pr_is_reused(self, origin_check, run_command, git_command) -> None:
         git_command.side_effect = self._git_result
         run_command.return_value = subprocess.CompletedProcess(
-            [], 0, json.dumps([{"url": "https://example.test/pr/7", "isDraft": True}]), ""
+            [],
+            0,
+            json.dumps([self._existing_pr("https://example.test/pr/7")]),
+            "",
         )
         result = GitHubAdapter().publish(
             task=self.task, project=self.project, worktree=self.worktree
@@ -74,12 +77,54 @@ class GitHubAdapterTests(unittest.TestCase):
     ) -> None:
         git_command.side_effect = self._git_result
         run_command.return_value = subprocess.CompletedProcess(
-            [], 0, json.dumps([{"url": "https://example.test/pr/9", "isDraft": False}]), ""
+            [],
+            0,
+            json.dumps([self._existing_pr("https://example.test/pr/9", is_draft=False)]),
+            "",
         )
         with self.assertRaises(TaskHistoryError):
             GitHubAdapter().publish(
                 task=self.task, project=self.project, worktree=self.worktree
             )
+
+    @patch("project_brain.github.git")
+    @patch("project_brain.github.run_command")
+    @patch("project_brain.github.assert_registered_origin")
+    def test_existing_pr_must_match_base_head_sha_and_repository(
+        self, origin_check, run_command, git_command
+    ) -> None:
+        git_command.side_effect = self._git_result
+        mismatches = {
+            "base": {"baseRefName": "release"},
+            "head": {"headRefName": "brain/other"},
+            "sha": {"headRefOid": "b" * 40},
+            "repository": {
+                "headRepository": {"nameWithOwner": "someone-else/Project-Brain"}
+            },
+        }
+        for label, changed in mismatches.items():
+            with self.subTest(label=label):
+                candidate = self._existing_pr("https://example.test/pr/10")
+                candidate.update(changed)
+                run_command.return_value = subprocess.CompletedProcess(
+                    [], 0, json.dumps([candidate]), ""
+                )
+                with self.assertRaises(TaskHistoryError):
+                    GitHubAdapter().publish(
+                        task=self.task,
+                        project=self.project,
+                        worktree=self.worktree,
+                    )
+
+    def _existing_pr(self, url: str, *, is_draft: bool = True) -> dict:
+        return {
+            "url": url,
+            "isDraft": is_draft,
+            "baseRefName": "main",
+            "headRefName": self.task["branch"],
+            "headRefOid": self.task["commit"],
+            "headRepository": {"nameWithOwner": "ufun-hy/Project-Brain"},
+        }
 
     def _git_result(self, *args, **_):
         if "ls-remote" in args:

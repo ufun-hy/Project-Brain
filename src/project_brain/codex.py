@@ -3,21 +3,33 @@
 from __future__ import annotations
 
 import subprocess
+import os
+import threading
 import uuid
 from pathlib import Path
 import json
 from typing import Any
 
-from .errors import ExternalCommandError, InvalidTaskError, TransientTaskError
+from .errors import ExternalCommandError, InvalidTaskError, RecoveryError, TransientTaskError
 from .git_history import GitHistoryNormalizer, GitSnapshot, NormalizedHistory
+from .process_supervision import terminate_process_group
 from .store import TaskStore
 from .security import redact_text
 
 
 class CodexAdapter:
-    def __init__(self, store: TaskStore, normalizer: GitHistoryNormalizer | None = None) -> None:
+    def __init__(
+        self,
+        store: TaskStore,
+        normalizer: GitHistoryNormalizer | None = None,
+        *,
+        heartbeat_interval_seconds: float = 30.0,
+        termination_grace_seconds: float = 5.0,
+    ) -> None:
         self.store = store
         self.normalizer = normalizer or GitHistoryNormalizer()
+        self.heartbeat_interval_seconds = max(0.01, heartbeat_interval_seconds)
+        self.termination_grace_seconds = max(0.0, termination_grace_seconds)
 
     def execute(
         self,
@@ -62,15 +74,54 @@ class CodexAdapter:
             command=command,
         )
         timeout = int(task["payload"].get("timeout_seconds", 1800))
+        process: subprocess.Popen[str] | None = None
+        child_pgid: int | None = None
+        stop_heartbeat = threading.Event()
+        heartbeat_thread: threading.Thread | None = None
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=str(Path(worktree).resolve()),
-                input=prompt,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                capture_output=True,
-                timeout=timeout,
+                start_new_session=True,
             )
+            child_pgid = os.getpgid(process.pid)
+            try:
+                self.store.start_agent_session(
+                    session_id,
+                    child_pid=process.pid,
+                    child_pgid=child_pgid,
+                )
+            except Exception:
+                terminate_process_group(
+                    child_pid=process.pid,
+                    child_pgid=child_pgid,
+                    grace_seconds=self.termination_grace_seconds,
+                    process=process,
+                )
+                raise
+
+            def heartbeat() -> None:
+                while not stop_heartbeat.wait(self.heartbeat_interval_seconds):
+                    try:
+                        self.store.heartbeat_agent_session(
+                            session_id, task_id=task["task_id"]
+                        )
+                    except Exception:
+                        # A later recovery pass treats a stale heartbeat together
+                        # with the persisted process group; never spawn a duplicate.
+                        continue
+
+            heartbeat_thread = threading.Thread(
+                target=heartbeat,
+                name=f"brain-heartbeat-{session_id}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
+            stdout, stderr = process.communicate(input=prompt, timeout=timeout)
         except FileNotFoundError as exc:
             self.store.finish_agent_session(
                 session_id,
@@ -80,24 +131,66 @@ class CodexAdapter:
             )
             raise ExternalCommandError(f"Command not found: {command[0]}") from exc
         except subprocess.TimeoutExpired as exc:
+            assert process is not None
+            terminated = terminate_process_group(
+                child_pid=process.pid,
+                child_pgid=child_pgid,
+                grace_seconds=self.termination_grace_seconds,
+                process=process,
+            )
+            if not terminated:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+                raise RecoveryError(
+                    "Codex timed out and its process-group exit could not be confirmed; "
+                    "the task will fail closed without a retry"
+                ) from exc
+            process.communicate(timeout=1)
             self.store.finish_agent_session(
                 session_id,
                 status="timed_out",
                 exit_code=None,
-                output_summary=f"Timed out after {timeout}s",
+                output_summary=(
+                    f"Timed out after {timeout}s; process_group_terminated={terminated}"
+                ),
             )
             raise TransientTaskError(f"Codex timed out after {timeout}s") from exc
-        summary = redact_text((completed.stdout + "\n" + completed.stderr).strip())[-4000:]
+        except (KeyboardInterrupt, SystemExit):
+            if process is not None:
+                terminated = terminate_process_group(
+                    child_pid=process.pid,
+                    child_pgid=child_pgid,
+                    grace_seconds=self.termination_grace_seconds,
+                    process=process,
+                )
+                try:
+                    process.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+                self.store.finish_agent_session(
+                    session_id,
+                    status="cancelled",
+                    exit_code=None,
+                    output_summary=f"Cancelled; process_group_terminated={terminated}",
+                )
+            raise
+        finally:
+            stop_heartbeat.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=max(1.0, self.heartbeat_interval_seconds * 2))
+        assert process is not None
+        summary = redact_text((stdout + "\n" + stderr).strip())[-4000:]
         self.store.finish_agent_session(
             session_id,
-            status="completed" if completed.returncode == 0 else "failed",
-            exit_code=completed.returncode,
+            status="completed" if process.returncode == 0 else "failed",
+            exit_code=process.returncode,
             output_summary=summary,
         )
-        if completed.returncode != 0:
+        if process.returncode != 0:
             raise ExternalCommandError(
-                f"Codex failed with exit code {completed.returncode}: {summary}",
-                returncode=completed.returncode,
+                f"Codex failed with exit code {process.returncode}: {summary}",
+                returncode=process.returncode,
             )
         message = task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
         if not isinstance(message, str) or not message.strip():

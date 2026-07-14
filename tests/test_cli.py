@@ -55,6 +55,7 @@ class CLITests(unittest.TestCase):
         self.assertIn("attempts", value)
         self.assertIn("verification", value)
         self.assertIn("reviews", value)
+        self.assertIn("forensic_archive", value)
         self.assertIn("events", value)
 
     def test_source_neutral_enqueue_and_commit_bound_review_commands(self) -> None:
@@ -127,6 +128,9 @@ class CLITests(unittest.TestCase):
         _, executed = self.invoke("cleanup", "--execute", "--json")
         self.assertEqual(json.loads(executed)["mode"], "execute")
         self.assertFalse(Path(record["path"]).exists())
+        archive = self.fixture.store.get_forensic_archive("cleanup-task")
+        self.assertIsNotNone(archive)
+        self.assertTrue(Path(archive["artifact_path"], "manifest.json").is_file())
 
     def test_apply_reports_already_running_without_claiming(self) -> None:
         self.fixture.add_task("locked-task")

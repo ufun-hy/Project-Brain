@@ -62,7 +62,7 @@ class RemoteRecoveryTests(unittest.TestCase):
         self.assertEqual(first_record["status"], "cleaned")
         self.assertFalse(Path(first_record["path"]).exists())
 
-        self.fixture.store.record_review(
+        self.fixture.store.apply_review_verdict(
             "remote-review",
             verdict="needs_changes",
             head_sha=first_commit,
@@ -75,7 +75,6 @@ class RemoteRecoveryTests(unittest.TestCase):
                 }
             ],
         )
-        self.fixture.store.transition("remote-review", TaskStatus.NEEDS_CHANGES)
         second = engine.apply_once()
         second_commit = second["task"]["commit"]
         second_record = self.fixture.store.get_worktree("remote-review")

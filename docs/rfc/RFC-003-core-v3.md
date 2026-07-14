@@ -1,7 +1,7 @@
 # RFC-003: Project Brain Core v3
 
 Status: Implemented; Draft PR under review
-Updated: 2026-07-14
+Updated: 2026-07-15
 Type: Architecture RFC
 
 ## Decision
@@ -50,11 +50,13 @@ reset, cleaned, or used as an execution directory.
 
 ## Durable model and migrations
 
-SQLite schema v2 stores projects, tasks, attempts, worktrees, agent sessions,
-verification evidence, reviews, structured review findings, and append-only
-events. Migrations execute statement-by-statement inside one explicit
-transaction. A failed migration rolls back fully, and a database newer than the
-supported schema is rejected.
+SQLite schema v3 stores projects, tasks, attempts, worktrees, supervised agent
+sessions, canonical-head verification sets and evidence, atomic reviews,
+structured review findings, forensic archive records, and append-only events.
+Migrations execute statement-by-statement inside one explicit transaction. A
+failed migration rolls back fully, and a database newer than the supported
+schema is rejected. Existing v2 verification rows are backfilled into a set
+using their attempt head.
 
 Stable `task_id`, `project_id`, `dedupe_key`, criterion IDs, verification IDs,
 and supersession IDs use 1-128 letters, digits, dots, underscores, or hyphens.
@@ -69,12 +71,17 @@ implementation -> verification -> publication -> review
 ```
 
 A transient publication failure retains `publication` and retries only the
-push/PR operation. A verification retry reruns trusted verification against the
-same canonical commit. A `needs_changes` verdict resets the next attempt to
-`implementation`, keeps the reviewed canonical commit as an ancestor, and
-creates a new canonical commit.
+push/PR operation. It reads the completed verification set referenced by the
+task and requires that set's canonical head to equal the task commit; it never
+uses the retry's new attempt number as an evidence lookup key. A verification
+retry creates a new append-only set against the same canonical commit. A
+`needs_changes` verdict resets the next attempt to `implementation`, keeps the
+reviewed canonical commit as an ancestor, and creates a new canonical commit.
 
-Reviews are bound to the current canonical `head_sha`. Findings persist
+Reviews are bound to the current canonical `head_sha`. Verdict validation,
+findings, transition, phase change, and event are one immediate transaction.
+`needs_changes` requires findings, while approval rejects blocker/critical
+findings. Findings persist
 `severity`, `file`, `evidence`, and `requirement`. Active findings are appended
 to the next Codex prompt. Once a new canonical commit changes `head_sha`, older
 findings remain auditable but are no longer active.
@@ -95,29 +102,44 @@ Before verification Core seals:
 - task branch and canonical HEAD;
 - full worktree status and conflict state;
 - actual origin URL and origin fetch configuration;
-- the remote default-branch ref.
+- the remote default-branch ref;
+- the shared local default-branch ref.
 
 The same state is checked after verification and again before publication.
 File, commit, branch, origin, fetch configuration, conflict, or default-ref
 mutation blocks push. Shared origin/fetch/default-ref metadata is restored to
-its sealed value before the task fails; the task worktree is retained for
-forensics.
+its sealed value before the task fails; startup then archives its forensic
+evidence before any safe terminal cleanup.
 
 ## Crash and remote recovery
 
-Startup reconciliation runs under the runtime flock before claiming a task. It
-uses the registered owner PID, heartbeat, attempt phase, worktree path, branch,
-HEAD, status, origin, default branch, and canonical commit.
+Codex starts with `start_new_session=True`; its child PID/PGID is durable and a
+background thread refreshes both agent-session and worktree heartbeats at most
+every 60 seconds. Timeout and cancellation terminate, then kill if necessary,
+the entire process group and wait for confirmed exit.
 
+Startup reconciliation runs under the runtime flock before claiming a task. It
+uses the persisted child process group, registered owner PID, heartbeat,
+attempt phase, worktree path, branch, HEAD, status, origin, default branch, and
+canonical commit.
+
+- A live Codex child group remains `running` and prevents a second attempt;
+  operators may explicitly terminate the group before recovery.
 - A live owner with a recent heartbeat remains `running`.
 - Clean interrupted implementation, verification, or publication becomes
   `retry_pending` at its durable phase.
 - Completed review publication becomes `awaiting_review`.
 - Missing, dirty, conflicting, wrong-branch, wrong-HEAD, wrong-origin, or
-  otherwise unsafe state becomes `failed` and is retained for forensics.
+  otherwise unsafe state becomes `failed`.
 
 Operators can preview or execute the same logic with
 `tasks recover <id> --dry-run|--execute`.
+
+After running-task reconciliation, startup preflights terminal worktrees,
+captures immutable manifest-hashed evidence under `results`, persists the
+archive record, and only then deletes a safe managed worktree. A failed archive,
+live Bridge/Codex owner, unsafe path, symlink, or non-terminal state retains the
+worktree. This is the only automatic terminal cleanup policy.
 
 After a successful push and Draft PR lookup/creation, Core may release the
 clean local review worktree and local task branch. It never deletes the remote

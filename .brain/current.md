@@ -1,10 +1,10 @@
 # Current State
 
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 ## Current stage
 
-The PR #12 review revision is implemented and locally validated on
+The PR #12 v3 and independent-review revision is implemented on
 `codex/project-brain-core-mvp`. The PR remains Draft for renewed review; PR #10
 and PR #11 remain untouched.
 
@@ -14,21 +14,26 @@ and PR #11 remain untouched.
   `origin/main` and remains frozen.
 - Source-neutral canonical enqueue rejects external command/argv and resolves
   criteria only through trusted project verification IDs.
-- SQLite schema v2 persists attempt phases, commit-bound reviews, and structured
-  findings with atomic forward migration and future-version rejection.
+- SQLite schema v3 persists supervised child process groups, canonical-head
+  verification sets, atomic review verdicts, and forensic archives with atomic
+  forward migration/backfill and future-version rejection.
 - `needs_changes` reruns implementation with active findings and appends a new
   canonical commit. Publication-only transient failures resume publication.
-- Startup and CLI recovery reconcile interrupted real processes using runtime,
-  PID/heartbeat, worktree, Git, and remote evidence.
+- Startup and CLI recovery persist Codex PID/PGID, maintain background
+  heartbeats, prevent concurrent attempts while a child group lives, and offer
+  explicit whole-group termination.
+- Terminal worktrees are cleaned only after private manifest-hashed failure
+  evidence is persisted; archive or safety failure retains the worktree.
 - Published review worktrees can be released and later rebuilt from an exact
   registered remote SHA while reusing the Draft PR.
 - Strict ID/path constraints, private runtime permissions, origin verification,
-  and a post-verification Git seal block unsafe publication.
+  local/remote default-ref sealing, and exact Draft PR identity checks block
+  unsafe publication.
 - Reproducible Core validation and GitHub Actions CI were added.
 
 ## Verification status
 
-The expanded 86-test Core suite passes locally through
+The expanded 96-test Core suite passes locally through
 `scripts/verify-core.sh`. Gmail legacy tests are not part of Core validation
 because the legacy implementation is unchanged.
 

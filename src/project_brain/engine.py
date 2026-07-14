@@ -12,6 +12,7 @@ from .git_history import GitHistoryNormalizer, NormalizedHistory
 from .commands import git
 from .errors import TaskHistoryError
 from .github import GitHubAdapter
+from .forensics import TerminalWorktreeReconciler
 from .models import AttemptPhase, TaskStatus
 from .repository import RepositorySeal
 from .recovery import RecoveryManager
@@ -48,6 +49,9 @@ class TaskEngine:
         # Production entrypoints hold RuntimeLock around this call. Cleanup uses
         # database registration, task state, PID, heartbeat, and path checks.
         RecoveryManager(self.store, self.worktrees).reconcile(execute=True)
+        TerminalWorktreeReconciler(
+            self.store, self.runtime, self.worktrees
+        ).reconcile(execute=True)
         task = self.store.claim_next()
         if task is None:
             return {"status": "idle", "task": None}
@@ -74,24 +78,44 @@ class TaskEngine:
                 history = self._resume_canonical(task, worktree_record, worktree)
 
             if AttemptPhase(task["attempt_phase"]) is AttemptPhase.VERIFICATION:
+                verification_set = self.store.create_verification_set(
+                    task["task_id"], canonical_head_sha=history.commit
+                )
+                task = self.store.get_task(task["task_id"])
                 seal = RepositorySeal.capture(
                     worktree,
                     project=project,
                     expected_branch=worktree_record["branch"],
                     expected_head=history.commit,
                 )
-                evidence = self.verification.run(
-                    task=task, project=project, worktree=worktree
+                try:
+                    evidence = self.verification.run(
+                        task=task,
+                        project=project,
+                        worktree=worktree,
+                        verification_set=verification_set,
+                    )
+                    self.store.heartbeat_worktree(task["task_id"])
+                    seal.verify(worktree, project=project)
+                    failed_evidence = [
+                        item for item in evidence if item["status"] == "failed"
+                    ]
+                    if failed_evidence:
+                        names = ", ".join(
+                            item["criterion_id"] for item in failed_evidence
+                        )
+                        raise VerificationFailedError(f"Verification failed: {names}")
+                except Exception:
+                    self.store.finalize_verification_set(
+                        verification_set["verification_set_id"], status="failed"
+                    )
+                    raise
+                self.store.finalize_verification_set(
+                    verification_set["verification_set_id"], status="completed"
                 )
-                self.store.heartbeat_worktree(task["task_id"])
-                seal.verify(worktree, project=project)
-                failed_evidence = [item for item in evidence if item["status"] == "failed"]
-                if failed_evidence:
-                    names = ", ".join(item["criterion_id"] for item in failed_evidence)
-                    raise VerificationFailedError(f"Verification failed: {names}")
                 task = self.store.set_attempt_phase(task["task_id"], AttemptPhase.PUBLICATION)
             else:
-                evidence = self.store.list_verifications(task["task_id"])
+                evidence = self.store.publication_evidence(task["task_id"])
 
             publication: dict[str, Any] = {"pushed": False, "pr_url": task.get("pr_url")}
             if project.get("auto_push", True):
@@ -154,7 +178,10 @@ class TaskEngine:
             return {
                 "status": task["status"],
                 "task": task,
-                "evidence": self.store.list_verifications(task["task_id"]),
+                "evidence": self.store.list_verifications(
+                    task["task_id"],
+                    verification_set_id=task["verification_set_id"],
+                ),
             }
         except Exception as exc:
             return self._handle_error(task, exc)

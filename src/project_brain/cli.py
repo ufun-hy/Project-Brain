@@ -19,6 +19,7 @@ from .models import TaskStatus, parse_timestamp
 from .ingress import TaskImporter
 from .projects import ProjectRegistry
 from .recovery import RecoveryManager
+from .forensics import TerminalWorktreeReconciler
 from .runtime import RuntimePaths
 from .store import SCHEMA_VERSION, TaskStore
 from .worktrees import WorktreeManager
@@ -80,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     recovery_mode = task_recover.add_mutually_exclusive_group()
     recovery_mode.add_argument("--dry-run", action="store_true", default=True)
     recovery_mode.add_argument("--execute", action="store_true")
+    task_recover.add_argument(
+        "--terminate-agent",
+        action="store_true",
+        help="With --execute, terminate the persisted Codex process group before recovery",
+    )
     _add_json(task_recover)
 
     health = sub.add_parser("health", help="Check runtime and project prerequisites")
@@ -225,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             task["attempts"] = store.list_attempts(args.task_id)
             task["verification"] = store.list_verifications(args.task_id)
             task["reviews"] = store.list_reviews(args.task_id)
+            task["forensic_archive"] = store.get_forensic_archive(args.task_id)
             task["events"] = store.list_events(args.task_id)
             _render(task, json_output=args.json_output)
         elif args.command == "tasks" and args.tasks_command == "enqueue":
@@ -242,29 +249,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not isinstance(review_value, dict):
                 raise ProjectBrainError("Review file must contain a JSON object")
             with RuntimeLock(runtime.lock_file):
-                review = store.record_review(
+                applied = store.apply_review_verdict(
                     args.task_id,
                     verdict=review_value.get("verdict"),
                     head_sha=review_value.get("head_sha"),
                     findings=review_value.get("findings", []),
                 )
-                target = (
-                    TaskStatus.NEEDS_CHANGES
-                    if review["verdict"] == "needs_changes"
-                    else TaskStatus.READY_TO_MERGE
-                )
-                task = store.transition(
-                    args.task_id,
-                    target,
-                    event_type="review_verdict_applied",
-                    payload={"review_id": review["review_id"], "head_sha": review["head_sha"]},
-                )
+                review = applied["review"]
+                task = applied["task"]
             _render({"status": task["status"], "task": task, "review": review}, json_output=args.json_output)
         elif args.command == "tasks" and args.tasks_command == "recover":
             manager = WorktreeManager(store, runtime)
             with RuntimeLock(runtime.lock_file):
                 actions = RecoveryManager(store, manager).reconcile(
-                    args.task_id, execute=args.execute
+                    args.task_id,
+                    execute=args.execute,
+                    terminate_agent=args.terminate_agent,
                 )
             _render(
                 {"mode": "execute" if args.execute else "dry_run", "actions": actions},
@@ -280,18 +280,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if value["status"] == "healthy" else 1
         elif args.command == "cleanup":
             manager = WorktreeManager(store, runtime)
+            reconciler = TerminalWorktreeReconciler(store, runtime, manager)
             if not args.execute:
-                value = {"mode": "dry_run", "worktrees": manager.cleanup_preview()}
+                value = {"mode": "dry_run", "worktrees": reconciler.reconcile(execute=False)}
             else:
                 with RuntimeLock(runtime.lock_file):
-                    preview = manager.cleanup_preview()
-                    actions: list[dict[str, Any]] = []
-                    for item in preview:
-                        if item["action"] == "would_clean":
-                            actions.append(manager.cleanup_task(item["task_id"], dry_run=False))
-                        else:
-                            actions.append(item)
-                    value = {"mode": "execute", "worktrees": actions}
+                    value = {
+                        "mode": "execute",
+                        "worktrees": reconciler.reconcile(execute=True),
+                    }
             _render(value, json_output=args.json_output)
         elif args.command == "apply":
             with RuntimeLock(runtime.lock_file):

@@ -40,6 +40,8 @@ class RepositorySeal:
     fetch_config: tuple[str, ...]
     default_ref: str
     default_sha: str
+    local_default_ref: str
+    local_default_sha: str | None
 
     @classmethod
     def capture(
@@ -63,7 +65,21 @@ class RepositorySeal:
         )
         default_ref = f"refs/remotes/origin/{project['default_branch']}"
         default_sha = git(root, "rev-parse", default_ref).stdout.strip()
-        return cls(branch, head, origin, fetch_config, default_ref, default_sha)
+        local_default_ref = f"refs/heads/{project['default_branch']}"
+        local_completed = git(root, "rev-parse", local_default_ref, check=False)
+        local_default_sha = (
+            local_completed.stdout.strip() if local_completed.returncode == 0 else None
+        )
+        return cls(
+            branch,
+            head,
+            origin,
+            fetch_config,
+            default_ref,
+            default_sha,
+            local_default_ref,
+            local_default_sha,
+        )
 
     def verify(self, worktree: str | Path, *, project: dict[str, object]) -> None:
         root = Path(worktree).resolve()
@@ -89,6 +105,22 @@ class RepositorySeal:
         if current_default != self.default_sha:
             reasons.append("default remote ref changed")
             git(root, "update-ref", self.default_ref, self.default_sha, check=False)
+        local_completed = git(root, "rev-parse", self.local_default_ref, check=False)
+        current_local_default = (
+            local_completed.stdout.strip() if local_completed.returncode == 0 else None
+        )
+        if current_local_default != self.local_default_sha:
+            reasons.append("local default branch ref changed")
+            if self.local_default_sha is None:
+                git(root, "update-ref", "-d", self.local_default_ref, check=False)
+            else:
+                git(
+                    root,
+                    "update-ref",
+                    self.local_default_ref,
+                    self.local_default_sha,
+                    check=False,
+                )
         branch = git(root, "branch", "--show-current").stdout.strip()
         head = git(root, "rev-parse", "HEAD").stdout.strip()
         status = git(root, "status", "--porcelain=v1", "--untracked-files=all").stdout
