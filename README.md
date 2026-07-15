@@ -7,8 +7,9 @@ them.
 
 The existing live Gmail Bridge under `experiments/gmail-inbox/` is frozen legacy
 behavior and is not part of the Core architecture. This change does not modify,
-migrate, launch, or replace it. A future MCP/DevSpace source adapter will be a
-separate project.
+migrate, launch, or replace it. Project Brain 0.4.0 adds a separate, controlled
+MCP adapter for canonical Core operations; it does not copy DevSpace's arbitrary
+file or terminal authority.
 
 ## Guarantees
 
@@ -110,7 +111,26 @@ project-brain health --json
 project-brain apply --json
 project-brain cleanup --dry-run --json
 project-brain cleanup --execute --json
+project-brain serve --host 127.0.0.1 --port 7677
 ```
+
+## MCP adapter
+
+The Streamable HTTP endpoint is `http://127.0.0.1:7677/mcp`. The no-auth MVP
+rejects every non-loopback bind. ChatGPT access uses OpenAI Secure MCP Tunnel;
+do not expose the local endpoint as an unauthenticated public service.
+
+The eight allowlisted tools cover health, projects, canonical task create,
+asynchronous queue dispatch, bounded task list/detail, exact-head review, and
+read-only recovery preview. They expose no shell, arbitrary files, cleanup,
+recovery resolution, acceptance, or merge operation. Dispatch starts a fixed
+one-shot Core worker and returns immediately; `RuntimeLock` and the global
+claim gate remain authoritative.
+
+Setup, tool contracts, Secure MCP Tunnel steps, and the manual acceptance
+checklist are in [`docs/mcp-adapter.md`](docs/mcp-adapter.md). Architecture and
+threat boundaries are in
+[`docs/rfc/RFC-004-mcp-adapter.md`](docs/rfc/RFC-004-mcp-adapter.md).
 
 `apply` claims at most one task while holding the runtime flock. Startup
 reconciliation restores safe interrupted work to `retry_pending` or

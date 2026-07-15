@@ -55,6 +55,26 @@ class RuntimeLock:
         lock.release()
         return True
 
+    @classmethod
+    def probe_available(cls, path: str | Path) -> bool:
+        """Check flock availability without creating or rewriting lock metadata."""
+        target = Path(path).expanduser().resolve()
+        if not target.exists():
+            return True
+        try:
+            handle = target.open("r", encoding="utf-8")
+        except FileNotFoundError:
+            return True
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return True
+        finally:
+            handle.close()
+
     def _write(self, value: dict[str, Any]) -> None:
         assert self._handle is not None
         self._handle.seek(0)

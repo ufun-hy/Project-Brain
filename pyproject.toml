@@ -4,11 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-brain-core"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local task control plane for Project Brain"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "mcp>=1.28,<2",
+]
 
 [project.scripts]
 project-brain = "project_brain.cli:main"

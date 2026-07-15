@@ -100,4 +100,15 @@ head.
 Repository seals may restore Core-owned remote-tracking metadata, but a changed
 local default-branch ref blocks publication without restoration or deletion.
 Bridge records and retains evidence instead of rewriting a branch owned by the
-user's primary checkout.
+user’s primary checkout.
+
+## D-017: MCP is a controlled Core adapter over a private tunnel
+
+Project Brain exposes only allowlisted canonical task, status, dispatch,
+review, and recovery-preview operations through MCP. It does not expose a
+shell, arbitrary files, Git mutation, cleanup, recovery resolution, acceptance,
+or merge. The no-auth Streamable HTTP listener is loopback-only. ChatGPT remote
+access uses OpenAI Secure MCP Tunnel's outbound HTTPS path; Project Brain does
+not provide or endorse a public unauthenticated endpoint. The long-running MCP
+server starts fixed one-shot Core workers asynchronously, while RuntimeLock,
+the global claim gate, and the existing state machine remain authoritative.

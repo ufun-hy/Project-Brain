@@ -5,44 +5,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sys
-from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from .application import health_report, status_report, task_view, worker_result_view
 from .engine import TaskEngine
 from .errors import AlreadyRunningError, ProjectBrainError
 from .locking import RuntimeLock
-from .models import TaskStatus, parse_timestamp
 from .ingress import TaskImporter
 from .projects import ProjectRegistry
 from .recovery import RecoveryManager
 from .forensics import TerminalWorktreeReconciler
 from .runtime import RuntimePaths
-from .store import SCHEMA_VERSION, TaskStore
+from .security import redact_text
+from .store import TaskStore
 from .worktrees import WorktreeManager
-
-
-NEXT_ACTION = {
-    TaskStatus.PENDING.value: "Run project-brain apply.",
-    TaskStatus.RUNNING.value: "Wait for the active process; inspect health if its deadline expires.",
-    TaskStatus.RECOVERY_BLOCKED.value: (
-        "Inspect agent identity, then use tasks recover with an explicit operator resolution."
-    ),
-    TaskStatus.RETRY_PENDING.value: "Retry from a new apply process after the transient issue clears.",
-    TaskStatus.VERIFICATION_FAILED.value: "Inspect verification evidence, then request changes.",
-    TaskStatus.NEEDS_CHANGES.value: "Run project-brain apply for the requested revision work.",
-    TaskStatus.AWAITING_REVIEW.value: "Review evidence and the Draft PR; do not merge automatically.",
-    TaskStatus.READY_TO_MERGE.value: "Await explicit user merge authorization.",
-    TaskStatus.MERGING.value: "Wait for the authorized merge operation.",
-    TaskStatus.ACCEPTED.value: "No automatic action; terminal accepted task.",
-    TaskStatus.MERGE_FAILED.value: "Inspect merge failure and choose retry or needs_changes.",
-    TaskStatus.FAILED.value: "Inspect the permanent error; create a new revision if needed.",
-    TaskStatus.SUPERSEDED.value: "Follow the replacement task revision.",
-    TaskStatus.EXPIRED.value: "Create a new task or revision with a valid expiry.",
-}
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -120,72 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--max-transient-attempts", type=int, default=3)
     _add_json(apply)
 
+    serve = sub.add_parser("serve", help="Run the loopback-only MCP adapter")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=7677)
+
     return parser
-
-
-def _task_view(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    updated = parse_timestamp(task.get("updated_at"))
-    elapsed = None
-    if updated:
-        elapsed = max(0, int((datetime.now(timezone.utc) - updated).total_seconds()))
-    return {
-        **task,
-        "project": projects.get(task["project_id"], {}).get("name", task["project_id"]),
-        "elapsed_seconds": elapsed,
-        "next_action": NEXT_ACTION.get(task["status"], "Inspect task state."),
-    }
-
-
-def _status(store: TaskStore) -> dict[str, Any]:
-    projects = {item["project_id"]: item for item in store.list_projects()}
-    tasks = [_task_view(task, projects) for task in store.list_tasks(limit=100)]
-    return {
-        "status": "ok",
-        "counts": dict(sorted(Counter(task["status"] for task in tasks).items())),
-        "tasks": tasks,
-    }
-
-
-def _health(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
-    checks: list[dict[str, Any]] = []
-
-    def check(name: str, passed: bool, detail: str) -> None:
-        checks.append({"name": name, "status": "passed" if passed else "failed", "detail": detail})
-
-    check("runtime_root", runtime.root.is_dir() and os.access(runtime.root, os.W_OK), str(runtime.root))
-    check(
-        "database_schema",
-        store.schema_version() == SCHEMA_VERSION,
-        f"version={store.schema_version()} expected={SCHEMA_VERSION}",
-    )
-    lock_available = RuntimeLock.is_available(runtime.lock_file)
-    check(
-        "runtime_lock",
-        lock_available,
-        "available" if lock_available else "held by another process",
-    )
-    check("git", shutil.which("git") is not None, shutil.which("git") or "not found")
-    check("gh", shutil.which("gh") is not None, shutil.which("gh") or "not found")
-    for project in store.list_projects():
-        repo = Path(project["repo_path"])
-        check(
-            f"project:{project['project_id']}",
-            repo.exists() and (repo / ".git").exists(),
-            str(repo),
-        )
-        executable = project.get("codex_command", [""])[0] if project.get("codex_command") else ""
-        available = bool(executable) and (
-            Path(executable).expanduser().exists() if "/" in executable else shutil.which(executable) is not None
-        )
-        check(
-            f"codex:{project['project_id']}",
-            available,
-            executable or "not configured",
-        )
-    return {
-        "status": "healthy" if all(item["status"] == "passed" for item in checks) else "unhealthy",
-        "checks": checks,
-    }
 
 
 def _human_status(value: dict[str, Any]) -> str:
@@ -206,7 +123,8 @@ def _human_status(value: dict[str, Any]) -> str:
 
 def _render(value: Any, *, json_output: bool, human: str | None = None) -> None:
     if json_output:
-        print(json.dumps(value, ensure_ascii=False, indent=2))
+        indent = None if os.environ.get("PROJECT_BRAIN_JSON_LINES") == "1" else 2
+        print(json.dumps(value, ensure_ascii=False, indent=indent))
     elif human is not None:
         print(human)
     elif isinstance(value, list):
@@ -223,12 +141,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         store.initialize()
     except ProjectBrainError as exc:
-        value = {"status": "error", "error_category": exc.category, "error": str(exc)}
+        message = redact_text(str(exc)) if os.environ.get("PROJECT_BRAIN_WORKER_OUTPUT") == "1" else str(exc)
+        value = {"status": "error", "error_category": exc.category, "error": message}
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 2
+    except Exception as exc:
+        if os.environ.get("PROJECT_BRAIN_WORKER_OUTPUT") != "1":
+            raise
+        value = {
+            "status": "error",
+            "code": "internal",
+            "error": redact_text(str(exc))[:2000],
+        }
+        print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
+        return 3
     try:
         if args.command == "status":
-            value = _status(store)
+            value = status_report(store)
             _render(value, json_output=args.json_output, human=_human_status(value))
         elif args.command == "projects" and args.projects_command == "list":
             projects = store.list_projects()
@@ -236,7 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "tasks" and args.tasks_command == "list":
             projects = {item["project_id"]: item for item in store.list_projects()}
             tasks = [
-                _task_view(task, projects)
+                task_view(task, projects)
                 for task in store.list_tasks(
                     status=args.status,
                     project_id=args.project_id,
@@ -246,7 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render(tasks, json_output=args.json_output)
         elif args.command == "tasks" and args.tasks_command == "show":
             projects = {item["project_id"]: item for item in store.list_projects()}
-            task = _task_view(store.get_task(args.task_id), projects)
+            task = task_view(store.get_task(args.task_id), projects)
             task["attempts"] = store.list_attempts(args.task_id)
             task["verification"] = store.list_verifications(args.task_id)
             task["reviews"] = store.list_reviews(args.task_id)
@@ -293,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json_output=args.json_output,
             )
         elif args.command == "health":
-            value = _health(store, runtime)
+            value = health_report(store, runtime)
             human = "\n".join(
                 [f"Project Brain health: {value['status']}"]
                 + [f"- {item['status'].upper()} {item['name']}: {item['detail']}" for item in value["checks"]]
@@ -321,15 +250,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                     runtime,
                     max_transient_attempts=args.max_transient_attempts,
                 ).apply_once()
+            if os.environ.get("PROJECT_BRAIN_WORKER_OUTPUT") == "1":
+                value = worker_result_view(value)
             _render(value, json_output=args.json_output)
+        elif args.command == "serve":
+            from .mcp.server import run_mcp_server
+
+            run_mcp_server(runtime, host=args.host, port=args.port)
         return 0
     except AlreadyRunningError:
         _render({"status": "already_running"}, json_output=getattr(args, "json_output", False))
         return 0
     except ProjectBrainError as exc:
-        value = {"status": "error", "error_category": exc.category, "error": str(exc)}
+        message = redact_text(str(exc)) if os.environ.get("PROJECT_BRAIN_WORKER_OUTPUT") == "1" else str(exc)
+        value = {"status": "error", "error_category": exc.category, "error": message}
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 2
+    except Exception as exc:
+        if os.environ.get("PROJECT_BRAIN_WORKER_OUTPUT") != "1":
+            raise
+        value = {
+            "status": "error",
+            "code": "internal",
+            "error": redact_text(str(exc))[:2000],
+        }
+        print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

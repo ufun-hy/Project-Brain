@@ -1461,14 +1461,34 @@ class TaskStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_events(self, task_id: str | None = None) -> list[dict[str, Any]]:
+    def list_events(
+        self,
+        task_id: str | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(limit, 1000)) if limit is not None else None
         with self.connect() as connection:
             if task_id:
-                rows = connection.execute(
-                    "SELECT * FROM events WHERE task_id = ? ORDER BY event_id", (task_id,)
-                ).fetchall()
+                if bounded_limit is None:
+                    rows = connection.execute(
+                        "SELECT * FROM events WHERE task_id = ? ORDER BY event_id", (task_id,)
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM (SELECT * FROM events WHERE task_id = ? "
+                        "ORDER BY event_id DESC LIMIT ?) ORDER BY event_id",
+                        (task_id, bounded_limit),
+                    ).fetchall()
             else:
-                rows = connection.execute("SELECT * FROM events ORDER BY event_id").fetchall()
+                if bounded_limit is None:
+                    rows = connection.execute("SELECT * FROM events ORDER BY event_id").fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM (SELECT * FROM events ORDER BY event_id DESC LIMIT ?) "
+                        "ORDER BY event_id",
+                        (bounded_limit,),
+                    ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
             value = dict(row)
