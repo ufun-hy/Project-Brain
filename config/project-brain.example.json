@@ -1,0 +1,29 @@
+{
+  "projects": [
+    {
+      "project_id": "project-brain",
+      "name": "Project-Brain",
+      "repo_path": "~/code/Project-Brain",
+      "remote_url": "git@github.com:example/Project-Brain.git",
+      "default_branch": "main",
+      "codex_command": [
+        "codex",
+        "exec",
+        "--sandbox",
+        "workspace-write",
+        "-"
+      ],
+      "verification_commands": [
+        {
+          "id": "core-tests",
+          "text": "Project unit tests pass",
+          "command": ["python3", "-m", "unittest", "discover", "-s", "tests"],
+          "always_run": true
+        }
+      ],
+      "allowed_commands": {},
+      "auto_push": true,
+      "auto_pr": true
+    }
+  ]
+}
