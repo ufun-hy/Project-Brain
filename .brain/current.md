@@ -4,9 +4,9 @@ Last updated: 2026-07-15
 
 ## Current stage
 
-The PR #12 v4 review revision is implemented on
-`codex/project-brain-core-mvp`. The PR remains Draft for renewed independent
-review; PR #10 and PR #11 remain untouched.
+The PR #12 v5 claim-gate revision is implemented locally on
+`codex/project-brain-core-mvp`. The PR remains Draft; PR #10 and PR #11 remain
+untouched.
 
 ## Implemented review changes
 
@@ -23,6 +23,8 @@ review; PR #10 and PR #11 remain untouched.
 - Startup and CLI recovery persist Codex PID/PGID plus process identity,
   maintain background heartbeats, verify identity before every signal, and use
   an auditable `recovery_blocked` state for missing/ambiguous identities.
+- Recovery exposes a global claim-safety report, and startup does not claim any
+  pending task while another task remains `running` or `recovery_blocked`.
 - Terminal worktrees are cleaned only after private manifest-hashed failure
   evidence is persisted; archive or safety failure retains the worktree.
 - Published review worktrees can be released and later rebuilt from an exact
@@ -35,15 +37,15 @@ review; PR #10 and PR #11 remain untouched.
 
 ## Verification status
 
-The expanded 106-test Core suite passes locally through
+The expanded 109-test Core suite passes locally through
 `scripts/verify-core.sh`. Gmail legacy tests are not part of Core validation
 because the legacy implementation is unchanged.
 
 ## Next concrete starting point
 
-Inspect the updated Draft PR #12 and successful CI result against the v4 review
-closure matrix. Do not treat implementation success as acceptance or merge
-authorization.
+Push the v5 claim-gate revision, update Draft PR #12, and inspect its final CI
+result against the review closure matrix. Do not treat implementation success
+as acceptance or merge authorization.
 
 ## Scope limits
 

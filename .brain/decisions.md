@@ -86,8 +86,10 @@ archive or cleanup safety failure retains the worktree.
 
 Codex owns a persisted process group with birth/executable identity and
 background heartbeats. Recovery re-verifies identity before every signal and
-never starts a concurrent attempt while that group may be alive. Missing or
-ambiguous identity enters an operator-resolved `recovery_blocked` state.
+returns a global claim-safety report before scheduling. The engine never claims
+the same or a different task while any task remains `running` or
+`recovery_blocked`. Missing or ambiguous identity enters an operator-resolved
+`recovery_blocked` state.
 Verification results belong to append-only verification sets identified
 independently from retry attempt counts and bound to one canonical commit.
 Review verdicts are applied as one transaction against that same canonical

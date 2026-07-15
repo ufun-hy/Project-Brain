@@ -249,6 +249,10 @@ class RecoveryTests(unittest.TestCase):
             auto_pr=False,
         )
         self.fixture.add_task("interrupted", payload={"prompt": "block until killed"})
+        self.fixture.add_task(
+            "pending-while-orphaned",
+            payload={"prompt": "must not start a second Codex process"},
+        )
         command = [
             sys.executable,
             "-m",
@@ -296,10 +300,16 @@ class RecoveryTests(unittest.TestCase):
             timeout=15,
         )
         self.assertEqual(immediate.returncode, 0, immediate.stderr)
-        self.assertEqual(json.loads(immediate.stdout)["status"], "idle")
+        immediate_result = json.loads(immediate.stdout)
+        self.assertEqual(immediate_result["status"], "blocked")
+        self.assertFalse(immediate_result["claim_safe"])
+        self.assertEqual(immediate_result["claim_blockers"][0]["task_id"], "interrupted")
         still_running = self.fixture.store.get_task("interrupted")
         self.assertEqual(still_running["status"], TaskStatus.RUNNING.value)
         self.assertEqual(still_running["attempt_count"], 1)
+        pending = self.fixture.store.get_task("pending-while-orphaned")
+        self.assertEqual(pending["status"], TaskStatus.PENDING.value)
+        self.assertEqual(pending["attempt_count"], 0)
 
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -368,6 +378,22 @@ class RecoveryTests(unittest.TestCase):
             ).stdout.strip(),
             "1",
         )
+
+        next_task = subprocess.run(
+            command,
+            cwd=str(self.fixture.root),
+            env=pythonpath_env(self.source_root),
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertEqual(next_task.returncode, 0, next_task.stderr)
+        self.assertEqual(
+            json.loads(next_task.stdout)["status"], TaskStatus.AWAITING_REVIEW.value
+        )
+        pending = self.fixture.store.get_task("pending-while-orphaned")
+        self.assertEqual(pending["status"], TaskStatus.AWAITING_REVIEW.value)
+        self.assertEqual(pending["attempt_count"], 1)
 
     def test_interrupted_review_with_released_worktree_restores_awaiting_review(self) -> None:
         project = self.fixture.add_project(

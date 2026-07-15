@@ -2,14 +2,15 @@
 
 Updated: 2026-07-15
 Review inputs: `Project-Brain-Core-MVP-PR12-Review-v3.md`, independent review,
-and `Project-Brain-Core-MVP-PR12-Review-v4.md`
+`Project-Brain-Core-MVP-PR12-Review-v4.md`, and
+`Project-Brain-Core-MVP-PR12-Review-v5.md`
 
 | Review area | Implemented boundary | Regression evidence |
 | --- | --- | --- |
 | External validation commands | Canonical criteria contain text plus optional trusted `verification_id`; `command`/`argv` are rejected | `test_ingress`, `test_engine` |
 | `needs_changes` execution | Durable attempt phases rerun Codex and append a canonical commit; only publication resumes publication | `test_review_lifecycle`, `test_engine` |
 | Structured feedback | Reviews/findings bind verdict, severity, file, evidence, requirement to canonical `head_sha` and enter the next Codex prompt | `test_review_lifecycle` |
-| Crash recovery | Popen process groups, durable birth/executable identity, background heartbeat, explicit `recovery_blocked` resolution, and identity-gated termination | `test_codex_adapter`, `test_process_supervision`, `test_recovery`, `test_cli` |
+| Crash recovery | Popen process groups, durable birth/executable identity, background heartbeat, explicit `recovery_blocked` resolution, identity-gated termination, and a global single-agent claim gate | `test_codex_adapter`, `test_process_supervision`, `test_recovery`, `test_claim_gate`, `test_cli` |
 | Verification history | Append-only attempt-scoped verification sets bind evidence and publication retry to the canonical head | `test_verification_sets`, `test_engine` |
 | Atomic review | One immediate transaction validates state/head/findings and writes review, transition, phase, and event | `test_review_lifecycle`, `test_cli` |
 | Terminal cleanup | Startup and CLI preflight, persist manifest-hashed forensics, then safely clean; archive failure retains | `test_forensics`, `test_worktrees`, `test_engine` |

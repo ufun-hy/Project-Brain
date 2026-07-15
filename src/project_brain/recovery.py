@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,23 @@ from .process_supervision import (
 from .repository import assert_registered_origin
 from .store import TaskStore
 from .worktrees import WorktreeManager, heartbeat_age_seconds, process_alive
+
+
+@dataclass(frozen=True)
+class RecoveryReport:
+    actions: list[dict[str, Any]]
+    claim_blockers: list[dict[str, Any]]
+
+    @property
+    def claim_safe(self) -> bool:
+        return not self.claim_blockers
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "claim_safe": self.claim_safe,
+            "claim_blockers": self.claim_blockers,
+            "recovery_actions": self.actions,
+        }
 
 
 class RecoveryManager:
@@ -79,6 +97,24 @@ class RecoveryManager:
                 )
             )
         return results
+
+    def reconcile_for_claims(self, *, execute: bool) -> RecoveryReport:
+        """Reconcile interrupted work, then expose the global single-agent gate."""
+        actions = self.reconcile(execute=execute)
+        action_by_task = {item["task_id"]: item for item in actions}
+        blockers: list[dict[str, Any]] = []
+        for task in self.store.list_claim_blocking_tasks():
+            action = action_by_task.get(task["task_id"], {})
+            blockers.append(
+                {
+                    "task_id": task["task_id"],
+                    "status": task["status"],
+                    "attempt_count": task["attempt_count"],
+                    "agent_session_id": task.get("agent_session_id"),
+                    "reason": action.get("reason") or task.get("last_error"),
+                }
+            )
+        return RecoveryReport(actions=actions, claim_blockers=blockers)
 
     def _resolve_blocked(
         self,

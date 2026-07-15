@@ -23,7 +23,9 @@ Recovery uses PID/PGID plus persisted process birth and executable identity,
 heartbeat, durable attempt phase, registered worktree, branch, HEAD, status,
 conflict state, origin, and canonical commit. Safe state becomes
 `retry_pending` or `awaiting_review`. If a process-group member is alive,
-recovery waits and does not create another attempt.
+recovery waits and does not claim any task. `apply --json` returns `blocked`,
+`claim_safe: false`, and a `claim_blockers` list while any task remains
+`running` or `recovery_blocked`.
 
 To explicitly stop an orphaned agent, terminate the entire persisted group and
 then reconcile it:
@@ -49,7 +51,8 @@ project-brain tasks recover <task-id> --execute --cancel --json
 
 `--confirm-no-agent` and `--resume` return the task to `retry_pending` after an
 operator assertion; `--cancel` makes it terminal. Each action is persisted in
-the event log.
+the event log. Until that resolution removes the `recovery_blocked` state, the
+global single-agent gate prevents unrelated pending tasks from starting.
 
 ## `task_history`
 

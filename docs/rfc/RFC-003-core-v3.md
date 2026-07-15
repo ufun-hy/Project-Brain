@@ -124,9 +124,13 @@ immediately before signalling the process group, then wait for confirmed exit.
 Startup reconciliation runs under the runtime flock before claiming a task. It
 uses the persisted child process group, registered owner PID, heartbeat,
 attempt phase, worktree path, branch, HEAD, status, origin, default branch, and
-canonical commit.
+canonical commit. Recovery then returns a global claim-safety report. The
+engine calls `claim_next()` only when no task remains `running` or
+`recovery_blocked`; otherwise it returns a structured `blocked` result with the
+blocking task evidence. This preserves the Core MVP single-agent boundary
+across different tasks as well as retries of the same task.
 
-- A live Codex child group remains `running` and prevents a second attempt;
+- A live Codex child group remains `running` and prevents every new claim;
   operators may explicitly terminate the group before recovery only when its
   persisted identity still matches.
 - A starting session without a child PID remains `running` for a five-minute

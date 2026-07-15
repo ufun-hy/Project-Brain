@@ -366,6 +366,19 @@ class TaskStore:
             ).fetchall()
         return [self._task(row) for row in rows]
 
+    def list_claim_blocking_tasks(self) -> list[dict[str, Any]]:
+        statuses = (TaskStatus.RUNNING.value, TaskStatus.RECOVERY_BLOCKED.value)
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status IN (?, ?)
+                ORDER BY created_at, task_id
+                """,
+                statuses,
+            ).fetchall()
+        return [self._task(row) for row in rows]
+
     def transition(
         self,
         task_id: str,

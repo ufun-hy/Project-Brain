@@ -26,7 +26,8 @@ separate project.
   canonical commit.
 - Codex runs in a dedicated process group. Child PID/PGID, process birth and
   executable identity, and a live heartbeat are persisted, so an orphaned or
-  identity-ambiguous child blocks a concurrent recovery attempt.
+  identity-ambiguous child blocks every new task claim, not only a retry of its
+  own task.
 - Verification evidence belongs to an immutable, attempt-scoped verification
   set bound to one canonical head. Publication retries reuse that exact set.
 - Review verdict validation, findings, task transition, phase update, and event
@@ -114,10 +115,12 @@ project-brain cleanup --execute --json
 `apply` claims at most one task while holding the runtime flock. Startup
 reconciliation restores safe interrupted work to `retry_pending` or
 `awaiting_review`. A live persisted Codex process group is left running and no
-second attempt is claimed. `--terminate-agent` is the explicit operator action
-that terminates/kills the whole group before recovery, but only after the
-persisted birth/executable identity is re-verified immediately before each
-signal.
+other task is claimed. Recovery exposes a structured global claim report; if
+any task remains `running` or `recovery_blocked`, `apply` returns `blocked`
+with `claim_blockers` before `claim_next()`. `--terminate-agent` is the explicit
+operator action that terminates/kills the whole group before recovery, but only
+after the persisted birth/executable identity is re-verified immediately
+before each signal.
 
 If startup has no persisted child PID after a five-minute grace period, or a
 live PID/PGID no longer matches its process identity, the task moves to

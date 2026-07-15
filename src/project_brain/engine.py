@@ -48,13 +48,25 @@ class TaskEngine:
         """Claim and execute no more than one task, then return structured state."""
         # Production entrypoints hold RuntimeLock around this call. Cleanup uses
         # database registration, task state, PID, heartbeat, and path checks.
-        RecoveryManager(self.store, self.worktrees).reconcile(execute=True)
+        recovery = RecoveryManager(self.store, self.worktrees).reconcile_for_claims(
+            execute=True
+        )
         TerminalWorktreeReconciler(
             self.store, self.runtime, self.worktrees
         ).reconcile(execute=True)
+        if not recovery.claim_safe:
+            return {
+                "status": "blocked",
+                "task": None,
+                **recovery.as_dict(),
+            }
         task = self.store.claim_next()
         if task is None:
-            return {"status": "idle", "task": None}
+            return {
+                "status": "idle",
+                "task": None,
+                **recovery.as_dict(),
+            }
         project = self.store.get_project(task["project_id"])
         try:
             worktree_record = self.worktrees.create(task, project)
