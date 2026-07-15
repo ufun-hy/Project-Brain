@@ -41,9 +41,9 @@ because the legacy implementation is unchanged.
 
 ## Next concrete starting point
 
-Push the v4 revision, update Draft PR #12's validation evidence, and inspect its
-CI result against the review closure matrix. Do not treat implementation
-success as acceptance or merge authorization.
+Inspect the updated Draft PR #12 and successful CI result against the v4 review
+closure matrix. Do not treat implementation success as acceptance or merge
+authorization.
 
 ## Scope limits
 
