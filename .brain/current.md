@@ -4,9 +4,9 @@ Last updated: 2026-07-15
 
 ## Current stage
 
-The PR #12 v5 claim-gate revision is implemented locally on
-`codex/project-brain-core-mvp`. The PR remains Draft; PR #10 and PR #11 remain
-untouched.
+The PR #12 v5 claim-gate revision is implemented on
+`codex/project-brain-core-mvp`. The PR remains Draft for renewed independent
+review; PR #10 and PR #11 remain untouched.
 
 ## Implemented review changes
 
@@ -38,14 +38,14 @@ untouched.
 ## Verification status
 
 The expanded 109-test Core suite passes locally through
-`scripts/verify-core.sh`. Gmail legacy tests are not part of Core validation
-because the legacy implementation is unchanged.
+`scripts/verify-core.sh` and in GitHub Actions. Gmail legacy tests are not part
+of Core validation because the legacy implementation is unchanged.
 
 ## Next concrete starting point
 
-Push the v5 claim-gate revision, update Draft PR #12, and inspect its final CI
-result against the review closure matrix. Do not treat implementation success
-as acceptance or merge authorization.
+Inspect the updated Draft PR #12 and successful final CI result against the v5
+review closure matrix. Do not treat implementation success as acceptance or
+merge authorization.
 
 ## Scope limits
 
