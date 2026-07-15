@@ -24,15 +24,17 @@ separate project.
 - Implementation, verification, publication, and review are durable attempt
   phases. A `needs_changes` verdict reruns implementation and appends a new
   canonical commit.
-- Codex runs in a dedicated process group. Child PID/PGID and a live heartbeat
-  are persisted, so an orphaned child blocks a concurrent recovery attempt.
+- Codex runs in a dedicated process group. Child PID/PGID, process birth and
+  executable identity, and a live heartbeat are persisted, so an orphaned or
+  identity-ambiguous child blocks a concurrent recovery attempt.
 - Verification evidence belongs to an immutable, attempt-scoped verification
   set bound to one canonical head. Publication retries reuse that exact set.
 - Review verdict validation, findings, task transition, phase update, and event
   are committed in one transaction.
 - Verification runs behind a Git state seal. File, commit, branch, origin,
   fetch-config, conflict, remote default-ref, or local default-branch-ref
-  mutations block publication.
+  mutations block publication. A changed human-owned local default branch is
+  detect-only and is never restored, deleted, or rewound.
 - Publishing pushes only the registered task branch and creates or reuses a
   Draft PR after exact base/head/SHA/repository validation. Core never merges
   automatically.
@@ -100,6 +102,9 @@ project-brain tasks show <task-id> --json
 project-brain tasks recover <task-id> --dry-run --json
 project-brain tasks recover <task-id> --execute --json
 project-brain tasks recover <task-id> --execute --terminate-agent --json
+project-brain tasks recover <task-id> --execute --confirm-no-agent --json
+project-brain tasks recover <task-id> --execute --resume --json
+project-brain tasks recover <task-id> --execute --cancel --json
 project-brain health --json
 project-brain apply --json
 project-brain cleanup --dry-run --json
@@ -110,7 +115,16 @@ project-brain cleanup --execute --json
 reconciliation restores safe interrupted work to `retry_pending` or
 `awaiting_review`. A live persisted Codex process group is left running and no
 second attempt is claimed. `--terminate-agent` is the explicit operator action
-that terminates/kills the whole group before recovery.
+that terminates/kills the whole group before recovery, but only after the
+persisted birth/executable identity is re-verified immediately before each
+signal.
+
+If startup has no persisted child PID after a five-minute grace period, or a
+live PID/PGID no longer matches its process identity, the task moves to
+`recovery_blocked` and retains its worktree. It cannot be claimed
+automatically. After inspecting the host, an operator must explicitly use
+`--confirm-no-agent` or `--resume` to return it to `retry_pending`, or
+`--cancel` to make it terminal. Each resolution is recorded as an event.
 
 Before claiming new work, startup also preflights terminal worktrees. It writes
 private, manifest-hashed failure evidence under `results` first, records the

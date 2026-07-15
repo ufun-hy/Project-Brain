@@ -12,7 +12,7 @@ from typing import Any
 
 from .errors import ExternalCommandError, InvalidTaskError, RecoveryError, TransientTaskError
 from .git_history import GitHistoryNormalizer, GitSnapshot, NormalizedHistory
-from .process_supervision import terminate_process_group
+from .process_supervision import capture_process_identity, terminate_process_group
 from .store import TaskStore
 from .security import redact_text
 
@@ -76,6 +76,7 @@ class CodexAdapter:
         timeout = int(task["payload"].get("timeout_seconds", 1800))
         process: subprocess.Popen[str] | None = None
         child_pgid: int | None = None
+        child_identity: dict[str, Any] | None = None
         stop_heartbeat = threading.Event()
         heartbeat_thread: threading.Thread | None = None
         try:
@@ -89,16 +90,44 @@ class CodexAdapter:
                 start_new_session=True,
             )
             child_pgid = os.getpgid(process.pid)
+            child_identity = capture_process_identity(process.pid, child_pgid)
+            if child_identity is None:
+                self.store.start_unverified_agent_session(
+                    session_id,
+                    child_pid=process.pid,
+                    child_pgid=child_pgid,
+                )
+                terminated = terminate_process_group(
+                    child_pid=process.pid,
+                    child_pgid=child_pgid,
+                    grace_seconds=self.termination_grace_seconds,
+                    process=process,
+                )
+                if terminated:
+                    self.store.finish_agent_session(
+                        session_id,
+                        status="failed",
+                        exit_code=None,
+                        output_summary="Could not capture Codex child process identity",
+                    )
+                    raise ExternalCommandError(
+                        "Codex child identity could not be captured; child was stopped"
+                    )
+                raise RecoveryError(
+                    "Codex child identity could not be captured and exit is unconfirmed"
+                )
             try:
                 self.store.start_agent_session(
                     session_id,
                     child_pid=process.pid,
                     child_pgid=child_pgid,
+                    child_identity=child_identity,
                 )
             except Exception:
                 terminate_process_group(
                     child_pid=process.pid,
                     child_pgid=child_pgid,
+                    expected_identity=child_identity,
                     grace_seconds=self.termination_grace_seconds,
                     process=process,
                 )
@@ -135,6 +164,7 @@ class CodexAdapter:
             terminated = terminate_process_group(
                 child_pid=process.pid,
                 child_pgid=child_pgid,
+                expected_identity=child_identity,
                 grace_seconds=self.termination_grace_seconds,
                 process=process,
             )
@@ -161,6 +191,7 @@ class CodexAdapter:
                 terminated = terminate_process_group(
                     child_pid=process.pid,
                     child_pgid=child_pgid,
+                    expected_identity=child_identity,
                     grace_seconds=self.termination_grace_seconds,
                     process=process,
                 )

@@ -111,16 +111,6 @@ class RepositorySeal:
         )
         if current_local_default != self.local_default_sha:
             reasons.append("local default branch ref changed")
-            if self.local_default_sha is None:
-                git(root, "update-ref", "-d", self.local_default_ref, check=False)
-            else:
-                git(
-                    root,
-                    "update-ref",
-                    self.local_default_ref,
-                    self.local_default_sha,
-                    check=False,
-                )
         branch = git(root, "branch", "--show-current").stdout.strip()
         head = git(root, "rev-parse", "HEAD").stdout.strip()
         status = git(root, "status", "--porcelain=v1", "--untracked-files=all").stdout

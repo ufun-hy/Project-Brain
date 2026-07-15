@@ -7,7 +7,7 @@ from typing import Any
 
 from .actions import run_named_command, write_files
 from .codex import CodexAdapter
-from .errors import ProjectBrainError, VerificationFailedError
+from .errors import ProjectBrainError, RecoveryError, VerificationFailedError
 from .git_history import GitHistoryNormalizer, NormalizedHistory
 from .commands import git
 from .errors import TaskHistoryError
@@ -235,6 +235,11 @@ class TaskEngine:
         category = getattr(exc, "category", "unexpected")
         retryable = bool(getattr(exc, "retryable", False))
         current = self.store.get_task(task["task_id"])
+        if isinstance(exc, RecoveryError):
+            updated = self.store.block_running_task(
+                task["task_id"], reason=str(exc)
+            )
+            return {"status": updated["status"], "task": updated}
         if retryable and current["attempt_count"] < self.max_transient_attempts:
             target = TaskStatus.RETRY_PENDING
             attempt_status = "retry_pending"

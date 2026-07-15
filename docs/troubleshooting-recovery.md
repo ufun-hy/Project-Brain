@@ -19,11 +19,11 @@ it explicitly:
 project-brain tasks recover <task-id> --execute --json
 ```
 
-Recovery uses PID plus heartbeat, durable attempt phase, registered worktree,
-branch, HEAD, status, conflict state, origin, and canonical commit. Safe state
-becomes `retry_pending` or `awaiting_review`. The persisted Codex child PID/PGID
-is checked before owner-heartbeat recovery: if any process-group member is
-alive, recovery waits and does not create another attempt.
+Recovery uses PID/PGID plus persisted process birth and executable identity,
+heartbeat, durable attempt phase, registered worktree, branch, HEAD, status,
+conflict state, origin, and canonical commit. Safe state becomes
+`retry_pending` or `awaiting_review`. If a process-group member is alive,
+recovery waits and does not create another attempt.
 
 To explicitly stop an orphaned agent, terminate the entire persisted group and
 then reconcile it:
@@ -32,17 +32,35 @@ then reconcile it:
 project-brain tasks recover <task-id> --execute --terminate-agent --json
 ```
 
-If child startup was interrupted before PID persistence, automatic recovery
-fails closed for manual investigation because absence of a live child cannot be
-proved.
+The command re-verifies process birth time, executable, command digest, PID, and
+PGID immediately before signalling. An absent or mismatched identity sends no
+signal and moves the task to `recovery_blocked`.
+
+If child startup was interrupted before PID persistence, Core waits for a
+five-minute grace period and then moves the task to `recovery_blocked`. It keeps
+the worktree and never starts a replacement attempt automatically. Inspect the
+host and choose one explicit resolution:
+
+```bash
+project-brain tasks recover <task-id> --execute --confirm-no-agent --json
+project-brain tasks recover <task-id> --execute --resume --json
+project-brain tasks recover <task-id> --execute --cancel --json
+```
+
+`--confirm-no-agent` and `--resume` return the task to `retry_pending` after an
+operator assertion; `--cancel` makes it terminal. Each action is persisted in
+the event log.
 
 ## `task_history`
 
 The task changed branch, rewrote history, entered a conflict/in-progress state,
 or verification changed sealed Git state. Publication is blocked. Origin,
 fetch configuration, the remote default ref, and the shared local default
-branch ref are restored when possible because Git worktrees share repository
-configuration. File and commit evidence is retained for inspection.
+branch ref are sealed because Git worktrees share repository configuration.
+Origin, fetch configuration, and the remote tracking ref are restored when
+possible. The human-owned local default branch is detect-only and is left
+exactly as found; it is never rewound or deleted. File and commit evidence is
+retained for inspection.
 
 ## `verification_failed`
 

@@ -50,7 +50,7 @@ reset, cleaned, or used as an execution directory.
 
 ## Durable model and migrations
 
-SQLite schema v3 stores projects, tasks, attempts, worktrees, supervised agent
+SQLite schema v4 stores projects, tasks, attempts, worktrees, supervised agent
 sessions, canonical-head verification sets and evidence, atomic reviews,
 structured review findings, forensic archive records, and append-only events.
 Migrations execute statement-by-statement inside one explicit transaction. A
@@ -107,16 +107,19 @@ Before verification Core seals:
 
 The same state is checked after verification and again before publication.
 File, commit, branch, origin, fetch configuration, conflict, or default-ref
-mutation blocks push. Shared origin/fetch/default-ref metadata is restored to
-its sealed value before the task fails; startup then archives its forensic
+mutation blocks push. Shared origin, fetch configuration, and remote default-ref
+metadata are restored to their sealed values when possible. The human-owned
+local default-branch ref is detect-only: Core records the mutation, blocks
+publication, and leaves the ref exactly as found. Startup archives forensic
 evidence before any safe terminal cleanup.
 
 ## Crash and remote recovery
 
-Codex starts with `start_new_session=True`; its child PID/PGID is durable and a
-background thread refreshes both agent-session and worktree heartbeats at most
-every 60 seconds. Timeout and cancellation terminate, then kill if necessary,
-the entire process group and wait for confirmed exit.
+Codex starts with `start_new_session=True`; its child PID/PGID, process birth
+marker, executable, and command digest are durable, and a background thread
+refreshes both agent-session and worktree heartbeats at most every 60 seconds.
+Timeout, cancellation, and explicit recovery re-verify that identity
+immediately before signalling the process group, then wait for confirmed exit.
 
 Startup reconciliation runs under the runtime flock before claiming a task. It
 uses the persisted child process group, registered owner PID, heartbeat,
@@ -124,7 +127,13 @@ attempt phase, worktree path, branch, HEAD, status, origin, default branch, and
 canonical commit.
 
 - A live Codex child group remains `running` and prevents a second attempt;
-  operators may explicitly terminate the group before recovery.
+  operators may explicitly terminate the group before recovery only when its
+  persisted identity still matches.
+- A starting session without a child PID remains `running` for a five-minute
+  grace period, then becomes `recovery_blocked`; it never triggers an automatic
+  replacement attempt.
+- A live PID/PGID with missing or mismatched identity is not signalled and
+  becomes `recovery_blocked`.
 - A live owner with a recent heartbeat remains `running`.
 - Clean interrupted implementation, verification, or publication becomes
   `retry_pending` at its durable phase.
@@ -133,7 +142,10 @@ canonical commit.
   otherwise unsafe state becomes `failed`.
 
 Operators can preview or execute the same logic with
-`tasks recover <id> --dry-run|--execute`.
+`tasks recover <id> --dry-run|--execute`. A `recovery_blocked` task retains its
+worktree until an operator records one of three auditable resolutions:
+`--confirm-no-agent` or `--resume` returns it to `retry_pending`, while
+`--cancel` moves it to terminal `failed`.
 
 After running-task reconciliation, startup preflights terminal worktrees,
 captures immutable manifest-hashed evidence under `results`, persists the

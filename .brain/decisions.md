@@ -84,8 +84,18 @@ archive or cleanup safety failure retains the worktree.
 
 ## D-015: Supervise agents and bind evidence to canonical state
 
-Codex owns a persisted process group with background heartbeats. Recovery never
-starts a concurrent attempt while that group may be alive. Verification results
-belong to append-only verification sets identified independently from retry
-attempt counts and bound to one canonical commit. Review verdicts are applied as
-one transaction against that same canonical head.
+Codex owns a persisted process group with birth/executable identity and
+background heartbeats. Recovery re-verifies identity before every signal and
+never starts a concurrent attempt while that group may be alive. Missing or
+ambiguous identity enters an operator-resolved `recovery_blocked` state.
+Verification results belong to append-only verification sets identified
+independently from retry attempt counts and bound to one canonical commit.
+Review verdicts are applied as one transaction against that same canonical
+head.
+
+## D-016: Human-owned local refs are detect-only
+
+Repository seals may restore Core-owned remote-tracking metadata, but a changed
+local default-branch ref blocks publication without restoration or deletion.
+Bridge records and retains evidence instead of rewriting a branch owned by the
+user's primary checkout.

@@ -6,9 +6,12 @@ import subprocess
 import sys
 import time
 import unittest
+import uuid
 from pathlib import Path
 
+from project_brain.forensics import TerminalWorktreeReconciler
 from project_brain.models import AttemptPhase, TaskStatus
+from project_brain.process_supervision import capture_process_identity, terminate_process_group
 from project_brain.recovery import RecoveryManager
 from project_brain.worktrees import WorktreeManager
 
@@ -23,6 +26,31 @@ class RecoveryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.fixture.close()
+
+    def _starting_session_without_pid(self, task_id: str) -> tuple[WorktreeManager, str]:
+        project = self.fixture.add_project(
+            repo_path=str(self.repo),
+            remote_url=str(self.remote),
+            auto_push=False,
+            auto_pr=False,
+        )
+        self.fixture.add_task(task_id)
+        task = self.fixture.store.claim_next()
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        manager.create(task, project)
+        with self.fixture.store.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE worktrees SET owner_pid = 99999999 WHERE task_id = ?",
+                (task_id,),
+            )
+        session_id = str(uuid.uuid4())
+        self.fixture.store.record_agent_session(
+            session_id=session_id,
+            task_id=task_id,
+            adapter="codex",
+            command=["codex", "exec"],
+        )
+        return manager, session_id
 
     def test_recovery_dry_run_does_not_change_state(self) -> None:
         self.fixture.add_project(
@@ -41,6 +69,170 @@ class RecoveryTests(unittest.TestCase):
         )
         self.assertEqual(actions[0]["action"], "would_recover")
         self.assertEqual(self.fixture.store.get_task("dry-run")["status"], "running")
+
+    def test_missing_pid_remains_running_during_startup_grace(self) -> None:
+        manager, session_id = self._starting_session_without_pid("startup-grace")
+        action = RecoveryManager(
+            self.fixture.store,
+            manager,
+            ambiguous_startup_grace_seconds=300,
+        ).reconcile("startup-grace", execute=True)[0]
+        self.assertEqual(action["action"], "unchanged")
+        self.assertEqual(
+            self.fixture.store.get_task("startup-grace")["status"],
+            TaskStatus.RUNNING.value,
+        )
+        self.assertEqual(
+            self.fixture.store.get_agent_session(session_id)["status"], "starting"
+        )
+
+    def test_missing_pid_becomes_recovery_blocked_then_operator_confirms_retry(self) -> None:
+        manager, session_id = self._starting_session_without_pid("startup-blocked")
+        recovery = RecoveryManager(
+            self.fixture.store,
+            manager,
+            ambiguous_startup_grace_seconds=0,
+        )
+        blocked = recovery.reconcile("startup-blocked", execute=True)[0]
+        self.assertEqual(blocked["action"], "recovery_blocked")
+        self.assertEqual(blocked["to_status"], TaskStatus.RECOVERY_BLOCKED.value)
+        self.assertEqual(
+            self.fixture.store.get_task("startup-blocked")["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        self.assertEqual(
+            self.fixture.store.get_agent_session(session_id)["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        self.assertEqual(
+            self.fixture.store.list_attempts("startup-blocked")[0]["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        self.assertIsNone(self.fixture.store.claim_next())
+
+        resolved = recovery.reconcile(
+            "startup-blocked", execute=True, confirm_no_agent=True
+        )[0]
+        self.assertEqual(resolved["action"], "recovery_resolved")
+        self.assertEqual(resolved["to_status"], TaskStatus.RETRY_PENDING.value)
+        self.assertEqual(
+            self.fixture.store.get_task("startup-blocked")["status"],
+            TaskStatus.RETRY_PENDING.value,
+        )
+        self.assertEqual(
+            self.fixture.store.get_agent_session(session_id)["status"],
+            "confirmed_no_agent",
+        )
+        event_types = [
+            item["event_type"]
+            for item in self.fixture.store.list_events("startup-blocked")
+        ]
+        self.assertIn("task_recovery_blocked", event_types)
+        self.assertIn("task_recovery_resolved", event_types)
+
+    def test_operator_can_cancel_recovery_blocked_task(self) -> None:
+        manager, _ = self._starting_session_without_pid("startup-cancelled")
+        recovery = RecoveryManager(
+            self.fixture.store,
+            manager,
+            ambiguous_startup_grace_seconds=0,
+        )
+        recovery.reconcile("startup-cancelled", execute=True)
+        cancelled = recovery.reconcile(
+            "startup-cancelled", execute=True, cancel=True
+        )[0]
+        self.assertEqual(cancelled["to_status"], TaskStatus.FAILED.value)
+        self.assertEqual(
+            self.fixture.store.get_task("startup-cancelled")["status"],
+            TaskStatus.FAILED.value,
+        )
+
+    def test_operator_can_resume_recovery_blocked_task_after_inspection(self) -> None:
+        manager, session_id = self._starting_session_without_pid("startup-resumed")
+        recovery = RecoveryManager(
+            self.fixture.store,
+            manager,
+            ambiguous_startup_grace_seconds=0,
+        )
+        recovery.reconcile("startup-resumed", execute=True)
+        resumed = recovery.reconcile(
+            "startup-resumed", execute=True, resume=True
+        )[0]
+        self.assertEqual(resumed["resolution"], "resume")
+        self.assertEqual(resumed["to_status"], TaskStatus.RETRY_PENDING.value)
+        self.assertEqual(
+            self.fixture.store.get_agent_session(session_id)["status"],
+            "operator_resumed",
+        )
+
+    def test_identity_mismatch_blocks_recovery_without_signalling_process(self) -> None:
+        project = self.fixture.add_project(
+            repo_path=str(self.repo),
+            remote_url=str(self.remote),
+            auto_push=False,
+            auto_pr=False,
+        )
+        self.fixture.add_task("identity-mismatch")
+        task = self.fixture.store.claim_next()
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        manager.create(task, project)
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            start_new_session=True,
+            text=True,
+        )
+        identity = capture_process_identity(child.pid, child.pid)
+        self.assertIsNotNone(identity)
+        wrong_identity = {**identity, "start_marker": f"{identity['start_marker']}-reused"}
+        session_id = str(uuid.uuid4())
+        self.fixture.store.record_agent_session(
+            session_id=session_id,
+            task_id="identity-mismatch",
+            adapter="codex",
+            command=[sys.executable, "-c", "import time; time.sleep(60)"],
+        )
+        self.fixture.store.start_agent_session(
+            session_id,
+            child_pid=child.pid,
+            child_pgid=child.pid,
+            child_identity=wrong_identity,
+        )
+        with self.fixture.store.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE worktrees SET owner_pid = 99999999 WHERE task_id = 'identity-mismatch'"
+            )
+        try:
+            blocked = RecoveryManager(
+                self.fixture.store,
+                manager,
+                termination_grace_seconds=0.1,
+            ).reconcile(
+                "identity-mismatch", execute=True, terminate_agent=True
+            )[0]
+            self.assertEqual(blocked["to_status"], TaskStatus.RECOVERY_BLOCKED.value)
+            self.assertIn("identity", blocked["reason"])
+            self.assertIsNone(child.poll())
+            RecoveryManager(self.fixture.store, manager).reconcile(
+                "identity-mismatch", execute=True, cancel=True
+            )
+            cleanup = TerminalWorktreeReconciler(
+                self.fixture.store, self.fixture.runtime, manager
+            ).reconcile(execute=True)[0]
+            self.assertEqual(cleanup["action"], "retained")
+            self.assertIn("process group prevents cleanup", cleanup["reason"])
+            self.assertTrue(
+                Path(
+                    self.fixture.store.get_worktree("identity-mismatch")["path"]
+                ).exists()
+            )
+        finally:
+            terminate_process_group(
+                child_pid=child.pid,
+                child_pgid=child.pid,
+                expected_identity=identity,
+                grace_seconds=0.1,
+                process=child,
+            )
 
     def test_real_process_interruption_is_reconciled_and_retried(self) -> None:
         child_pid_file = self.fixture.root / "codex-child.pid"
@@ -90,6 +282,7 @@ class RecoveryTests(unittest.TestCase):
         session = self.fixture.store.get_agent_session(session_id)
         self.assertEqual(session["child_pid"], child_pid)
         self.assertEqual(session["child_pgid"], child_pid)
+        self.assertEqual(session["child_identity"]["pid"], child_pid)
 
         # The Codex child owns an independent process group and survives the
         # Bridge parent. Startup recovery must not claim a second attempt while

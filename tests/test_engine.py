@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from project_brain.engine import TaskEngine
-from project_brain.errors import FetchError, TransientTaskError
+from project_brain.errors import FetchError, RecoveryError, TransientTaskError
 from tests.helpers import git
 from project_brain.models import TaskStatus
 
@@ -103,6 +103,22 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(second["status"], TaskStatus.FAILED.value)
         self.assertEqual(second["task"]["attempt_count"], 2)
         self.assertEqual(worktrees.create.call_count, 2)
+
+    def test_unconfirmed_agent_exit_enters_recovery_blocked(self) -> None:
+        self.fixture.add_task("agent-exit-unknown", payload={"prompt": "run"})
+        codex = Mock()
+        codex.execute.side_effect = RecoveryError("agent exit could not be confirmed")
+        result = TaskEngine(
+            self.fixture.store,
+            self.fixture.runtime,
+            codex=codex,
+        ).apply_once()
+        self.assertEqual(result["status"], TaskStatus.RECOVERY_BLOCKED.value)
+        self.assertEqual(
+            self.fixture.store.list_attempts("agent-exit-unknown")[0]["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        self.assertTrue(Path(result["task"]["worktree_path"]).exists())
 
     def test_each_criterion_has_independent_evidence(self) -> None:
         project = self.fixture.store.get_project("project-one")

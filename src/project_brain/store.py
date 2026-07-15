@@ -719,6 +719,42 @@ class TaskStore:
         *,
         child_pid: int,
         child_pgid: int,
+        child_identity: dict[str, Any],
+    ) -> None:
+        required_identity = {
+            "pid",
+            "pgid",
+            "start_marker",
+            "executable",
+            "command_digest",
+        }
+        if (
+            not isinstance(child_identity, dict)
+            or not required_identity.issubset(child_identity)
+            or child_identity.get("pid") != child_pid
+            or child_identity.get("pgid") != child_pgid
+        ):
+            raise InvalidTaskError("Agent session requires matching child process identity")
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE agent_sessions
+                SET status = 'running', child_pid = ?, child_pgid = ?,
+                    child_identity_json = ?, heartbeat_at = ?
+                WHERE session_id = ? AND status = 'starting'
+                """,
+                (child_pid, child_pgid, _json(child_identity), now, session_id),
+            )
+            if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                raise InvalidTaskError(f"Agent session is not starting: {session_id}")
+
+    def start_unverified_agent_session(
+        self,
+        session_id: str,
+        *,
+        child_pid: int,
+        child_pgid: int,
     ) -> None:
         now = utc_now()
         with self.transaction(immediate=True) as connection:
@@ -762,6 +798,7 @@ class TaskStore:
             raise InvalidTaskError(f"Unknown agent session: {session_id}")
         value = dict(row)
         value["command"] = _loads(value.pop("command_json"), [])
+        value["child_identity"] = _loads(value.pop("child_identity_json"), None)
         return value
 
     def active_agent_session(self, task_id: str) -> dict[str, Any] | None:
@@ -779,6 +816,7 @@ class TaskStore:
             return None
         value = dict(row)
         value["command"] = _loads(value.pop("command_json"), [])
+        value["child_identity"] = _loads(value.pop("child_identity_json"), None)
         return value
 
     def finish_agent_session(
@@ -1274,7 +1312,7 @@ class TaskStore:
                 """
                 UPDATE agent_sessions
                 SET status = 'interrupted', output_summary = ?, finished_at = ?
-                WHERE task_id = ? AND status = 'running'
+                WHERE task_id = ? AND status IN ('starting', 'running')
                 """,
                 (message, now, task_id),
             )
@@ -1285,6 +1323,120 @@ class TaskStore:
                 TaskStatus.RUNNING.value,
                 target_status.value,
                 {"reason": message, "phase": row["attempt_phase"]},
+            )
+        return self.get_task(task_id)
+
+    def block_running_task(self, task_id: str, *, reason: str) -> dict[str, Any]:
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if row["status"] != TaskStatus.RUNNING.value:
+                raise StateTransitionError(f"Task is not running: {task_id}")
+            now = utc_now()
+            message = redact_text(reason)
+            connection.execute(
+                "UPDATE tasks SET status = ?, updated_at = ?, last_error = ? WHERE task_id = ?",
+                (TaskStatus.RECOVERY_BLOCKED.value, now, message, task_id),
+            )
+            connection.execute(
+                """
+                UPDATE task_attempts
+                SET status = ?, error_category = 'recovery', error_message = ?, finished_at = ?
+                WHERE task_id = ? AND attempt_number = ? AND status = 'running'
+                """,
+                (
+                    TaskStatus.RECOVERY_BLOCKED.value,
+                    message,
+                    now,
+                    task_id,
+                    row["attempt_count"],
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE agent_sessions
+                SET status = ?, output_summary = ?, heartbeat_at = ?, finished_at = ?
+                WHERE task_id = ? AND status IN ('starting', 'running')
+                """,
+                (
+                    TaskStatus.RECOVERY_BLOCKED.value,
+                    message,
+                    now,
+                    now,
+                    task_id,
+                ),
+            )
+            self._event(
+                connection,
+                task_id,
+                "task_recovery_blocked",
+                TaskStatus.RUNNING.value,
+                TaskStatus.RECOVERY_BLOCKED.value,
+                {"reason": message, "phase": row["attempt_phase"]},
+            )
+        return self.get_task(task_id)
+
+    def resolve_recovery_block(
+        self,
+        task_id: str,
+        *,
+        resolution: str,
+    ) -> dict[str, Any]:
+        targets = {
+            "confirm_no_agent": (TaskStatus.RETRY_PENDING, "confirmed_no_agent"),
+            "resume": (TaskStatus.RETRY_PENDING, "operator_resumed"),
+            "cancel": (TaskStatus.FAILED, "cancelled"),
+        }
+        if resolution not in targets:
+            raise InvalidTaskError(f"Unsupported recovery resolution: {resolution}")
+        target, session_status = targets[resolution]
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if row["status"] != TaskStatus.RECOVERY_BLOCKED.value:
+                raise StateTransitionError(f"Task is not recovery blocked: {task_id}")
+            now = utc_now()
+            message = (
+                "Operator confirmed that no matching agent process is running"
+                if resolution == "confirm_no_agent"
+                else (
+                    "Operator resumed recovery-blocked task after inspection"
+                    if resolution == "resume"
+                    else "Operator cancelled recovery-blocked task"
+                )
+            )
+            connection.execute(
+                "UPDATE tasks SET status = ?, updated_at = ?, last_error = ? WHERE task_id = ?",
+                (target.value, now, message, task_id),
+            )
+            connection.execute(
+                """
+                UPDATE agent_sessions
+                SET status = ?, output_summary = ?, heartbeat_at = ?, finished_at = ?
+                WHERE task_id = ? AND status = ?
+                """,
+                (
+                    session_status,
+                    message,
+                    now,
+                    now,
+                    task_id,
+                    TaskStatus.RECOVERY_BLOCKED.value,
+                ),
+            )
+            self._event(
+                connection,
+                task_id,
+                "task_recovery_resolved",
+                TaskStatus.RECOVERY_BLOCKED.value,
+                target.value,
+                {"resolution": resolution, "reason": message},
             )
         return self.get_task(task_id)
 

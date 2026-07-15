@@ -40,6 +40,7 @@ def parse_timestamp(value: str | None) -> datetime | None:
 class TaskStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    RECOVERY_BLOCKED = "recovery_blocked"
     VERIFICATION_FAILED = "verification_failed"
     RETRY_PENDING = "retry_pending"
     NEEDS_CHANGES = "needs_changes"
@@ -75,6 +76,7 @@ CLAIMABLE_STATUSES = {
 
 WORKTREE_RETAINED_STATUSES = {
     TaskStatus.RUNNING,
+    TaskStatus.RECOVERY_BLOCKED,
     TaskStatus.RETRY_PENDING,
     TaskStatus.VERIFICATION_FAILED,
     TaskStatus.NEEDS_CHANGES,
@@ -92,8 +94,15 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.FAILED,
     },
     TaskStatus.RUNNING: {
+        TaskStatus.RECOVERY_BLOCKED,
         TaskStatus.AWAITING_REVIEW,
         TaskStatus.VERIFICATION_FAILED,
+        TaskStatus.RETRY_PENDING,
+        TaskStatus.FAILED,
+        TaskStatus.SUPERSEDED,
+        TaskStatus.EXPIRED,
+    },
+    TaskStatus.RECOVERY_BLOCKED: {
         TaskStatus.RETRY_PENDING,
         TaskStatus.FAILED,
         TaskStatus.SUPERSEDED,

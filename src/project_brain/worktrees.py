@@ -268,15 +268,24 @@ class WorktreeManager:
                 f"Worktree has no owner PID but its heartbeat is recent: task={task_id} "
                 f"heartbeat_age_seconds={heartbeat_age}"
             )
-        session = self.store.active_agent_session(task_id)
-        if session and (
-            not session.get("child_pid")
-            or agent_process_group_alive(
+        session_id = task.get("agent_session_id")
+        session = self.store.get_agent_session(session_id) if session_id else None
+        session_is_active = bool(
+            session
+            and session.get("status") in {"starting", "running", "recovery_blocked"}
+        )
+        child_group_alive = bool(
+            session
+            and session.get("child_pid")
+            and agent_process_group_alive(
                 session.get("child_pid"), session.get("child_pgid")
             )
+        )
+        if session and (
+            (session_is_active and not session.get("child_pid")) or child_group_alive
         ):
             raise WorktreeError(
-                f"Active Codex process group prevents cleanup: task={task_id} "
+                f"Persisted Codex process group prevents cleanup: task={task_id} "
                 f"pid={session.get('child_pid')} pgid={session.get('child_pgid')}"
             )
         result = {

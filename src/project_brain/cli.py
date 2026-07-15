@@ -28,6 +28,9 @@ from .worktrees import WorktreeManager
 NEXT_ACTION = {
     TaskStatus.PENDING.value: "Run project-brain apply.",
     TaskStatus.RUNNING.value: "Wait for the active process; inspect health if its deadline expires.",
+    TaskStatus.RECOVERY_BLOCKED.value: (
+        "Inspect agent identity, then use tasks recover with an explicit operator resolution."
+    ),
     TaskStatus.RETRY_PENDING.value: "Retry from a new apply process after the transient issue clears.",
     TaskStatus.VERIFICATION_FAILED.value: "Inspect verification evidence, then request changes.",
     TaskStatus.NEEDS_CHANGES.value: "Run project-brain apply for the requested revision work.",
@@ -81,10 +84,26 @@ def build_parser() -> argparse.ArgumentParser:
     recovery_mode = task_recover.add_mutually_exclusive_group()
     recovery_mode.add_argument("--dry-run", action="store_true", default=True)
     recovery_mode.add_argument("--execute", action="store_true")
-    task_recover.add_argument(
+    recovery_action = task_recover.add_mutually_exclusive_group()
+    recovery_action.add_argument(
         "--terminate-agent",
         action="store_true",
         help="With --execute, terminate the persisted Codex process group before recovery",
+    )
+    recovery_action.add_argument(
+        "--confirm-no-agent",
+        action="store_true",
+        help="Resolve a recovery block after confirming that no matching agent is running",
+    )
+    recovery_action.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a recovery-blocked task after operator inspection",
+    )
+    recovery_action.add_argument(
+        "--cancel",
+        action="store_true",
+        help="Cancel a recovery-blocked task as a terminal failure",
     )
     _add_json(task_recover)
 
@@ -265,6 +284,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.task_id,
                     execute=args.execute,
                     terminate_agent=args.terminate_agent,
+                    confirm_no_agent=args.confirm_no_agent,
+                    resume=args.resume,
+                    cancel=args.cancel,
                 )
             _render(
                 {"mode": "execute" if args.execute else "dry_run", "actions": actions},

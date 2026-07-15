@@ -6,8 +6,10 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from project_brain.engine import TaskEngine
+from project_brain.errors import TaskHistoryError
 from project_brain.models import TaskStatus
-from project_brain.repository import actual_origin, normalize_remote
+from project_brain.repository import RepositorySeal, actual_origin, normalize_remote
+from project_brain.worktrees import WorktreeManager
 
 from tests.helpers import CoreFixture, create_remote_clone, git
 
@@ -20,7 +22,6 @@ class RepositorySealTests(unittest.TestCase):
             "branch",
             "origin",
             "default_ref",
-            "local_default_ref",
         ):
             with self.subTest(mutation=mutation):
                 fixture = CoreFixture()
@@ -46,15 +47,10 @@ class RepositorySealTests(unittest.TestCase):
                             "import subprocess; "
                             f"subprocess.run(['git','remote','set-url','origin',{str(changed_remote)!r}],check=True)"
                         )
-                    elif mutation == "default_ref":
-                        code = (
-                            "import subprocess; "
-                            "subprocess.run(['git','update-ref','refs/remotes/origin/main','HEAD'],check=True)"
-                        )
                     else:
                         code = (
                             "import subprocess; "
-                            "subprocess.run(['git','update-ref','refs/heads/main','HEAD'],check=True)"
+                            "subprocess.run(['git','update-ref','refs/remotes/origin/main','HEAD'],check=True)"
                         )
                     fixture.add_project(
                         repo_path=str(repo),
@@ -108,6 +104,43 @@ class RepositorySealTests(unittest.TestCase):
                     self.assertEqual(fixture.store.get_worktree(f"seal-{mutation}")["status"], "active")
                 finally:
                     fixture.close()
+
+    def test_local_default_branch_advance_blocks_publication_without_rewind(self) -> None:
+        fixture = CoreFixture()
+        try:
+            repo, remote = create_remote_clone(fixture.root, "seal-concurrent-main")
+            project = fixture.add_project(
+                repo_path=str(repo),
+                remote_url=str(remote),
+                auto_push=True,
+                auto_pr=False,
+            )
+            fixture.add_task("seal-concurrent-main")
+            task = fixture.store.claim_next()
+            record = WorktreeManager(fixture.store, fixture.runtime).create(task, project)
+            worktree = Path(record["path"])
+            captured = git(worktree, "rev-parse", "HEAD").stdout.strip()
+            seal = RepositorySeal.capture(
+                worktree,
+                project=project,
+                expected_branch=record["branch"],
+                expected_head=captured,
+            )
+
+            (repo / "human.txt").write_text("legitimate concurrent change\n", encoding="utf-8")
+            git(repo, "add", "human.txt")
+            git(repo, "commit", "-m", "human advances main")
+            human_tip = git(repo, "rev-parse", "refs/heads/main").stdout.strip()
+            self.assertNotEqual(human_tip, captured)
+
+            with self.assertRaisesRegex(TaskHistoryError, "local default branch ref changed"):
+                seal.verify(worktree, project=project)
+
+            self.assertEqual(
+                git(repo, "rev-parse", "refs/heads/main").stdout.strip(), human_tip
+            )
+        finally:
+            fixture.close()
 
 
 if __name__ == "__main__":

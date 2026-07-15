@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from project_brain.errors import MigrationError
-from project_brain.schema import MIGRATION_1, MIGRATION_2, SCHEMA_VERSION
+from project_brain.schema import MIGRATION_1, MIGRATION_2, MIGRATION_3, SCHEMA_VERSION
 from project_brain.store import TaskStore
 
 
@@ -99,6 +99,21 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(
             evidence[0]["verification_set_id"], verification_set["verification_set_id"]
         )
+
+    def test_version_three_agent_sessions_gain_process_identity(self) -> None:
+        TaskStore(
+            self.database,
+            migrations={1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3},
+            schema_version=3,
+        ).initialize()
+        store = TaskStore(self.database)
+        store.initialize()
+        with store.connect() as connection:
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(agent_sessions)")
+            }
+        self.assertIn("child_identity_json", columns)
 
     def test_failed_migration_rolls_back_atomically(self) -> None:
         store = TaskStore(

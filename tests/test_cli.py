@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import unittest
+import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -140,6 +141,37 @@ class CLITests(unittest.TestCase):
         self.assertEqual(json.loads(output)["status"], "already_running")
         self.assertEqual(
             self.fixture.store.get_task("locked-task")["status"], TaskStatus.PENDING.value
+        )
+
+    def test_recover_command_resolves_recovery_block_with_operator_confirmation(self) -> None:
+        self.fixture.add_task("blocked-task")
+        task = self.fixture.store.claim_next()
+        WorktreeManager(self.fixture.store, self.fixture.runtime).create(task, self.project)
+        session_id = str(uuid.uuid4())
+        self.fixture.store.record_agent_session(
+            session_id=session_id,
+            task_id="blocked-task",
+            adapter="codex",
+            command=["codex", "exec"],
+        )
+        self.fixture.store.block_running_task(
+            "blocked-task", reason="operator identity confirmation required"
+        )
+
+        code, output = self.invoke(
+            "tasks",
+            "recover",
+            "blocked-task",
+            "--execute",
+            "--confirm-no-agent",
+            "--json",
+        )
+        value = json.loads(output)
+        self.assertEqual(code, 0)
+        self.assertEqual(value["actions"][0]["action"], "recovery_resolved")
+        self.assertEqual(
+            self.fixture.store.get_task("blocked-task")["status"],
+            TaskStatus.RETRY_PENDING.value,
         )
 
 

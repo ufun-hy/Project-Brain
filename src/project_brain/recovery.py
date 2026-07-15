@@ -8,7 +8,11 @@ from typing import Any
 from .commands import git
 from .errors import InvalidPathError, WorktreeError
 from .models import AttemptPhase, TaskStatus
-from .process_supervision import agent_process_group_alive, terminate_process_group
+from .process_supervision import (
+    ProcessIdentityState,
+    inspect_agent_process_group,
+    terminate_process_group,
+)
 from .repository import assert_registered_origin
 from .store import TaskStore
 from .worktrees import WorktreeManager, heartbeat_age_seconds, process_alive
@@ -21,10 +25,14 @@ class RecoveryManager:
         worktrees: WorktreeManager,
         *,
         termination_grace_seconds: float = 5.0,
+        ambiguous_startup_grace_seconds: float = 300.0,
     ) -> None:
         self.store = store
         self.worktrees = worktrees
         self.termination_grace_seconds = max(0.0, termination_grace_seconds)
+        self.ambiguous_startup_grace_seconds = max(
+            0.0, ambiguous_startup_grace_seconds
+        )
 
     def reconcile(
         self,
@@ -32,6 +40,9 @@ class RecoveryManager:
         *,
         execute: bool = False,
         terminate_agent: bool = False,
+        confirm_no_agent: bool = False,
+        resume: bool = False,
+        cancel: bool = False,
     ) -> list[dict[str, Any]]:
         tasks = (
             [self.store.get_task(task_id)]
@@ -40,6 +51,17 @@ class RecoveryManager:
         )
         results: list[dict[str, Any]] = []
         for task in tasks:
+            if task["status"] == TaskStatus.RECOVERY_BLOCKED.value:
+                results.append(
+                    self._resolve_blocked(
+                        task,
+                        execute=execute,
+                        confirm_no_agent=confirm_no_agent,
+                        resume=resume,
+                        cancel=cancel,
+                    )
+                )
+                continue
             if task["status"] != TaskStatus.RUNNING.value:
                 results.append(
                     {
@@ -58,6 +80,63 @@ class RecoveryManager:
             )
         return results
 
+    def _resolve_blocked(
+        self,
+        task: dict[str, Any],
+        *,
+        execute: bool,
+        confirm_no_agent: bool,
+        resume: bool,
+        cancel: bool,
+    ) -> dict[str, Any]:
+        selected = sum((confirm_no_agent, resume, cancel))
+        if selected > 1:
+            return {
+                "task_id": task["task_id"],
+                "action": "unchanged",
+                "reason": "choose only one recovery-block resolution",
+            }
+        if not selected:
+            return {
+                "task_id": task["task_id"],
+                "action": "unchanged",
+                "reason": (
+                    "operator resolution required: confirm no matching agent is running, "
+                    "resume after inspection, or cancel the task"
+                ),
+            }
+        resolution = "cancel" if cancel else ("resume" if resume else "confirm_no_agent")
+        target = TaskStatus.FAILED if cancel else TaskStatus.RETRY_PENDING
+        result = {
+            "task_id": task["task_id"],
+            "from_status": TaskStatus.RECOVERY_BLOCKED.value,
+            "to_status": target.value,
+            "action": "recovery_resolved" if execute else "would_resolve_recovery",
+            "resolution": resolution,
+        }
+        if execute:
+            self.store.resolve_recovery_block(task["task_id"], resolution=resolution)
+        return result
+
+    def _block(
+        self,
+        task: dict[str, Any],
+        *,
+        execute: bool,
+        reason: str,
+    ) -> dict[str, Any]:
+        result = {
+            "task_id": task["task_id"],
+            "phase": task["attempt_phase"],
+            "from_status": TaskStatus.RUNNING.value,
+            "to_status": TaskStatus.RECOVERY_BLOCKED.value,
+            "action": "recovery_blocked" if execute else "would_recovery_block",
+            "reason": reason,
+        }
+        if execute:
+            self.store.block_running_task(task["task_id"], reason=reason)
+        return result
+
     def _reconcile_one(
         self,
         task: dict[str, Any],
@@ -71,15 +150,38 @@ class RecoveryManager:
             child_pid = session.get("child_pid")
             child_pgid = session.get("child_pgid")
             if not child_pid:
-                return {
-                    "task_id": task["task_id"],
-                    "action": "unchanged",
-                    "reason": (
-                        "agent startup was interrupted before child PID persistence; "
-                        "automatic recovery cannot prove that no child is running"
+                age = heartbeat_age_seconds(
+                    session.get("heartbeat_at") or session.get("started_at")
+                )
+                if age is not None and age < self.ambiguous_startup_grace_seconds:
+                    return {
+                        "task_id": task["task_id"],
+                        "action": "unchanged",
+                        "reason": (
+                            "agent startup has no persisted child PID and remains within "
+                            f"the {self.ambiguous_startup_grace_seconds:g}s grace period"
+                        ),
+                    }
+                return self._block(
+                    task,
+                    execute=execute,
+                    reason=(
+                        "agent startup exceeded its grace period without child PID "
+                        "persistence; operator confirmation is required before retry"
                     ),
-                }
-            if agent_process_group_alive(child_pid, child_pgid):
+                )
+            identity = session.get("child_identity")
+            process_state = inspect_agent_process_group(child_pid, child_pgid, identity)
+            if process_state is ProcessIdentityState.UNVERIFIED_ALIVE:
+                return self._block(
+                    task,
+                    execute=execute,
+                    reason=(
+                        "persisted Codex PID/PGID is alive but its process identity cannot "
+                        "be proven; no signal was sent"
+                    ),
+                )
+            if process_state is ProcessIdentityState.VERIFIED_ALIVE:
                 if not (execute and terminate_agent):
                     return {
                         "task_id": task["task_id"],
@@ -92,17 +194,18 @@ class RecoveryManager:
                 terminated = terminate_process_group(
                     child_pid=child_pid,
                     child_pgid=child_pgid,
+                    expected_identity=identity,
                     grace_seconds=self.termination_grace_seconds,
                 )
                 if not terminated:
-                    return {
-                        "task_id": task["task_id"],
-                        "action": "unchanged",
-                        "reason": (
-                            "explicit recovery could not confirm Codex process-group exit; "
-                            "no new attempt will start"
+                    return self._block(
+                        task,
+                        execute=execute,
+                        reason=(
+                            "explicit recovery could not re-verify and terminate the Codex "
+                            "process identity; no new attempt will start"
                         ),
-                    }
+                    )
                 self.store.finish_agent_session(
                     session["session_id"],
                     status="interrupted",
