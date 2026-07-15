@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import signal
 import socket
 import subprocess
@@ -9,6 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -73,16 +75,27 @@ class MCPServerSchemaTests(unittest.TestCase):
 
         tools = asyncio.run(inspect_tools())
         self.assertEqual({tool.name for tool in tools}, EXPECTED_TOOLS)
+        expected_annotations = {
+            "project_brain_system_health": (True, False, True, False),
+            "project_brain_projects_list": (True, False, True, False),
+            "project_brain_tasks_create": (False, False, True, False),
+            "project_brain_queue_dispatch_next": (False, True, False, True),
+            "project_brain_tasks_list": (True, False, True, False),
+            "project_brain_tasks_get": (True, False, True, False),
+            "project_brain_tasks_review": (False, False, False, False),
+            "project_brain_tasks_recovery_preview": (True, False, True, False),
+        }
         for tool in tools:
             self.assertFalse(tool.inputSchema["additionalProperties"])
-            self.assertFalse(tool.annotations.openWorldHint)
-            self.assertFalse(tool.annotations.destructiveHint)
-            expected_read_only = tool.name not in {
-                "project_brain_tasks_create",
-                "project_brain_queue_dispatch_next",
-                "project_brain_tasks_review",
-            }
-            self.assertEqual(tool.annotations.readOnlyHint, expected_read_only)
+            self.assertEqual(
+                (
+                    tool.annotations.readOnlyHint,
+                    tool.annotations.destructiveHint,
+                    tool.annotations.idempotentHint,
+                    tool.annotations.openWorldHint,
+                ),
+                expected_annotations[tool.name],
+            )
         create = next(tool for tool in tools if tool.name == "project_brain_tasks_create")
         self.assertFalse(create.inputSchema["$defs"]["AcceptanceCriterionInput"]["additionalProperties"])
         self.assertTrue(
@@ -97,6 +110,19 @@ class MCPServerSchemaTests(unittest.TestCase):
                 "codex_command",
             }.isdisjoint(create.inputSchema["properties"])
         )
+
+    def test_pinned_sdk_private_schema_hardening_compatibility_contract(self) -> None:
+        self.assertEqual(importlib.metadata.version("mcp"), "1.28.1")
+        pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"mcp==1.28.1"', pyproject)
+        server = create_mcp_server(self.fixture.runtime)
+        generated_tools = server._tool_manager.list_tools()  # type: ignore[attr-defined]
+        self.assertEqual({tool.name for tool in generated_tools}, EXPECTED_TOOLS)
+        for tool in generated_tools:
+            self.assertEqual(tool.fn_metadata.arg_model.model_config["extra"], "forbid")
+            self.assertFalse(tool.parameters["additionalProperties"])
 
     def test_unknown_top_level_argument_is_rejected_at_runtime(self) -> None:
         server = create_mcp_server(self.fixture.runtime)
@@ -199,17 +225,21 @@ class MCPTransportTests(unittest.TestCase):
             self._wait_for_port(port)
 
             async def inspect_transport() -> tuple[str, set[str], str]:
-                async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as streams:
-                    read_stream, write_stream, _ = streams
-                    async with ClientSession(read_stream, write_stream) as session:
-                        initialized = await session.initialize()
-                        tools = await session.list_tools()
-                        health = await session.call_tool("project_brain_system_health", {})
-                        return (
-                            initialized.serverInfo.name,
-                            {tool.name for tool in tools.tools},
-                            health.structuredContent["status"],
-                        )
+                async with httpx.AsyncClient(trust_env=False) as http_client:
+                    async with streamable_http_client(
+                        f"http://127.0.0.1:{port}/mcp",
+                        http_client=http_client,
+                    ) as streams:
+                        read_stream, write_stream, _ = streams
+                        async with ClientSession(read_stream, write_stream) as session:
+                            initialized = await session.initialize()
+                            tools = await session.list_tools()
+                            health = await session.call_tool("project_brain_system_health", {})
+                            return (
+                                initialized.serverInfo.name,
+                                {tool.name for tool in tools.tools},
+                                health.structuredContent["status"],
+                            )
 
             name, tool_names, health_status = asyncio.run(inspect_transport())
             self.assertEqual(name, "Project Brain")

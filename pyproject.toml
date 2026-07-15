@@ -9,7 +9,7 @@ description = "Local task control plane for Project Brain"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "mcp>=1.28,<2",
+  "mcp==1.28.1",
 ]
 
 [project.scripts]

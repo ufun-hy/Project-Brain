@@ -4,6 +4,8 @@ import json
 import os
 import stat
 import sys
+import threading
+import time
 import unittest
 
 from project_brain.errors import InvalidTaskError
@@ -11,36 +13,80 @@ from project_brain.locking import RuntimeLock
 from project_brain.application import worker_result_view
 from project_brain.mcp.dispatch import OneShotDispatcher
 
-from tests.helpers import CoreFixture
+from tests.helpers import CoreFixture, executable_script
 
 
 class FakeProcess:
     def __init__(self, pid: int = 4321, poll_result: int | None = None) -> None:
         self.pid = pid
-        self.poll_result = poll_result
+        self.returncode = poll_result
+        self._finished = threading.Event()
+        if poll_result is not None:
+            self._finished.set()
 
     def poll(self) -> int | None:
-        return self.poll_result
+        return self.returncode
+
+    def wait(self) -> int:
+        self._finished.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def finish(self, exit_code: int = 0) -> None:
+        self.returncode = exit_code
+        self._finished.set()
 
 
 class CapturingPopen:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict[str, object]]] = []
+        self.processes: list[FakeProcess] = []
 
     def __call__(self, argv, **kwargs):
         self.calls.append((list(argv), dict(kwargs)))
-        return FakeProcess()
+        process = FakeProcess(pid=4321 + len(self.processes))
+        self.processes.append(process)
+        return process
+
+    def finish_all(self) -> None:
+        for process in self.processes:
+            process.finish()
 
 
 class MCPDispatcherTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = CoreFixture()
         self.fixture.add_project()
+        self.captures: list[CapturingPopen] = []
 
     def tearDown(self) -> None:
+        for capture in self.captures:
+            capture.finish_all()
+        expected_exits = sum(len(capture.processes) for capture in self.captures)
+        if expected_exits:
+            self._wait_for(
+                lambda: len(
+                    [
+                        event
+                        for event in self.fixture.store.list_events()
+                        if event["event_type"] == "mcp_dispatch_worker_exited"
+                    ]
+                )
+                >= expected_exits
+            )
         self.fixture.close()
 
+    @staticmethod
+    def _wait_for(condition, *, timeout: float = 10.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if condition():
+                return
+            time.sleep(0.01)
+        raise AssertionError("timed out waiting for asynchronous worker reaper")
+
     def _dispatcher(self, capture: CapturingPopen) -> OneShotDispatcher:
+        self.captures.append(capture)
         return OneShotDispatcher(
             self.fixture.store,
             self.fixture.runtime,
@@ -151,10 +197,13 @@ class MCPDispatcherTests(unittest.TestCase):
         )
         result = dispatcher.dispatch(reason="Recover interrupted state")
         self.assertEqual(result["dispatch_status"], "started")
-        process = dispatcher._active_process
-        self.assertIsNotNone(process)
-        assert process is not None
-        self.assertEqual(process.wait(timeout=10), 0)
+        self._wait_for(
+            lambda: dispatcher._active_process is None
+            and any(
+                event["event_type"] == "mcp_dispatch_worker_exited"
+                for event in self.fixture.store.list_events()
+            )
+        )
         log = self.fixture.runtime.logs_dir / "mcp-dispatch" / result["log_id"]
         lines = log.read_text(encoding="utf-8").splitlines()
         self.assertGreaterEqual(len(lines), 2)
@@ -162,6 +211,70 @@ class MCPDispatcherTests(unittest.TestCase):
         self.assertEqual(values[0]["event"], "dispatch_requested")
         self.assertNotIn("payload", json.dumps(values[1]))
         self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+
+    def test_daemon_reaper_audits_exit_and_allows_next_dispatch(self) -> None:
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        worker = executable_script(
+            self.fixture.root / "short-worker",
+            "import sys\nsys.exit(7)\n",
+        )
+        self.fixture.add_task("reaper-task")
+        dispatcher = OneShotDispatcher(
+            self.fixture.store,
+            self.fixture.runtime,
+            python_executable=str(worker),
+            environment={
+                "PATH": os.environ.get("PATH", ""),
+                "OPENAI_API_KEY": secret,
+            },
+        )
+
+        first = dispatcher.dispatch(reason="exercise active reaping")
+        self.assertEqual(first["dispatch_status"], "started")
+        self._wait_for(
+            lambda: dispatcher._active_process is None
+            and len(
+                [
+                    event
+                    for event in self.fixture.store.list_events()
+                    if event["event_type"] == "mcp_dispatch_worker_exited"
+                ]
+            )
+            == 1
+        )
+        exited = [
+            event
+            for event in self.fixture.store.list_events()
+            if event["event_type"] == "mcp_dispatch_worker_exited"
+        ][0]
+        self.assertEqual(
+            set(exited["payload"]),
+            {"dispatch_status", "worker_pid", "exit_code", "log_id"},
+        )
+        self.assertEqual(exited["payload"]["dispatch_status"], "worker_exited")
+        self.assertEqual(exited["payload"]["exit_code"], 7)
+        self.assertEqual(exited["payload"]["log_id"], first["log_id"])
+        rendered = json.dumps(exited)
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn(str(self.fixture.runtime.root), rendered)
+        self.assertNotIn("argv", exited["payload"])
+        self.assertNotIn("environment", exited["payload"])
+        self.assertNotIn("task", exited["payload"])
+
+        second = dispatcher.dispatch(reason="confirm dispatch after reap")
+        self.assertEqual(second["dispatch_status"], "started")
+        self.assertNotEqual(second["log_id"], first["log_id"])
+        self._wait_for(
+            lambda: dispatcher._active_process is None
+            and len(
+                [
+                    event
+                    for event in self.fixture.store.list_events()
+                    if event["event_type"] == "mcp_dispatch_worker_exited"
+                ]
+            )
+            == 2
+        )
 
     def test_worker_result_omits_payload_and_redacts_errors(self) -> None:
         secret = "sk-abcdefghijklmnopqrstuvwxyz123456"

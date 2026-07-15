@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from project_brain.models import TaskStatus
+from project_brain.mcp.dispatch import OneShotDispatcher
 from project_brain.mcp.tools import MCPAdapterService
 
 from tests.helpers import CoreFixture, create_remote_clone, git
@@ -170,6 +171,58 @@ class MCPToolTests(unittest.TestCase):
                 result = self.service.tasks_create(value)
                 self.assertEqual(result["code"], code)
         self.assertEqual(self.fixture.store.list_tasks(), [])
+
+    def test_active_supersession_returns_state_conflict_and_preserves_dispatch_blocker(self) -> None:
+        launches: list[list[str]] = []
+
+        def unexpected_launch(argv, **_kwargs):
+            launches.append(list(argv))
+            raise AssertionError("blocked dispatch must not start a worker")
+
+        dispatcher = OneShotDispatcher(
+            self.fixture.store,
+            self.fixture.runtime,
+            popen_factory=unexpected_launch,
+        )
+        service = MCPAdapterService(
+            self.fixture.store,
+            self.fixture.runtime,
+            dispatcher=dispatcher,
+        )
+        original = self._create_value("mcp-owned")
+        original["dedupe_key"] = "mcp-owned-flow"
+        original["revision"] = 4
+        self.assertEqual(service.tasks_create(original)["status"], "created")
+        claimed = self.fixture.store.claim_next()
+        self.assertEqual(claimed["task_id"], "mcp-owned")
+        self.fixture.store.record_agent_session(
+            session_id="session-mcp-owned",
+            task_id="mcp-owned",
+            adapter="codex",
+            command=["codex", "exec"],
+        )
+
+        replacement = self._create_value("mcp-owned-replacement")
+        replacement["dedupe_key"] = "mcp-owned-flow"
+        replacement["revision"] = 5
+        replacement["supersedes"] = "mcp-owned"
+        conflict = service.tasks_create(replacement)
+        self.assertEqual(conflict["status"], "error")
+        self.assertEqual(conflict["code"], "state_conflict")
+        self.assertEqual(
+            self.fixture.store.get_task("mcp-owned")["status"],
+            TaskStatus.RUNNING.value,
+        )
+        self.assertNotIn(
+            "mcp-owned-replacement",
+            {task["task_id"] for task in self.fixture.store.list_tasks()},
+        )
+
+        dispatch = service.queue_dispatch_next(reason="confirm blocker remains visible")
+        self.assertEqual(dispatch["dispatch_status"], "blocked")
+        self.assertEqual(dispatch["code"], "recovery_blocked")
+        self.assertEqual(dispatch["claim_safety"]["blockers"][0]["task_id"], "mcp-owned")
+        self.assertEqual(launches, [])
 
     def test_tasks_list_clamps_limit_and_task_get_bounds_events(self) -> None:
         for index in range(105):

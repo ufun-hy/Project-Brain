@@ -125,12 +125,17 @@ asynchronous queue dispatch, bounded task list/detail, exact-head review, and
 read-only recovery preview. They expose no shell, arbitrary files, cleanup,
 recovery resolution, acceptance, or merge operation. Dispatch starts a fixed
 one-shot Core worker and returns immediately; `RuntimeLock` and the global
-claim gate remain authoritative.
+claim gate remain authoritative. A daemon reaper actively waits for each
+spawned process and records its bounded exit audit without terminating safely
+running workers during server shutdown.
 
 Setup, tool contracts, Secure MCP Tunnel steps, and the manual acceptance
 checklist are in [`docs/mcp-adapter.md`](docs/mcp-adapter.md). Architecture and
 threat boundaries are in
 [`docs/rfc/RFC-004-mcp-adapter.md`](docs/rfc/RFC-004-mcp-adapter.md).
+The MCP dependency is pinned to the verified `mcp==1.28.1`; upgrades require
+the documented startup, discovery, strict-schema, and unknown-field
+compatibility tests before changing the version.
 
 `apply` claims at most one task while holding the runtime flock. Startup
 reconciliation restores safe interrupted work to `retry_pending` or

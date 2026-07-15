@@ -82,6 +82,195 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.fixture.store.get_task("old")["status"], TaskStatus.SUPERSEDED.value)
         events = self.fixture.store.list_events("old")
         self.assertEqual(events[-1]["event_type"], "task_superseded")
+        created_event = self.fixture.store.list_events("new")[0]
+        self.assertEqual(created_event["payload"]["supersedes"], "old")
+        self.assertTrue(created_event["payload"]["supersession_applied"])
+
+    def test_active_and_merge_owned_states_cannot_be_superseded(self) -> None:
+        transitions = {
+            TaskStatus.RUNNING: [TaskStatus.RUNNING],
+            TaskStatus.RECOVERY_BLOCKED: [
+                TaskStatus.RUNNING,
+                TaskStatus.RECOVERY_BLOCKED,
+            ],
+            TaskStatus.MERGING: [
+                TaskStatus.RUNNING,
+                TaskStatus.AWAITING_REVIEW,
+                TaskStatus.READY_TO_MERGE,
+                TaskStatus.MERGING,
+            ],
+            TaskStatus.MERGE_FAILED: [
+                TaskStatus.RUNNING,
+                TaskStatus.AWAITING_REVIEW,
+                TaskStatus.READY_TO_MERGE,
+                TaskStatus.MERGING,
+                TaskStatus.MERGE_FAILED,
+            ],
+        }
+        for status, path in transitions.items():
+            label = status.value.replace("_", "-")
+            old_id = f"owned-{label}"
+            new_id = f"replacement-{label}"
+            dedupe_key = f"flow-{label}"
+            self.fixture.add_task(old_id, dedupe_key=dedupe_key, revision=4)
+            for target in path:
+                self.fixture.store.transition(old_id, target)
+            before_task = self.fixture.store.get_task(old_id)
+            before_events = self.fixture.store.list_events(old_id)
+            with self.subTest(
+                status=status.value, entry="transition"
+            ), self.assertRaises(StateTransitionError):
+                self.fixture.store.transition(old_id, TaskStatus.SUPERSEDED)
+            self.assertEqual(self.fixture.store.get_task(old_id), before_task)
+            self.assertEqual(self.fixture.store.list_events(old_id), before_events)
+            with self.subTest(status=status.value), self.assertRaises(StateTransitionError):
+                self.fixture.store.insert_task(
+                    CanonicalTask(
+                        task_id=new_id,
+                        project_id="project-one",
+                        dedupe_key=dedupe_key,
+                        revision=5,
+                        source_type="test",
+                        goal="unsafe replacement",
+                        supersedes=old_id,
+                        payload={"prompt": "test"},
+                    )
+                )
+            self.assertEqual(self.fixture.store.get_task(old_id), before_task)
+            self.assertEqual(self.fixture.store.list_events(old_id), before_events)
+            self.assertNotIn(new_id, {task["task_id"] for task in self.fixture.store.list_tasks()})
+
+    def test_recovery_blocked_supersession_conflict_has_zero_related_side_effects(self) -> None:
+        self.fixture.add_task("owned-recovery", dedupe_key="owned-flow", revision=7)
+        claimed = self.fixture.store.claim_next()
+        self.assertEqual(claimed["task_id"], "owned-recovery")
+        session_id = "session-owned-recovery"
+        self.fixture.store.record_agent_session(
+            session_id=session_id,
+            task_id="owned-recovery",
+            adapter="codex",
+            command=["codex", "exec"],
+        )
+        self.fixture.store.block_running_task(
+            "owned-recovery", reason="operator inspection required"
+        )
+        before_task = self.fixture.store.get_task("owned-recovery")
+        before_attempts = self.fixture.store.list_attempts("owned-recovery")
+        before_session = self.fixture.store.get_agent_session(session_id)
+        before_events = self.fixture.store.list_events("owned-recovery")
+        before_all_events = self.fixture.store.list_events()
+
+        with self.assertRaises(StateTransitionError):
+            self.fixture.store.insert_task(
+                CanonicalTask(
+                    task_id="unsafe-recovery-replacement",
+                    project_id="project-one",
+                    dedupe_key="owned-flow",
+                    revision=8,
+                    source_type="test",
+                    goal="unsafe replacement",
+                    supersedes="owned-recovery",
+                    payload={"prompt": "test"},
+                )
+            )
+
+        self.assertEqual(self.fixture.store.get_task("owned-recovery"), before_task)
+        self.assertEqual(self.fixture.store.list_attempts("owned-recovery"), before_attempts)
+        self.assertEqual(self.fixture.store.get_agent_session(session_id), before_session)
+        self.assertEqual(self.fixture.store.list_events("owned-recovery"), before_events)
+        self.assertEqual(self.fixture.store.list_events(), before_all_events)
+        self.assertNotIn(
+            "unsafe-recovery-replacement",
+            {task["task_id"] for task in self.fixture.store.list_tasks()},
+        )
+
+    def test_superseding_revision_must_be_strictly_greater(self) -> None:
+        self.fixture.add_task("higher-revision", dedupe_key="revision-flow", revision=5)
+        before_task = self.fixture.store.get_task("higher-revision")
+        before_events = self.fixture.store.list_events("higher-revision")
+        for revision in (4, 5):
+            new_id = f"invalid-revision-{revision}"
+            with self.subTest(revision=revision), self.assertRaises(StateTransitionError):
+                self.fixture.store.insert_task(
+                    CanonicalTask(
+                        task_id=new_id,
+                        project_id="project-one",
+                        dedupe_key="revision-flow",
+                        revision=revision,
+                        source_type="test",
+                        goal="invalid replacement revision",
+                        supersedes="higher-revision",
+                        payload={"prompt": "test"},
+                    )
+                )
+            self.assertNotIn(new_id, {task["task_id"] for task in self.fixture.store.list_tasks()})
+        self.assertEqual(self.fixture.store.get_task("higher-revision"), before_task)
+        self.assertEqual(self.fixture.store.list_events("higher-revision"), before_events)
+
+    def test_terminal_history_is_preserved_by_higher_revisions(self) -> None:
+        terminal_paths = {
+            TaskStatus.FAILED: [TaskStatus.FAILED],
+            TaskStatus.EXPIRED: [TaskStatus.EXPIRED],
+            TaskStatus.ACCEPTED: [
+                TaskStatus.RUNNING,
+                TaskStatus.AWAITING_REVIEW,
+                TaskStatus.READY_TO_MERGE,
+                TaskStatus.MERGING,
+                TaskStatus.ACCEPTED,
+            ],
+        }
+        for terminal, path in terminal_paths.items():
+            label = terminal.value
+            old_id = f"terminal-{label}"
+            new_id = f"terminal-{label}-revision"
+            dedupe_key = f"terminal-flow-{label}"
+            self.fixture.add_task(old_id, dedupe_key=dedupe_key, revision=2)
+            for target in path:
+                self.fixture.store.transition(old_id, target)
+            before_events = self.fixture.store.list_events(old_id)
+            new, created = self.fixture.store.insert_task(
+                CanonicalTask(
+                    task_id=new_id,
+                    project_id="project-one",
+                    dedupe_key=dedupe_key,
+                    revision=3,
+                    source_type="test",
+                    goal="preserve terminal history",
+                    supersedes=old_id,
+                    payload={"prompt": "test"},
+                )
+            )
+            with self.subTest(status=terminal.value):
+                self.assertTrue(created)
+                self.assertEqual(new["supersedes"], old_id)
+                self.assertEqual(self.fixture.store.get_task(old_id)["status"], terminal.value)
+                self.assertEqual(self.fixture.store.list_events(old_id), before_events)
+                created_event = self.fixture.store.list_events(new_id)[0]
+                self.assertEqual(created_event["payload"]["supersedes"], old_id)
+                self.assertFalse(created_event["payload"]["supersession_applied"])
+
+    def test_higher_revision_can_supersede_awaiting_review(self) -> None:
+        self.fixture.add_task("review-old", dedupe_key="review-flow", revision=10)
+        self.fixture.store.transition("review-old", TaskStatus.RUNNING)
+        self.fixture.store.transition("review-old", TaskStatus.AWAITING_REVIEW)
+        new, created = self.fixture.store.insert_task(
+            CanonicalTask(
+                task_id="review-new",
+                project_id="project-one",
+                dedupe_key="review-flow",
+                revision=11,
+                source_type="test",
+                goal="replace reviewed behavior",
+                supersedes="review-old",
+                payload={"prompt": "test"},
+            )
+        )
+        self.assertTrue(created)
+        self.assertEqual(new["status"], TaskStatus.PENDING.value)
+        self.assertEqual(
+            self.fixture.store.get_task("review-old")["status"],
+            TaskStatus.SUPERSEDED.value,
+        )
 
     def test_claim_is_transactional_and_claims_one_task(self) -> None:
         self.fixture.add_task("one")

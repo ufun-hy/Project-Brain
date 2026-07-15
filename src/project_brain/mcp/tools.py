@@ -368,11 +368,17 @@ CREATE_WRITE = ToolAnnotations(
     idempotentHint=True,
     openWorldHint=False,
 )
-WRITE = ToolAnnotations(
+REVIEW_WRITE = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,
     idempotentHint=False,
     openWorldHint=False,
+)
+DISPATCH_WRITE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
 )
 
 
@@ -433,7 +439,7 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
     @mcp.tool(
         name="project_brain_queue_dispatch_next",
         description="Asynchronously start one fixed Core worker if lock and recovery preflight permit.",
-        annotations=WRITE,
+        annotations=DISPATCH_WRITE,
         structured_output=True,
     )
     def project_brain_queue_dispatch_next(reason: ReasonText | None = None) -> dict[str, Any]:
@@ -471,7 +477,7 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
     @mcp.tool(
         name="project_brain_tasks_review",
         description="Atomically review the exact canonical task head without dispatching or merging.",
-        annotations=WRITE,
+        annotations=REVIEW_WRITE,
         structured_output=True,
     )
     def project_brain_tasks_review(
@@ -498,9 +504,12 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
     def project_brain_tasks_recovery_preview(task_id: StableId) -> dict[str, Any]:
         return service.tasks_recovery_preview(task_id=task_id)
 
-    # MCP Python SDK v1 builds function argument models with Pydantic's
-    # extra="ignore" default. Harden every generated top-level model so the
-    # advertised schema and runtime both reject unknown tool arguments.
+    # The verified and exactly pinned mcp==1.28.1 release builds function
+    # argument models with Pydantic's extra="ignore" default. Its public tool
+    # API has no hook for changing that generated model, so this deliberately
+    # uses private metadata to keep the advertised schema and runtime strict.
+    # Any SDK upgrade must first pass server startup, discovery,
+    # additionalProperties=false, and unknown-argument compatibility tests.
     for tool in mcp._tool_manager.list_tools():  # type: ignore[attr-defined]
         argument_model = tool.fn_metadata.arg_model
         argument_model.model_config = {**argument_model.model_config, "extra": "forbid"}

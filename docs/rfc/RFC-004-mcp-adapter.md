@@ -21,11 +21,13 @@ ChatGPT -> OpenAI Secure MCP Tunnel -> 127.0.0.1:7677/mcp
                               fixed one-shot project-brain apply
 ```
 
-The MCP server uses the official MCP Python SDK v1 stable line through
-`mcp>=1.28,<2`. As of this decision, v1.28.1 is the latest stable release and
-v2 is a breaking prerelease. FastMCP supplies protocol framing, JSON Schema,
+The MCP server uses the verified official MCP Python SDK release through the
+exact dependency `mcp==1.28.1`. FastMCP supplies protocol framing, JSON Schema,
 tool discovery, and Streamable HTTP transport; Project Brain does not implement
-JSON-RPC itself.
+JSON-RPC itself. The adapter currently uses SDK-private generated argument-model
+metadata to enforce top-level `extra=forbid`. An SDK upgrade is therefore a
+reviewed compatibility change and must first pass server startup, tool
+discovery, `additionalProperties=false`, and unknown-argument rejection tests.
 
 ## Transport and exposure
 
@@ -68,6 +70,12 @@ create state or a process. Tool results use stable `status`, `code`, and
 bounded `data` fields. Expected failures are returned as structured adapter
 errors instead of tracebacks or unbounded Core objects.
 
+Dispatch is separately annotated with `destructiveHint=true` and
+`openWorldHint=true` because the spawned Core worker may invoke Codex, mutate a
+task worktree, push a branch, and create or update a GitHub Draft PR. Create and
+review keep their own closed-world, non-destructive annotations; they do not
+share dispatch's authority declaration.
+
 ## Input policy
 
 Every tool schema rejects unknown top-level fields. Strings have explicit
@@ -85,6 +93,12 @@ nesting depth it rejects `command`, `argv`, `shell`, `cwd`, `environment`,
 `repo_path`, `worktree_path`, and `codex_command`. Credential-like input is
 rejected before persistence. `task_id` and the Core logical key
 `(project_id, dedupe_key, revision)` retain existing idempotent behavior.
+
+Supersession remains a Store-owned state-machine operation inside the same
+`BEGIN IMMEDIATE` transaction as task creation. A replacement revision must be
+strictly greater, active execution/recovery/merge ownership cannot be
+superseded, terminal history is preserved, and only states whose
+`ALLOWED_TRANSITIONS` include `superseded` are rewritten.
 
 Review accepts only `task_id`, exact `head_sha`, `approved|needs_changes`, and
 bounded structured findings. It delegates the verdict, finding inserts, task
@@ -128,6 +142,12 @@ for implementation, verification, or publication. Logs live under the runtime
 worker's bounded/redacted completion record is written by a fixed supervisor.
 Each dispatch request records an append-only event, including blocked/idle
 outcomes and an optional redacted reason.
+
+After spawn, a lightweight daemon reaper waits for that exact process, clears
+it under the dispatcher lock only when it is still the active process, and
+records a bounded `mcp_dispatch_worker_exited` event with PID, exit code, and
+log ID. Server shutdown does not terminate a detached worker that is still
+running safely.
 
 ## Recovery preview
 

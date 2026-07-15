@@ -112,3 +112,10 @@ access uses OpenAI Secure MCP Tunnel's outbound HTTPS path; Project Brain does
 not provide or endorse a public unauthenticated endpoint. The long-running MCP
 server starts fixed one-shot Core workers asynchronously, while RuntimeLock,
 the global claim gate, and the existing state machine remain authoritative.
+Dispatch is annotated as potentially destructive and open-world because the
+worker may call Codex and GitHub. A daemon reaper waits for spawned workers and
+audits bounded exit metadata without terminating safely running detached
+processes. Supersession remains an atomic Store/state-machine operation: active
+execution/recovery/merge ownership is protected, revisions increase strictly,
+and terminal history is never rewritten. The adapter pins `mcp==1.28.1` until
+its private generated-model hardening passes the documented upgrade gate.

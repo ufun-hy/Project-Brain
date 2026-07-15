@@ -186,15 +186,52 @@ class OneShotDispatcher:
                 if not handle.closed:
                     handle.close()
             self._active_process = process
+            self._start_reaper(process, log_id)
             return {
                 "dispatch_status": "started",
                 "code": "ok",
-                "message": "One fixed Core worker was started asynchronously",
+                "message": (
+                    "One fixed Core worker process was spawned; task claim is asynchronous"
+                ),
                 "worker_pid": process.pid,
                 "log_id": log_id,
                 "claim_safety": {"claim_safe": True, "blockers": []},
                 "next_action": "Poll project_brain_tasks_get or project_brain_tasks_list.",
             }
+
+    def _start_reaper(self, process: subprocess.Popen[Any], log_id: str) -> None:
+        """Actively reap one spawned worker without controlling its lifetime."""
+        threading.Thread(
+            target=self._reap_worker,
+            args=(process, log_id),
+            name=f"project-brain-mcp-reaper-{process.pid}",
+            daemon=True,
+        ).start()
+
+    def _reap_worker(self, process: subprocess.Popen[Any], log_id: str) -> None:
+        wait_error: str | None = None
+        try:
+            exit_code = process.wait()
+        except Exception as exc:  # pragma: no cover - defensive around OS process APIs
+            exit_code = process.poll()
+            wait_error = redact_text(str(exc))[:1_000]
+        with self._dispatch_lock:
+            if self._active_process is process:
+                self._active_process = None
+        try:
+            self._record_audit(
+                "mcp_dispatch_worker_exited",
+                dispatch_status="worker_exited",
+                worker_pid=process.pid,
+                exit_code=exit_code,
+                log_id=log_id,
+                wait_error=wait_error,
+            )
+        except Exception:
+            # The detached worker has already exited and been reaped. A store
+            # failure must not turn the daemon reaper into an unbounded traceback
+            # or terminate/control another process.
+            return
 
     def _has_dispatchable_work(self, preview: RecoveryReport) -> bool:
         if any(item.get("action") == "would_recover" for item in preview.actions):
@@ -274,6 +311,13 @@ class OneShotDispatcher:
         }
 
     def _audit(self, dispatch_status: str, **payload: Any) -> None:
+        self._record_audit(
+            "mcp_dispatch_requested",
+            dispatch_status=dispatch_status,
+            **payload,
+        )
+
+    def _record_audit(self, event_type: str, **payload: Any) -> None:
         safe_payload = {
             key: redact_text(str(value))[:1_000] if isinstance(value, str) else value
             for key, value in payload.items()
@@ -281,6 +325,6 @@ class OneShotDispatcher:
         }
         self.store.record_event(
             task_id=None,
-            event_type="mcp_dispatch_requested",
-            payload={"dispatch_status": dispatch_status, **safe_payload},
+            event_type=event_type,
+            payload=safe_payload,
         )

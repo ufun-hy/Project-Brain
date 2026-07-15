@@ -15,6 +15,12 @@ python3.11 -m venv ~/.project-brain/app/venv
 ~/.project-brain/app/venv/bin/project-brain serve
 ```
 
+The project dependency is exactly pinned to `mcp==1.28.1` because strict
+top-level unknown-field rejection currently relies on SDK-private generated
+argument-model metadata. Do not upgrade the SDK until server startup, tool
+discovery, `additionalProperties=false`, and runtime unknown-argument tests
+all pass against the candidate version.
+
 The default endpoint is:
 
 ```text
@@ -43,6 +49,11 @@ python -m project_brain --runtime-root ~/.project-brain apply --json
 MCP input cannot change that executable, module, runtime, argv, cwd, or
 environment. The request returns after the worker starts; poll task state
 instead of waiting on the dispatch call.
+
+A daemon reaper waits for each spawned worker and records a bounded
+`mcp_dispatch_worker_exited` audit event containing only PID, exit code, and
+log ID. It does not terminate a safely running detached worker when the MCP
+server shuts down.
 
 ## Local protocol verification
 

@@ -1,16 +1,16 @@
 # Current State
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 ## Current stage
 
-Core 0.3.0 is merged. RFC-004 MCP Adapter MVP is implemented in the independent
-`codex/project-brain-mcp-adapter` worktree for a new Draft PR. PR #10 and PR
-#11 remain untouched.
+Core 0.3.0 is merged. RFC-004 MCP Adapter MVP and the F1-F4 review closure are
+implemented in the independent `codex/project-brain-mcp-adapter` worktree for
+Draft PR #13. PR #10 and PR #11 remain untouched.
 
 ## Implemented MCP adapter
 
-- The official MCP Python SDK stable v1 line (`mcp>=1.28,<2`) provides
+- The verified official MCP Python SDK release (`mcp==1.28.1`) provides
   Streamable HTTP at `/mcp`; the no-auth server binds only to `127.0.0.1` or
   `::1` and documents OpenAI Secure MCP Tunnel as the remote path.
 - Eight strict-schema tools expose only health, registered projects, canonical
@@ -24,6 +24,16 @@ Core 0.3.0 is merged. RFC-004 MCP Adapter MVP is implemented in the independent
   `python -m project_brain ... apply --json` worker with private JSON Lines
   logs. Core's RuntimeLock, claim gate, recovery, and one-task-per-process
   behavior remain authoritative.
+- Supersession validation is atomic with task creation. Revisions must increase
+  strictly; active execution, recovery, and merge ownership cannot be hidden;
+  terminal history remains unchanged; and only state-machine-authorized old
+  states transition to `superseded`.
+- Dispatch is separately annotated as potentially destructive and open-world.
+  A daemon reaper actively waits for each spawned worker, clears only that
+  process under the dispatcher lock, and records a bounded/redacted exit event.
+- The SDK is exactly pinned to the verified `mcp==1.28.1` because strict
+  top-level unknown-field rejection uses compatibility-tested private argument
+  model metadata.
 - Create, review, and dispatch writes are auditable. MCP exposes no recovery
   resolution, cleanup, acceptance, or merge action.
 
@@ -56,18 +66,19 @@ Core 0.3.0 is merged. RFC-004 MCP Adapter MVP is implemented in the independent
 
 ## Verification status
 
-The original 109-test Core suite still passes after the MCP application-service
-extraction. The full 131-test gate passes under Python 3.11 with the installed
-project dependency set. This includes a real Streamable HTTP initialize,
-tools/list, health call, and clean-shutdown test plus protocol, tool,
-dispatcher, recovery-preview, permission, and security coverage. Draft PR CI
-still must pass before the repository-delivery portion is complete.
+The full 139-test gate passes under Python 3.11 with `mcp==1.28.1`. This
+includes the original 131-test MCP delivery gate plus eight review-closure
+tests for supersession ownership/atomicity/revisions/terminal history, MCP
+state conflicts and claim blockers, dispatch annotations, SDK compatibility,
+and automatic worker reaping/exit audit. The real Streamable HTTP initialize,
+tools/list, health call, and clean-shutdown test also passes. GitHub Actions
+must remain green for every pushed PR head.
 
 ## Next concrete starting point
 
-Create the new Draft PR and verify GitHub Actions. Secure MCP Tunnel and ChatGPT
-acceptance require operator-owned Platform/workspace permissions and must not
-be claimed from local tests alone.
+Keep Draft PR #13 unmerged for independent review. Secure MCP Tunnel and
+ChatGPT acceptance require operator-owned Platform/workspace permissions and
+must not be claimed from local tests alone.
 
 ## Scope limits
 

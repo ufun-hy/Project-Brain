@@ -99,13 +99,11 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.VERIFICATION_FAILED,
         TaskStatus.RETRY_PENDING,
         TaskStatus.FAILED,
-        TaskStatus.SUPERSEDED,
         TaskStatus.EXPIRED,
     },
     TaskStatus.RECOVERY_BLOCKED: {
         TaskStatus.RETRY_PENDING,
         TaskStatus.FAILED,
-        TaskStatus.SUPERSEDED,
         TaskStatus.EXPIRED,
     },
     TaskStatus.VERIFICATION_FAILED: {
