@@ -79,6 +79,8 @@ class MCPToolTests(unittest.TestCase):
         self.assertNotIn("codex_command", rendered)
         self.assertNotIn(str(self.fixture.root), rendered)
         self.assertEqual(projects["projects"][0]["project_id"], "project-one")
+        self.assertEqual(projects["projects"][0]["config_revision"], 1)
+        self.assertEqual(len(projects["projects"][0]["config_sha256"]), 12)
 
     def test_create_is_canonical_idempotent_and_audited(self) -> None:
         first = self.service.tasks_create(self._create_value())
@@ -90,6 +92,8 @@ class MCPToolTests(unittest.TestCase):
         self.assertEqual(task["task_type"], "codex")
         self.assertEqual(task["payload"]["prompt"], "Update one documentation page and add tests.")
         self.assertNotIn("payload", json.dumps(first))
+        self.assertEqual(first["task"]["project_config_revision"], 1)
+        self.assertEqual(len(first["task"]["project_config_sha256"]), 12)
         self.assertEqual(
             [
                 event["payload"]["outcome"]

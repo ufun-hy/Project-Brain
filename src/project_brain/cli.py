@@ -5,13 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Sequence
 
 from .application import health_report, status_report, task_view, worker_result_view
 from .engine import TaskEngine
-from .errors import AlreadyRunningError, ProjectBrainError
+from .errors import AlreadyRunningError, InvalidTaskError, ProjectBrainError
 from .locking import RuntimeLock
 from .ingress import TaskImporter
 from .projects import ProjectRegistry
@@ -21,6 +23,14 @@ from .runtime import RuntimePaths
 from .security import redact_text
 from .store import TaskStore
 from .worktrees import WorktreeManager
+from .configuration import ConfigurationManager, project_checks, safe_project
+from .project_config import (
+    EXECUTION_FIELDS,
+    LEGACY_CONFIG_REQUIRES_UPDATE,
+    config_sha256,
+    normalize_execution_profile,
+    normalize_legacy_execution_profile,
+)
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -32,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-root", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    init = sub.add_parser("init", help="Initialize the private Core runtime")
+    _add_json(init)
+
     status = sub.add_parser("status", help="Show task status summary")
     _add_json(status)
 
@@ -39,6 +52,34 @@ def build_parser() -> argparse.ArgumentParser:
     project_sub = projects.add_subparsers(dest="projects_command", required=True)
     project_list = project_sub.add_parser("list")
     _add_json(project_list)
+    project_show = project_sub.add_parser("show")
+    project_show.add_argument("project_id")
+    _add_json(project_show)
+    project_check = project_sub.add_parser("check")
+    project_check.add_argument("project_id")
+    _add_json(project_check)
+    project_add = project_sub.add_parser("add")
+    project_add.add_argument("repo_path", type=Path)
+    _project_options(project_add, include_identity=True)
+    project_update = project_sub.add_parser("update")
+    project_update.add_argument("project_id")
+    project_update.add_argument("--repo-path", type=Path)
+    _project_options(project_update, include_identity=False)
+
+    config = sub.add_parser("config", help="Plan and apply versioned project config")
+    config_sub = config.add_subparsers(dest="config_command", required=True)
+    config_status = config_sub.add_parser("status")
+    _add_json(config_status)
+    for name in ("validate", "plan", "apply"):
+        item = config_sub.add_parser(name)
+        item.add_argument("--file", type=Path)
+        if name == "apply":
+            item.add_argument("--execute", action="store_true")
+        _add_json(item)
+    config_export = config_sub.add_parser("export")
+    config_export.add_argument("--file", type=Path, required=True)
+    config_export.add_argument("--force", action="store_true")
+    _add_json(config_export)
 
     tasks = sub.add_parser("tasks", help="Inspect tasks")
     task_sub = tasks.add_subparsers(dest="tasks_command", required=True)
@@ -105,6 +146,53 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _project_options(parser: argparse.ArgumentParser, *, include_identity: bool) -> None:
+    if include_identity:
+        parser.add_argument("--project-id")
+    parser.add_argument("--name")
+    parser.add_argument("--default-branch")
+    parser.add_argument("--codex-path")
+    parser.add_argument("--verification-file", type=Path)
+    parser.add_argument("--auto-push", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--auto-pr", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--non-interactive", action="store_true")
+    _add_json(parser)
+
+
+def _verification_file(path: Path | None) -> list[Any] | None:
+    if path is None:
+        return None
+    try:
+        value = json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProjectBrainError(f"Invalid verification file: {exc}") from exc
+    if not isinstance(value, list):
+        raise ProjectBrainError("Verification file must contain an array")
+    return value
+
+
+def _derived_project_id(repo: Path) -> str:
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", repo.name).strip("-.")[:128]
+    return value or "project"
+
+
+def _confirm(plan: dict[str, Any], *, non_interactive: bool, json_output: bool) -> bool:
+    if non_interactive:
+        return True
+    if json_output:
+        indent = None if os.environ.get("PROJECT_BRAIN_JSON_LINES") == "1" else 2
+        print(
+            json.dumps(_safe_output(plan), ensure_ascii=False, indent=indent),
+            file=sys.stderr,
+        )
+        print("Apply this project configuration? [y/N] ", end="", flush=True, file=sys.stderr)
+        answer = input()
+    else:
+        _render(plan, json_output=False)
+        answer = input("Apply this project configuration? [y/N] ")
+    return answer.strip().lower() in {"y", "yes"}
+
+
 def _human_status(value: dict[str, Any]) -> str:
     lines = ["Project Brain status"]
     counts = value.get("counts", {})
@@ -122,11 +210,12 @@ def _human_status(value: dict[str, Any]) -> str:
 
 
 def _render(value: Any, *, json_output: bool, human: str | None = None) -> None:
+    value = _safe_output(value)
     if json_output:
         indent = None if os.environ.get("PROJECT_BRAIN_JSON_LINES") == "1" else 2
         print(json.dumps(value, ensure_ascii=False, indent=indent))
     elif human is not None:
-        print(human)
+        print(_redact_local_paths(human))
     elif isinstance(value, list):
         for item in value:
             print(" ".join(f"{key}={val}" for key, val in item.items()))
@@ -134,14 +223,40 @@ def _render(value: Any, *, json_output: bool, human: str | None = None) -> None:
         print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _safe_output(value: Any) -> Any:
+    hidden = {
+        "argv", "command", "command_json", "codex_command", "execution_profile",
+        "execution_profile_json", "repo_path", "worktree_root", "allowed_commands",
+        "verification_commands", "runtime", "source", "path", "artifact_path",
+        "worktree_path", "config_file",
+    }
+    if isinstance(value, dict):
+        return {key: _safe_output(item) for key, item in value.items() if key not in hidden}
+    if isinstance(value, list):
+        return [_safe_output(item) for item in value]
+    if isinstance(value, str):
+        return _redact_local_paths(value)
+    return value
+
+
+def _redact_local_paths(value: str) -> str:
+    return re.sub(
+        r"(?:/Users|/private|/tmp|/var|/home)/[^\s,;:)\]]+",
+        "<local-path>",
+        value,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    runtime = RuntimePaths.from_value(args.runtime_root).ensure()
+    runtime_value = RuntimePaths.from_value(args.runtime_root)
+    runtime_preexisting = runtime_value.database.exists()
+    runtime = runtime_value.ensure()
     store = TaskStore(runtime.database)
     try:
         store.initialize()
     except ProjectBrainError as exc:
-        message = redact_text(str(exc)) if os.environ.get("PROJECT_BRAIN_WORKER_OUTPUT") == "1" else str(exc)
+        message = _redact_local_paths(redact_text(str(exc)))
         value = {"status": "error", "error_category": exc.category, "error": message}
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 2
@@ -156,12 +271,167 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 3
     try:
-        if args.command == "status":
+        if args.command == "init":
+            checks = {
+                "git": shutil.which("git") is not None,
+                "codex": shutil.which("codex") is not None,
+                "gh": shutil.which("gh") is not None,
+            }
+            value = {
+                "status": "already_initialized" if runtime_preexisting else "initialized",
+                "schema_version": store.schema_version(),
+                "runtime": str(runtime.root),
+                "checks": checks,
+            }
+            _render(value, json_output=args.json_output)
+        elif args.command == "status":
             value = status_report(store)
             _render(value, json_output=args.json_output, human=_human_status(value))
         elif args.command == "projects" and args.projects_command == "list":
-            projects = store.list_projects()
+            projects = [safe_project(item) for item in store.list_projects()]
             _render(projects, json_output=args.json_output)
+        elif args.command == "projects" and args.projects_command == "show":
+            _render(safe_project(store.get_project(args.project_id)), json_output=args.json_output)
+        elif args.command == "projects" and args.projects_command == "check":
+            value = project_checks(store.get_project(args.project_id), runtime)
+            _render(value, json_output=args.json_output)
+            return 0 if value["status"] == "healthy" else 1
+        elif args.command == "projects" and args.projects_command == "add":
+            repo = args.repo_path.expanduser().resolve()
+            project_id = args.project_id or _derived_project_id(repo)
+            try:
+                store.get_project(project_id)
+            except InvalidTaskError:
+                pass
+            else:
+                raise ProjectBrainError(
+                    f"Project is already registered; use projects update: {project_id}"
+                )
+            values: dict[str, Any] = {
+                "project_id": project_id,
+                "name": args.name or args.project_id or _derived_project_id(repo),
+                "repo_path": str(repo),
+                "default_branch": args.default_branch,
+                "codex_path": args.codex_path,
+            }
+            if args.auto_push is not None:
+                values["auto_push"] = args.auto_push
+            if args.auto_pr is not None:
+                values["auto_pr"] = args.auto_pr
+            verification = _verification_file(args.verification_file)
+            if verification is not None:
+                values["verification_commands"] = verification
+            prepared = ProjectRegistry(store, runtime).prepare(values)
+            digest = config_sha256(normalize_execution_profile(prepared))
+            plan = {
+                "project_id": prepared["project_id"],
+                "action": "add",
+                "current_revision": None,
+                "next_revision": 1,
+                "next_sha256": digest,
+                "changed_fields": ["name", *EXECUTION_FIELDS],
+                "nonterminal_task_count": 0,
+                "task_snapshot_effect": "new tasks bind revision 1",
+            }
+            if not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
+                _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
+            else:
+                with RuntimeLock(runtime.lock_file):
+                    try:
+                        store.get_project(prepared["project_id"])
+                    except InvalidTaskError:
+                        pass
+                    else:
+                        raise ProjectBrainError(
+                            "Project was registered after planning; rerun projects add"
+                        )
+                    result = store.apply_projects([prepared], source="projects_add")[0]
+                _render({"status": "applied", "action": result["action"], "plan": plan, "project": safe_project(result["project"])}, json_output=args.json_output)
+        elif args.command == "projects" and args.projects_command == "update":
+            current = store.get_project(args.project_id)
+            values = {**current}
+            for key in ("name", "default_branch"):
+                if getattr(args, key) is not None:
+                    values[key] = getattr(args, key)
+            if args.repo_path is not None:
+                updated_repo = args.repo_path.expanduser().resolve()
+                values["repo_path"] = str(updated_repo)
+                values["remote_url"] = ProjectRegistry._remote_url(updated_repo)
+                if args.default_branch is None:
+                    values["default_branch"] = ProjectRegistry._default_branch(updated_repo)
+            if args.codex_path is not None:
+                values["codex_command"] = [
+                    args.codex_path,
+                    "exec",
+                    "--sandbox",
+                    "workspace-write",
+                    "-",
+                ]
+            if args.auto_push is not None:
+                values["auto_push"] = args.auto_push
+            if args.auto_pr is not None:
+                values["auto_pr"] = args.auto_pr
+            verification = _verification_file(args.verification_file)
+            if verification is not None:
+                values["verification_commands"] = verification
+            prepared = ProjectRegistry(store, runtime).prepare(values)
+            digest = config_sha256(normalize_execution_profile(prepared))
+            current_profile = (
+                normalize_legacy_execution_profile(current)
+                if current.get("config_source") == LEGACY_CONFIG_REQUIRES_UPDATE
+                else normalize_execution_profile(current)
+            )
+            changed = [
+                field for field in EXECUTION_FIELDS
+                if prepared[field] != current_profile[field]
+            ]
+            if prepared["name"] != current["name"]:
+                changed.append("name")
+            execution_changed = digest != current["config_sha256"]
+            nonterminal = store.nonterminal_task_count(args.project_id)
+            plan = {
+                "project_id": args.project_id,
+                "action": "update" if execution_changed else ("rename" if changed else "noop"),
+                "current_revision": current["config_revision"],
+                "next_revision": current["config_revision"] + (1 if execution_changed else 0),
+                "current_sha256": current["config_sha256"],
+                "next_sha256": digest,
+                "changed_fields": changed,
+                "nonterminal_task_count": nonterminal,
+                "task_snapshot_effect": "existing tasks keep their snapshot; new tasks bind next revision",
+            }
+            if not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
+                _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
+            else:
+                with RuntimeLock(runtime.lock_file):
+                    latest = store.get_project(args.project_id)
+                    if (
+                        latest["config_revision"] != plan["current_revision"]
+                        or latest["config_sha256"] != plan["current_sha256"]
+                    ):
+                        raise ProjectBrainError(
+                            "Project configuration changed after planning; rerun projects update"
+                        )
+                    result = store.apply_projects([prepared], source="projects_update")[0]
+                _render({"status": "applied", "plan": plan, "project": safe_project(result["project"])}, json_output=args.json_output)
+        elif args.command == "config":
+            manager = ConfigurationManager(store, runtime)
+            if args.config_command == "status":
+                value = manager.status()
+            elif args.config_command == "validate":
+                value = manager.validate(args.file)
+            elif args.config_command == "plan":
+                value = manager.plan(args.file)
+            elif args.config_command == "apply":
+                if args.execute:
+                    with RuntimeLock(runtime.lock_file):
+                        value = manager.apply(args.file, execute=True)
+                else:
+                    value = manager.apply(args.file, execute=False)
+            elif args.config_command == "export":
+                with RuntimeLock(runtime.lock_file):
+                    value = manager.export(args.file, force=args.force)
+            _render(value, json_output=args.json_output)
         elif args.command == "tasks" and args.tasks_command == "list":
             projects = {item["project_id"]: item for item in store.list_projects()}
             tasks = [
@@ -243,8 +513,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render(value, json_output=args.json_output)
         elif args.command == "apply":
             with RuntimeLock(runtime.lock_file):
-                if not store.list_projects() and runtime.config_file.exists():
-                    ProjectRegistry(store, runtime).load_config(runtime.config_file)
                 value = TaskEngine(
                     store,
                     runtime,
@@ -262,7 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _render({"status": "already_running"}, json_output=getattr(args, "json_output", False))
         return 0
     except ProjectBrainError as exc:
-        message = redact_text(str(exc)) if os.environ.get("PROJECT_BRAIN_WORKER_OUTPUT") == "1" else str(exc)
+        message = _redact_local_paths(redact_text(str(exc)))
         value = {"status": "error", "error_category": exc.category, "error": message}
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 2

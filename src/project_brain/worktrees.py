@@ -244,7 +244,7 @@ class WorktreeManager:
         forensic_archive_id: int | None = None,
     ) -> dict[str, Any]:
         task = self.store.get_task(task_id)
-        project = self.store.get_project(task["project_id"])
+        project = self.store.task_execution_profile(task)
         record = self.store.get_worktree(task_id)
         if not record:
             raise WorktreeError(f"Task has no registered worktree: {task_id}")
@@ -339,7 +339,7 @@ class WorktreeManager:
         task = self.store.get_task(task_id)
         if task["status"] != TaskStatus.AWAITING_REVIEW.value:
             raise WorktreeError(f"Task is not awaiting review: {task_id}")
-        project = self.store.get_project(task["project_id"])
+        project = self.store.task_execution_profile(task)
         if not project.get("auto_push"):
             raise WorktreeError("Unpublished task worktrees cannot be released")
         if project.get("auto_pr") and not task.get("pr_url"):

@@ -11,6 +11,7 @@ from project_brain import __version__
 from project_brain.application import health_report, task_view
 from project_brain.runtime import RuntimePaths
 from project_brain.security import redact_text
+from project_brain.project_config import short_config_hash
 from project_brain.store import TaskStore
 
 
@@ -70,6 +71,8 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "pr_url": bounded_text(value.get("pr_url"), limit=1_000),
         "last_error": bounded_text(value.get("last_error")),
         "next_action": bounded_text(value.get("next_action"), limit=500),
+        "project_config_revision": value.get("project_config_revision"),
+        "project_config_sha256": short_config_hash(value.get("project_config_sha256")),
     }
 
 
@@ -89,6 +92,8 @@ def projects_view(store: TaskStore) -> list[dict[str, Any]]:
                 "default_branch": bounded_text(project["default_branch"], limit=256),
                 "auto_push": project["auto_push"],
                 "auto_pr": project["auto_pr"],
+                "config_revision": project.get("config_revision"),
+                "config_sha256": short_config_hash(project.get("config_sha256")),
                 "health": {
                     "repository_available": repo.exists() and (repo / ".git").exists(),
                     "codex_configured": bool(executable),

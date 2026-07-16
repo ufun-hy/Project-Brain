@@ -7,14 +7,18 @@ them.
 
 The existing live Gmail Bridge under `experiments/gmail-inbox/` is frozen legacy
 behavior and is not part of the Core architecture. This change does not modify,
-migrate, launch, or replace it. Project Brain 0.4.0 adds a separate, controlled
-MCP adapter for canonical Core operations; it does not copy DevSpace's arbitrary
-file or terminal authority.
+migrate, launch, or replace it. Project Brain 0.5.0 adds versioned project
+onboarding and immutable per-task execution snapshots while retaining the
+controlled MCP adapter for canonical Core operations; it does not copy
+DevSpace's arbitrary file or terminal authority.
 
 ## Guarantees
 
 - Stable project, task, dedupe, criterion, and verification IDs are validated
   before persistence.
+- SQLite is authoritative for registered projects. Every task atomically binds
+  the project configuration revision, SHA-256, and full execution profile that
+  all retries, recovery, verification, and publication continue to use.
 - Mutable runtime data is private and lives outside source under
   `~/.project-brain/` by default.
 - Every implementation runs under
@@ -50,13 +54,34 @@ enabled.
 ```bash
 python3.11 -m venv ~/.project-brain/app/venv
 ~/.project-brain/app/venv/bin/pip install -e .
-mkdir -p ~/.project-brain/config
-cp config/project-brain.example.json ~/.project-brain/config/project-brain.json
+project-brain init --json
+project-brain projects add /absolute/path/to/repository \
+  --project-id my-project --non-interactive --json
 ```
 
 The actual repository `origin` must match the registered `remote_url`.
 `worktree_root` is deliberately not configurable outside the managed runtime
 path.
+
+For declarative configuration, inspect the read-only plan before the explicit
+write:
+
+```bash
+project-brain config validate --file ./project-brain.json --json
+project-brain config plan --file ./project-brain.json --json
+project-brain config apply --file ./project-brain.json --execute --json
+project-brain config export --file ./project-brain.export.json --json
+```
+
+`apply` and `serve` never import JSON implicitly. A schema-less legacy file is
+reported as `legacy_schema` by `config plan` and may be explicitly bootstrapped
+only while the database has never registered a project.
+
+Codex argv[0] is resolved to an absolute executable path before validation,
+planning, or persistence; exports therefore contain the fixed absolute path.
+For interactive `projects add/update --json`, the plan and prompt use stderr so
+stdout remains exactly one final JSON document. Use `--non-interactive` for
+automation.
 
 ## Canonical enqueue
 
@@ -99,6 +124,10 @@ a `verification_id` is recorded as `not_verified` for human review.
 ```bash
 project-brain status --json
 project-brain projects list --json
+project-brain projects show <project-id> --json
+project-brain projects check <project-id> --json
+project-brain projects update <project-id> --name "Display name" --json
+project-brain config status --json
 project-brain tasks list --json
 project-brain tasks show <task-id> --json
 project-brain tasks recover <task-id> --dry-run --json
@@ -213,3 +242,6 @@ and runtime roots; no Gmail, GitHub, Codex, or user-home credentials are needed.
 Architecture and recovery details are in
 [`docs/rfc/RFC-003-core-v3.md`](docs/rfc/RFC-003-core-v3.md) and
 [`docs/troubleshooting-recovery.md`](docs/troubleshooting-recovery.md).
+Project onboarding, config transactions, migrations, and snapshot troubleshooting
+are in [`docs/project-configuration.md`](docs/project-configuration.md) and
+[`docs/rfc/RFC-005-project-onboarding-and-config-snapshots.md`](docs/rfc/RFC-005-project-onboarding-and-config-snapshots.md).

@@ -116,6 +116,7 @@ class CLITests(unittest.TestCase):
         self.assertIn("runtime_root", names)
         self.assertIn("database_schema", names)
         self.assertIn("project:project-one", names)
+        self.assertNotIn(str(self.fixture.root), output)
 
     def test_cleanup_defaults_to_dry_run_and_requires_execute(self) -> None:
         self.fixture.add_task("cleanup-task")

@@ -46,18 +46,6 @@ class TaskImporter:
         except TypeError as exc:
             raise InvalidTaskError(f"Invalid canonical task envelope: {exc}") from exc
         task.validate()
-        project = self.store.get_project(task.project_id)
-        trusted = {
-            check.get("id")
-            for check in project.get("verification_commands") or []
-            if isinstance(check, dict)
-        }
-        for criterion in task.acceptance_criteria:
-            if not isinstance(criterion, dict) or not criterion.get("verification_id"):
-                continue
-            verification_id = criterion["verification_id"]
-            if verification_id not in trusted:
-                raise InvalidTaskError(
-                    f"Unknown trusted verification_id for {task.project_id}: {verification_id}"
-                )
+        # Verification IDs and the matching execution profile are validated and
+        # bound inside the store's single task-creation transaction.
         return self.store.insert_task(task)

@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -281,4 +281,14 @@ MIGRATION_4 = """
 ALTER TABLE agent_sessions ADD COLUMN child_identity_json TEXT;
 """
 
-MIGRATIONS = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4}
+MIGRATION_5 = """
+ALTER TABLE projects ADD COLUMN config_revision INTEGER;
+ALTER TABLE projects ADD COLUMN config_sha256 TEXT;
+ALTER TABLE projects ADD COLUMN config_updated_at TEXT;
+ALTER TABLE projects ADD COLUMN config_source TEXT;
+ALTER TABLE tasks ADD COLUMN project_config_revision INTEGER;
+ALTER TABLE tasks ADD COLUMN project_config_sha256 TEXT;
+ALTER TABLE tasks ADD COLUMN execution_profile_json TEXT;
+"""
+
+MIGRATIONS = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4, 5: MIGRATION_5}

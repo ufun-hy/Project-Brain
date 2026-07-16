@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .errors import InvalidTaskError, MigrationError, StateTransitionError
+from .errors import ConfigurationError, InvalidTaskError, MigrationError, StateTransitionError
 from .models import (
     ALLOWED_TRANSITIONS,
     AttemptPhase,
@@ -21,7 +21,9 @@ from .models import (
     parse_timestamp,
     utc_now,
 )
-from .security import command_contains_secret, contains_known_secret, redact_text
+from .security import contains_known_secret, redact_text
+from .migrations import DATA_MIGRATIONS
+from .project_config import canonical_profile_json, config_sha256, normalize_execution_profile
 from .schema import MIGRATIONS, SCHEMA_VERSION
 
 
@@ -41,10 +43,12 @@ class TaskStore:
         database: str | Path,
         *,
         migrations: dict[int, str] | None = None,
+        data_migrations: dict[int, Any] | None = None,
         schema_version: int | None = None,
     ) -> None:
         self.database = Path(database).expanduser().resolve()
         self.migrations = dict(MIGRATIONS if migrations is None else migrations)
+        self.data_migrations = dict(DATA_MIGRATIONS if data_migrations is None else data_migrations)
         self.supported_schema_version = SCHEMA_VERSION if schema_version is None else schema_version
 
     def connect(self) -> sqlite3.Connection:
@@ -98,6 +102,9 @@ class TaskStore:
                     continue
                 for statement in self._migration_statements(migration):
                     connection.execute(statement)
+                hook = self.data_migrations.get(version)
+                if hook is not None:
+                    hook(connection)
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, utc_now()),
@@ -124,71 +131,127 @@ class TaskStore:
             row = connection.execute("PRAGMA user_version").fetchone()
             return int(row[0])
 
-    def register_project(self, project: Project | dict[str, Any]) -> dict[str, Any]:
-        if isinstance(project, Project):
-            record = project.as_record()
-        else:
-            try:
-                record = Project(**dict(project)).as_record()
-            except TypeError as exc:
-                raise InvalidTaskError(f"Invalid project record: {exc}") from exc
-        commands = [record.get("codex_command") or []]
-        commands.extend((record.get("allowed_commands") or {}).values())
-        for check in record.get("verification_commands") or []:
-            if isinstance(check, list):
-                commands.append(check)
-            elif isinstance(check, dict):
-                commands.append(check.get("command") or check.get("argv") or [])
-        if contains_known_secret(record.get("remote_url", "")) or any(
-            isinstance(command, list) and command_contains_secret(command)
-            for command in commands
-        ):
-            raise InvalidTaskError("Project configuration contains a credential-like value")
-        now = utc_now()
-        created_at = str(record.get("created_at") or now)
-        updated_at = now
-        required = ("project_id", "name", "repo_path", "remote_url", "default_branch", "worktree_root")
-        for key in required:
-            if not isinstance(record.get(key), str) or not record[key].strip():
-                raise InvalidTaskError(f"Project {key} must be a non-empty string")
-        with self.transaction(immediate=True) as connection:
-            connection.execute(
-                """
-                INSERT INTO projects(
-                    project_id, name, repo_path, remote_url, default_branch,
-                    worktree_root, codex_command_json, verification_commands_json,
-                    allowed_commands_json, auto_push, auto_pr, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(project_id) DO UPDATE SET
-                    name = excluded.name,
-                    repo_path = excluded.repo_path,
-                    remote_url = excluded.remote_url,
-                    default_branch = excluded.default_branch,
-                    worktree_root = excluded.worktree_root,
-                    codex_command_json = excluded.codex_command_json,
-                    verification_commands_json = excluded.verification_commands_json,
-                    allowed_commands_json = excluded.allowed_commands_json,
-                    auto_push = excluded.auto_push,
-                    auto_pr = excluded.auto_pr,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    record["project_id"],
-                    record["name"],
-                    record["repo_path"],
-                    record["remote_url"],
-                    record.get("default_branch", "main"),
-                    record["worktree_root"],
-                    _json(record.get("codex_command", [])),
-                    _json(record.get("verification_commands", [])),
-                    _json(record.get("allowed_commands", {})),
-                    int(bool(record.get("auto_push", True))),
-                    int(bool(record.get("auto_pr", True))),
-                    created_at,
-                    updated_at,
-                ),
+    def register_project(
+        self, project: Project | dict[str, Any], *, source: str = "project_registration"
+    ) -> dict[str, Any]:
+        return self.apply_projects([project], source=source)[0]["project"]
+
+    def apply_projects(
+        self,
+        projects: list[Project | dict[str, Any]],
+        *,
+        source: str,
+    ) -> list[dict[str, Any]]:
+        """Atomically add/update projects after every record has been normalized."""
+        prepared: list[dict[str, Any]] = []
+        identifiers: set[str] = set()
+        names: set[str] = set()
+        for project in projects:
+            if isinstance(project, Project):
+                record = project.as_record()
+            else:
+                record = dict(project)
+            profile = normalize_execution_profile(record)
+            project_id = profile["project_id"]
+            if project_id in identifiers:
+                raise InvalidTaskError(f"Duplicate project_id: {project_id}")
+            identifiers.add(project_id)
+            name = str(record.get("name") or project_id)
+            if not name.strip() or name in names:
+                raise InvalidTaskError(f"Duplicate or empty project name: {name}")
+            names.add(name)
+            prepared.append(
+                {
+                    **profile,
+                    "name": name,
+                    "config_sha256": config_sha256(profile),
+                }
             )
-        return self.get_project(record["project_id"])
+        now = utc_now()
+        results: list[dict[str, Any]] = []
+        with self.transaction(immediate=True) as connection:
+            for record in prepared:
+                name_owner = connection.execute(
+                    "SELECT project_id FROM projects WHERE name = ? AND project_id != ?",
+                    (record["name"], record["project_id"]),
+                ).fetchone()
+                if name_owner is not None:
+                    raise InvalidTaskError(f"Project name is already registered: {record['name']}")
+                existing = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
+                ).fetchone()
+                if existing is None:
+                    action = "add"
+                    revision = 1
+                    created_at = now
+                else:
+                    action = "noop" if existing["config_sha256"] == record["config_sha256"] else "update"
+                    revision = int(existing["config_revision"]) + (action == "update")
+                    created_at = existing["created_at"]
+                    if action == "noop" and existing["name"] != record["name"]:
+                        action = "rename"
+                if action == "noop":
+                    results.append({"action": action, "project": self._project(existing)})
+                    continue
+                if action == "rename":
+                    connection.execute(
+                        "UPDATE projects SET name = ?, updated_at = ? WHERE project_id = ?",
+                        (record["name"], now, record["project_id"]),
+                    )
+                    row = connection.execute(
+                        "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
+                    ).fetchone()
+                    assert row is not None
+                    results.append({"action": action, "project": self._project(row)})
+                    connection.execute(
+                        "INSERT INTO events(task_id,event_type,payload_json,created_at) VALUES(NULL,?,?,?)",
+                        ("project_config_applied", _json({"project_id": record["project_id"], "action": action, "config_revision": revision, "config_sha256": record["config_sha256"]}), now),
+                    )
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO projects(
+                        project_id, name, repo_path, remote_url, default_branch,
+                        worktree_root, codex_command_json, verification_commands_json,
+                        allowed_commands_json, auto_push, auto_pr, created_at, updated_at,
+                        config_revision, config_sha256, config_updated_at, config_source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(project_id) DO UPDATE SET
+                        name=excluded.name, repo_path=excluded.repo_path,
+                        remote_url=excluded.remote_url, default_branch=excluded.default_branch,
+                        worktree_root=excluded.worktree_root,
+                        codex_command_json=excluded.codex_command_json,
+                        verification_commands_json=excluded.verification_commands_json,
+                        allowed_commands_json=excluded.allowed_commands_json,
+                        auto_push=excluded.auto_push, auto_pr=excluded.auto_pr,
+                        updated_at=excluded.updated_at, config_revision=excluded.config_revision,
+                        config_sha256=excluded.config_sha256,
+                        config_updated_at=excluded.config_updated_at,
+                        config_source=excluded.config_source
+                    """,
+                    (
+                        record["project_id"], record["name"], record["repo_path"],
+                        record["remote_url"], record["default_branch"], record["worktree_root"],
+                        _json(record["codex_command"]), _json(record["verification_commands"]),
+                        _json(record["allowed_commands"]), int(record["auto_push"]),
+                        int(record["auto_pr"]), created_at, now, revision,
+                        record["config_sha256"], now, source,
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
+                ).fetchone()
+                assert row is not None
+                results.append({"action": action, "project": self._project(row)})
+                connection.execute(
+                    "INSERT INTO events(task_id,event_type,payload_json,created_at) VALUES(NULL,?,?,?)",
+                    (
+                        "project_config_applied",
+                        _json({"project_id": record["project_id"], "action": action, "config_revision": revision, "config_sha256": record["config_sha256"]}),
+                        now,
+                    ),
+                )
+        return results
 
     @staticmethod
     def _project(row: sqlite3.Row) -> dict[str, Any]:
@@ -225,6 +288,15 @@ class TaskStore:
             rows = connection.execute("SELECT * FROM projects ORDER BY name").fetchall()
         return [self._project(row) for row in rows]
 
+    def nonterminal_task_count(self, project_id: str) -> int:
+        terminal = tuple(status.value for status in TERMINAL_STATUSES)
+        with self.connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status NOT IN ({','.join('?' for _ in terminal)})",
+                (project_id, *terminal),
+            ).fetchone()
+        return int(row[0])
+
     @staticmethod
     def _task(row: sqlite3.Row) -> dict[str, Any]:
         value = dict(row)
@@ -232,8 +304,27 @@ class TaskStore:
             value.pop("acceptance_criteria_json"), []
         )
         value["payload"] = _loads(value.pop("payload_json"), {})
+        if "execution_profile_json" in value:
+            value["execution_profile"] = _loads(value.pop("execution_profile_json"), None)
         value["commit"] = value.pop("commit_sha")
         return value
+
+    def task_execution_profile(self, task: str | dict[str, Any]) -> dict[str, Any]:
+        value = self.get_task(task) if isinstance(task, str) else task
+        raw = value.get("execution_profile")
+        revision = value.get("project_config_revision")
+        digest = value.get("project_config_sha256")
+        if not isinstance(raw, dict) or not isinstance(revision, int) or revision < 1:
+            raise InvalidTaskError("Task execution snapshot is missing or invalid")
+        try:
+            normalized = normalize_execution_profile(raw)
+        except ConfigurationError as exc:
+            raise InvalidTaskError("Task execution snapshot is malformed") from exc
+        if digest != config_sha256(normalized):
+            raise InvalidTaskError("Task execution snapshot hash mismatch")
+        if normalized["project_id"] != value["project_id"]:
+            raise InvalidTaskError("Task execution snapshot project mismatch")
+        return normalized
 
     def insert_task(self, task: CanonicalTask | dict[str, Any]) -> tuple[dict[str, Any], bool]:
         canonical = task if isinstance(task, CanonicalTask) else CanonicalTask(**task)
@@ -283,11 +374,16 @@ class TaskStore:
             if logical is not None:
                 return self._task(logical), False
             project_row = connection.execute(
-                "SELECT verification_commands_json FROM projects WHERE project_id = ?",
+                "SELECT * FROM projects WHERE project_id = ?",
                 (record["project_id"],),
             ).fetchone()
             if project_row is None:
                 raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
+            profile = normalize_execution_profile(self._project(project_row))
+            profile_json = canonical_profile_json(profile)
+            profile_hash = config_sha256(profile)
+            if project_row["config_sha256"] != profile_hash or not project_row["config_revision"]:
+                raise InvalidTaskError("Active project configuration hash is invalid")
             trusted_ids = {
                 check.get("id")
                 for check in _loads(project_row["verification_commands_json"], [])
@@ -307,8 +403,9 @@ class TaskStore:
                     task_id, project_id, dedupe_key, revision, source_type,
                     source_message_id, goal, acceptance_criteria_json, task_type,
                     payload_json, status, attempt_count, created_at, updated_at,
-                    expires_at, supersedes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                    expires_at, supersedes, project_config_revision,
+                    project_config_sha256, execution_profile_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["task_id"], record["project_id"], record["dedupe_key"],
@@ -317,6 +414,7 @@ class TaskStore:
                     _json(record.get("acceptance_criteria", [])), record["task_type"],
                     _json(record.get("payload", {})), TaskStatus.PENDING.value,
                     now, now, record.get("expires_at"), record.get("supersedes"),
+                    int(project_row["config_revision"]), profile_hash, profile_json,
                 ),
             )
             self._event(
@@ -328,6 +426,8 @@ class TaskStore:
                 {
                     "revision": record["revision"],
                     "source_type": record["source_type"],
+                    "project_config_revision": int(project_row["config_revision"]),
+                    "project_config_sha256": profile_hash,
                     **(
                         {
                             "supersedes": record["supersedes"],

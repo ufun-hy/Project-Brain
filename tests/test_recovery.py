@@ -234,7 +234,7 @@ class RecoveryTests(unittest.TestCase):
                 process=child,
             )
 
-    def test_real_process_interruption_is_reconciled_and_retried(self) -> None:
+    def test_real_process_interruption_retries_with_original_snapshot(self) -> None:
         child_pid_file = self.fixture.root / "codex-child.pid"
         blocking = (
             "import os,pathlib,time; "
@@ -362,38 +362,19 @@ class RecoveryTests(unittest.TestCase):
             timeout=20,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(
-            json.loads(completed.stdout)["status"], TaskStatus.AWAITING_REVIEW.value
+        self.assertEqual(json.loads(completed.stdout)["status"], TaskStatus.FAILED.value)
+        snapshot_task = self.fixture.store.get_task("interrupted")
+        self.assertEqual(snapshot_task["project_config_revision"], 1)
+        self.assertEqual(self.fixture.store.get_project("project-one")["config_revision"], 2)
+        self.assertNotEqual(
+            snapshot_task["project_config_sha256"],
+            self.fixture.store.get_project("project-one")["config_sha256"],
         )
         attempts = self.fixture.store.list_attempts("interrupted")
-        self.assertEqual([item["status"] for item in attempts], ["interrupted", "completed"])
-        final_worktree = Path(self.fixture.store.get_task("interrupted")["worktree_path"])
-        base_sha = self.fixture.store.get_worktree("interrupted")["base_sha"]
-        self.assertEqual(
-            git(
-                final_worktree,
-                "rev-list",
-                "--count",
-                f"{base_sha}..HEAD",
-            ).stdout.strip(),
-            "1",
-        )
-
-        next_task = subprocess.run(
-            command,
-            cwd=str(self.fixture.root),
-            env=pythonpath_env(self.source_root),
-            text=True,
-            capture_output=True,
-            timeout=20,
-        )
-        self.assertEqual(next_task.returncode, 0, next_task.stderr)
-        self.assertEqual(
-            json.loads(next_task.stdout)["status"], TaskStatus.AWAITING_REVIEW.value
-        )
+        self.assertEqual([item["status"] for item in attempts], ["interrupted", "failed"])
         pending = self.fixture.store.get_task("pending-while-orphaned")
-        self.assertEqual(pending["status"], TaskStatus.AWAITING_REVIEW.value)
-        self.assertEqual(pending["attempt_count"], 1)
+        self.assertEqual(pending["status"], TaskStatus.PENDING.value)
+        self.assertEqual(pending["attempt_count"], 0)
 
     def test_interrupted_review_with_released_worktree_restores_awaiting_review(self) -> None:
         project = self.fixture.add_project(

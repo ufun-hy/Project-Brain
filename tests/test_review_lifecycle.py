@@ -56,6 +56,14 @@ class ReviewLifecycleTests(unittest.TestCase):
         self.assertEqual(changed["attempt_phase"], AttemptPhase.IMPLEMENTATION.value)
         self.assertEqual(review["head_sha"], first_commit)
 
+        active = self.fixture.store.get_project("project-one")
+        active["codex_command"] = [sys.executable, "-c", "raise SystemExit(97)"]
+        self.fixture.store.register_project(active)
+        self.assertGreater(
+            self.fixture.store.get_project("project-one")["config_revision"],
+            changed["project_config_revision"],
+        )
+
         second = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
         second_commit = second["task"]["commit"]
         worktree = Path(second["task"]["worktree_path"])
