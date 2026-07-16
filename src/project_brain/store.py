@@ -16,6 +16,7 @@ from .models import (
     CLAIMABLE_STATUSES,
     CanonicalTask,
     Project,
+    TERMINAL_STATUSES,
     TaskStatus,
     parse_timestamp,
     utc_now,
@@ -246,6 +247,35 @@ class TaskStore:
             ).fetchone()
             if existing is not None:
                 return self._task(existing), False
+            superseded_row: sqlite3.Row | None = None
+            supersession_applied = False
+            if record.get("supersedes"):
+                superseded_row = connection.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?", (record["supersedes"],)
+                ).fetchone()
+                if superseded_row is None:
+                    raise InvalidTaskError(
+                        f"Superseded task does not exist: {record['supersedes']}"
+                    )
+                if (
+                    superseded_row["project_id"] != record["project_id"]
+                    or superseded_row["dedupe_key"] != record["dedupe_key"]
+                ):
+                    raise InvalidTaskError(
+                        "supersedes must reference the same project and dedupe_key"
+                    )
+                if record["revision"] <= superseded_row["revision"]:
+                    raise StateTransitionError(
+                        "A superseding task revision must be greater than the referenced task"
+                    )
+                superseded_status = TaskStatus(superseded_row["status"])
+                if superseded_status not in TERMINAL_STATUSES:
+                    if TaskStatus.SUPERSEDED not in ALLOWED_TRANSITIONS[superseded_status]:
+                        raise StateTransitionError(
+                            "Task status cannot be superseded while it owns active or "
+                            f"protected state: {superseded_status.value}"
+                        )
+                    supersession_applied = True
             logical = connection.execute(
                 "SELECT * FROM tasks WHERE project_id = ? AND dedupe_key = ? AND revision = ?",
                 (record["project_id"], record["dedupe_key"], record["revision"]),
@@ -271,16 +301,6 @@ class TaskStore:
                         f"Unknown trusted verification_id for {record['project_id']}: "
                         f"{criterion['verification_id']}"
                     )
-            if record.get("supersedes"):
-                old = connection.execute(
-                    "SELECT * FROM tasks WHERE task_id = ?", (record["supersedes"],)
-                ).fetchone()
-                if old is None:
-                    raise InvalidTaskError(
-                        f"Superseded task does not exist: {record['supersedes']}"
-                    )
-                if old["project_id"] != record["project_id"] or old["dedupe_key"] != record["dedupe_key"]:
-                    raise InvalidTaskError("supersedes must reference the same project and dedupe_key")
             connection.execute(
                 """
                 INSERT INTO tasks(
@@ -305,28 +325,32 @@ class TaskStore:
                 "task_created",
                 None,
                 TaskStatus.PENDING.value,
-                {"revision": record["revision"], "source_type": record["source_type"]},
+                {
+                    "revision": record["revision"],
+                    "source_type": record["source_type"],
+                    **(
+                        {
+                            "supersedes": record["supersedes"],
+                            "supersession_applied": supersession_applied,
+                        }
+                        if record.get("supersedes")
+                        else {}
+                    ),
+                },
             )
-            if record.get("supersedes"):
-                old = connection.execute(
-                    "SELECT * FROM tasks WHERE task_id = ?", (record["supersedes"],)
-                ).fetchone()
-                if old and old["status"] not in {
-                    TaskStatus.ACCEPTED.value,
+            if superseded_row is not None and supersession_applied:
+                connection.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                    (TaskStatus.SUPERSEDED.value, now, superseded_row["task_id"]),
+                )
+                self._event(
+                    connection,
+                    superseded_row["task_id"],
+                    "task_superseded",
+                    superseded_row["status"],
                     TaskStatus.SUPERSEDED.value,
-                }:
-                    connection.execute(
-                        "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
-                        (TaskStatus.SUPERSEDED.value, now, old["task_id"]),
-                    )
-                    self._event(
-                        connection,
-                        old["task_id"],
-                        "task_superseded",
-                        old["status"],
-                        TaskStatus.SUPERSEDED.value,
-                        {"by_task_id": record["task_id"]},
-                    )
+                    {"by_task_id": record["task_id"]},
+                )
             created = connection.execute(
                 "SELECT * FROM tasks WHERE task_id = ?", (record["task_id"],)
             ).fetchone()
@@ -1461,14 +1485,34 @@ class TaskStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_events(self, task_id: str | None = None) -> list[dict[str, Any]]:
+    def list_events(
+        self,
+        task_id: str | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(limit, 1000)) if limit is not None else None
         with self.connect() as connection:
             if task_id:
-                rows = connection.execute(
-                    "SELECT * FROM events WHERE task_id = ? ORDER BY event_id", (task_id,)
-                ).fetchall()
+                if bounded_limit is None:
+                    rows = connection.execute(
+                        "SELECT * FROM events WHERE task_id = ? ORDER BY event_id", (task_id,)
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM (SELECT * FROM events WHERE task_id = ? "
+                        "ORDER BY event_id DESC LIMIT ?) ORDER BY event_id",
+                        (task_id, bounded_limit),
+                    ).fetchall()
             else:
-                rows = connection.execute("SELECT * FROM events ORDER BY event_id").fetchall()
+                if bounded_limit is None:
+                    rows = connection.execute("SELECT * FROM events ORDER BY event_id").fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM (SELECT * FROM events ORDER BY event_id DESC LIMIT ?) "
+                        "ORDER BY event_id",
+                        (bounded_limit,),
+                    ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
             value = dict(row)

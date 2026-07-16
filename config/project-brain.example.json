@@ -1,4 +1,12 @@
 {
+  "mcp_server": {
+    "transport": "streamable-http",
+    "host": "127.0.0.1",
+    "port": 7677,
+    "path": "/mcp",
+    "authentication": "none-loopback-only",
+    "remote_access": "openai-secure-mcp-tunnel"
+  },
   "projects": [
     {
       "project_id": "project-brain",

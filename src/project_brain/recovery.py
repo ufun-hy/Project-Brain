@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .commands import git
-from .errors import InvalidPathError, WorktreeError
+from .errors import InvalidPathError, InvalidTaskError, WorktreeError
 from .models import AttemptPhase, TaskStatus
 from .process_supervision import (
     ProcessIdentityState,
@@ -115,6 +115,70 @@ class RecoveryManager:
                 }
             )
         return RecoveryReport(actions=actions, claim_blockers=blockers)
+
+    def preview_for_dispatch(self) -> RecoveryReport:
+        """Preview whether a one-shot worker may safely run without changing state.
+
+        A clean interrupted task reported as ``would_recover`` is safe for the
+        worker because the worker performs that recovery under RuntimeLock before
+        claiming. Live, ambiguous, and operator-blocked agent state remains a
+        dispatch blocker.
+        """
+        actions = self.reconcile(execute=False)
+        action_by_task = {item["task_id"]: item for item in actions}
+        blockers: list[dict[str, Any]] = []
+        for task in self.store.list_claim_blocking_tasks():
+            action = action_by_task.get(task["task_id"], {})
+            if (
+                task["status"] == TaskStatus.RUNNING.value
+                and action.get("action") == "would_recover"
+            ):
+                continue
+            blockers.append(
+                {
+                    "task_id": task["task_id"],
+                    "status": task["status"],
+                    "attempt_count": task["attempt_count"],
+                    "agent_session_id": task.get("agent_session_id"),
+                    "reason": action.get("reason") or task.get("last_error"),
+                }
+            )
+        return RecoveryReport(actions=actions, claim_blockers=blockers)
+
+    def agent_identity_preview(self, task_id: str) -> dict[str, Any]:
+        """Return bounded process-identity state without commands or raw identity."""
+        task = self.store.get_task(task_id)
+        session = self.store.active_agent_session(task_id)
+        if session is None and task.get("agent_session_id"):
+            try:
+                session = self.store.get_agent_session(task["agent_session_id"])
+            except InvalidTaskError:
+                session = None
+        if session is None:
+            return {
+                "session_present": False,
+                "session_status": None,
+                "child_pid_present": False,
+                "child_pgid_present": False,
+                "identity_state": "none",
+            }
+        child_pid = session.get("child_pid")
+        child_pgid = session.get("child_pgid")
+        if not child_pid:
+            state = "starting" if session.get("status") == "starting" else "not_running"
+        elif session.get("status") == TaskStatus.RECOVERY_BLOCKED.value:
+            state = "operator_resolution_required"
+        else:
+            state = inspect_agent_process_group(
+                child_pid, child_pgid, session.get("child_identity")
+            ).value
+        return {
+            "session_present": True,
+            "session_status": session.get("status"),
+            "child_pid_present": bool(child_pid),
+            "child_pgid_present": bool(child_pgid),
+            "identity_state": state,
+        }
 
     def _resolve_blocked(
         self,
