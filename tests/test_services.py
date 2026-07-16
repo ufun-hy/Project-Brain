@@ -100,6 +100,14 @@ class ServiceManagerTests(unittest.TestCase):
         self.runner.print_results[f"{domain}/{MCP_LABEL}"] = (0, "state = running")
         self.assertEqual(self.manager.status()["status"], "healthy")
 
+        self.runner.print_results[f"{domain}/{WORKER_LABEL}"] = (
+            0,
+            "state = exited\nlast exit code = 0",
+        )
+        idle = self.manager.status()
+        self.assertEqual(idle["status"], "healthy")
+        self.assertEqual(idle["services"][0]["state"], "healthy")
+
         self.runner.print_results[f"{domain}/{WORKER_LABEL}"] = (1, "not loaded")
         self.assertEqual(self.manager.status()["status"], "stopped")
 

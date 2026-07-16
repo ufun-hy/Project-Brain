@@ -61,6 +61,49 @@ public final class ConnectionStore: @unchecked Sendable {
     }
 }
 
+public enum DiagnosticSeverity: String, Codable, Sendable {
+    case info
+    case warning
+    case error
+}
+
+public enum DiagnosticRepairAction: String, Codable, Sendable {
+    case none
+    case reinstallHelper
+    case restartServices
+    case openConnectionCenter
+}
+
+public struct DiagnosticItem: Identifiable, Equatable, Sendable {
+    public let name: String
+    public let passed: Bool
+    public let detail: String
+    public let severity: DiagnosticSeverity
+    public let blocksTaskIntake: Bool
+    public let repairAction: DiagnosticRepairAction
+    public let manualAdvice: String
+
+    public var id: String { name }
+
+    public init(
+        name: String,
+        passed: Bool,
+        detail: String,
+        severity: DiagnosticSeverity,
+        blocksTaskIntake: Bool,
+        repairAction: DiagnosticRepairAction = .none,
+        manualAdvice: String
+    ) {
+        self.name = name
+        self.passed = passed
+        self.detail = SecretRedactor.redact(detail)
+        self.severity = severity
+        self.blocksTaskIntake = blocksTaskIntake
+        self.repairAction = repairAction
+        self.manualAdvice = manualAdvice
+    }
+}
+
 public struct DiagnosticReport: Codable, Equatable, Sendable {
     public let generatedAt: String
     public let appVersion: String

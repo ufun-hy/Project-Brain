@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  python-core:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -19,3 +19,44 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install -e .
       - run: scripts/verify-core.sh
+
+  macos-product-shell:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e '.[packaging]'
+      - name: Build self-contained Core helper
+        env:
+          PROJECT_BRAIN_HELPER_DIST: ${{ runner.temp }}/helper-dist
+          PROJECT_BRAIN_HELPER_WORK: ${{ runner.temp }}/helper-work
+        run: scripts/build-macos-helper.sh
+      - name: Verify frozen helper without a user environment
+        run: |
+          env -i HOME="$HOME" PATH=/usr/bin:/bin "${{ runner.temp }}/helper-dist/project-brain" --version
+          env -i HOME="$HOME" PATH=/usr/bin:/bin "${{ runner.temp }}/helper-dist/project-brain" --runtime-root "${{ runner.temp }}/frozen-runtime" init --json
+          env -i HOME="$HOME" PATH=/usr/bin:/bin "${{ runner.temp }}/helper-dist/project-brain" --runtime-root "${{ runner.temp }}/frozen-runtime" status --json
+      - name: Run Swift model and adapter tests
+        run: swift test --package-path apps/macos/ProjectBrain
+      - name: Build and test Project Brain.app
+        env:
+          PROJECT_BRAIN_BUNDLED_HELPER: ${{ runner.temp }}/helper-dist/project-brain
+        run: |
+          xcodebuild \
+            -project apps/macos/ProjectBrain/ProjectBrain.xcodeproj \
+            -scheme ProjectBrain \
+            -destination 'platform=macOS' \
+            -derivedDataPath "${{ runner.temp }}/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+          test -x "${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app/Contents/Resources/project-brain"
+      - name: Verify Gmail legacy isolation
+        run: git diff --exit-code 7dcf1f8c59937d2195ae75404ab7b4e4801c5c31 -- experiments/gmail-inbox/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Project-Brain-unsigned-macos-${{ runner.arch }}
+          path: ${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app
+          retention-days: 7

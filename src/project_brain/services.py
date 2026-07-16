@@ -258,7 +258,9 @@ class ServiceManager:
     def status(self) -> dict[str, Any]:
         services = [self._service_status(spec) for spec in self.specs()]
         states = {item["state"] for item in services}
-        if states == {"running"}:
+        worker = next(item for item in services if item["name"] == "worker")
+        mcp = next(item for item in services if item["name"] == "mcp")
+        if worker["state"] in {"healthy", "running"} and mcp["state"] == "running":
             aggregate = "healthy"
         elif "unhealthy" in states:
             aggregate = "unhealthy"
@@ -285,6 +287,8 @@ class ServiceManager:
             state = "running"
         elif exit_code not in (None, 0):
             state = "unhealthy"
+        elif not spec.keep_alive:
+            state = "healthy"
         else:
             state = "stopped"
         return {

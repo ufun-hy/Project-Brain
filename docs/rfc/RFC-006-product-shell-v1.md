@@ -63,8 +63,7 @@ The initial allowlist is:
 - `init --json`
 - `status --json`
 - `health --json`
-- `projects list/show/check/add/update/pause/resume/remove`
-- `config status/plan/apply/export`
+- `projects list/add/update/pause/resume/remove`
 - `tasks list/show`
 - `service plan/install/start/stop/restart/status/uninstall`
 
@@ -125,7 +124,8 @@ plist presence and `launchctl print`. Process presence never implies task succes
   ChatGPT workspace readiness, and external acceptance state;
 - diagnostics with severity, task-blocking impact, deterministic low-risk repair,
   operator guidance, and redacted export;
-- settings for polling and launch behavior.
+- settings for helper repair, fixed service lifecycle, onboarding, and safety
+  boundaries.
 
 The UI never marks Tunnel, ChatGPT developer mode, or real-project acceptance as
 passed from local checks. Those states begin at `not_started` or `ready_to_test`
