@@ -11,7 +11,14 @@ from unittest.mock import patch
 
 from project_brain.errors import InvalidTaskError, MigrationError
 from project_brain.project_config import LEGACY_CONFIG_REQUIRES_UPDATE
-from project_brain.schema import MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, SCHEMA_VERSION
+from project_brain.schema import (
+    MIGRATION_1,
+    MIGRATION_2,
+    MIGRATION_3,
+    MIGRATION_4,
+    MIGRATION_5,
+    SCHEMA_VERSION,
+)
 from project_brain.store import TaskStore
 
 
@@ -149,6 +156,29 @@ class MigrationTests(unittest.TestCase):
                 for row in connection.execute("PRAGMA table_info(agent_sessions)")
             }
         self.assertIn("child_identity_json", columns)
+
+    def test_version_five_projects_gain_product_lifecycle_flags(self) -> None:
+        TaskStore(
+            self.database,
+            migrations={
+                1: MIGRATION_1,
+                2: MIGRATION_2,
+                3: MIGRATION_3,
+                4: MIGRATION_4,
+                5: MIGRATION_5,
+            },
+            schema_version=5,
+        ).initialize()
+        store = TaskStore(self.database)
+        store.initialize()
+        with store.connect() as connection:
+            columns = {
+                row["name"]: row for row in connection.execute("PRAGMA table_info(projects)")
+            }
+        self.assertIn("accepting_tasks", columns)
+        self.assertIn("registered", columns)
+        self.assertEqual(columns["accepting_tasks"]["dflt_value"], "1")
+        self.assertEqual(columns["registered"]["dflt_value"], "1")
 
     def test_failed_migration_rolls_back_atomically(self) -> None:
         store = TaskStore(

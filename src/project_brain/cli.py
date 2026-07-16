@@ -20,6 +20,7 @@ from .projects import ProjectRegistry
 from .recovery import RecoveryManager
 from .forensics import TerminalWorktreeReconciler
 from .runtime import RuntimePaths
+from .services import ServiceManager, installed_helper_path
 from .security import redact_text
 from .store import TaskStore
 from .worktrees import WorktreeManager
@@ -39,6 +40,7 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="project-brain")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.6.0")
     parser.add_argument("--runtime-root", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -65,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     project_update.add_argument("project_id")
     project_update.add_argument("--repo-path", type=Path)
     _project_options(project_update, include_identity=False)
+    for name in ("pause", "resume", "remove"):
+        item = project_sub.add_parser(name)
+        item.add_argument("project_id")
+        item.add_argument("--execute", action="store_true")
+        _add_json(item)
 
     config = sub.add_parser("config", help="Plan and apply versioned project config")
     config_sub = config.add_subparsers(dest="config_command", required=True)
@@ -142,6 +149,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="Run the loopback-only MCP adapter")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=7677)
+
+    service = sub.add_parser("service", help="Manage fixed Product Brain launchd services")
+    service_sub = service.add_subparsers(dest="service_command", required=True)
+    for name in ("plan", "install", "start", "stop", "restart", "status", "uninstall"):
+        item = service_sub.add_parser(name)
+        item.add_argument("--helper-path", type=Path)
+        _add_json(item)
 
     return parser
 
@@ -250,6 +264,20 @@ def _redact_local_paths(value: str) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     runtime_value = RuntimePaths.from_value(args.runtime_root)
+    if args.command == "service":
+        try:
+            manager = ServiceManager(
+                runtime_value,
+                helper_path=args.helper_path or installed_helper_path(),
+            )
+            value = getattr(manager, args.service_command)()
+            _render(value, json_output=args.json_output)
+            return 0
+        except ProjectBrainError as exc:
+            message = _redact_local_paths(redact_text(str(exc)))
+            value = {"status": "error", "error_category": exc.category, "error": message}
+            print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
+            return 2
     runtime_preexisting = runtime_value.database.exists()
     runtime = runtime_value.ensure()
     store = TaskStore(runtime.database)
@@ -296,6 +324,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             value = project_checks(store.get_project(args.project_id), runtime)
             _render(value, json_output=args.json_output)
             return 0 if value["status"] == "healthy" else 1
+        elif args.command == "projects" and args.projects_command in {
+            "pause",
+            "resume",
+            "remove",
+        }:
+            project = store.get_project(args.project_id)
+            plan = {
+                "status": "planned",
+                "project_id": args.project_id,
+                "action": args.projects_command,
+                "current_accepting_tasks": project["accepting_tasks"],
+                "next_accepting_tasks": args.projects_command == "resume",
+                "runtime_data_preserved": True,
+                "nonterminal_task_count": store.nonterminal_task_count(args.project_id),
+            }
+            if not args.execute:
+                _render(plan, json_output=args.json_output)
+            else:
+                with RuntimeLock(runtime.lock_file):
+                    if args.projects_command == "remove":
+                        updated = store.remove_project_registration(args.project_id)
+                    else:
+                        updated = store.set_project_accepting(
+                            args.project_id,
+                            args.projects_command == "resume",
+                        )
+                _render(
+                    {"status": "applied", "plan": plan, "project": safe_project(updated)},
+                    json_output=args.json_output,
+                )
         elif args.command == "projects" and args.projects_command == "add":
             repo = args.repo_path.expanduser().resolve()
             project_id = args.project_id or _derived_project_id(repo)

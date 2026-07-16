@@ -14,6 +14,10 @@ class ConfigurationError(ProjectBrainError):
     category = "configuration"
 
 
+class ServiceError(ProjectBrainError):
+    category = "service"
+
+
 class InvalidTaskError(ProjectBrainError):
     category = "invalid_task"
 

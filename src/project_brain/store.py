@@ -180,6 +180,7 @@ class TaskStore:
                 existing = connection.execute(
                     "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
                 ).fetchone()
+                reactivating = existing is not None and not bool(existing["registered"])
                 if existing is None:
                     action = "add"
                     revision = 1
@@ -190,6 +191,8 @@ class TaskStore:
                     created_at = existing["created_at"]
                     if action == "noop" and existing["name"] != record["name"]:
                         action = "rename"
+                    if reactivating and action in {"noop", "rename"}:
+                        action = "reactivate"
                 if action == "noop":
                     results.append({"action": action, "project": self._project(existing)})
                     continue
@@ -214,8 +217,9 @@ class TaskStore:
                         project_id, name, repo_path, remote_url, default_branch,
                         worktree_root, codex_command_json, verification_commands_json,
                         allowed_commands_json, auto_push, auto_pr, created_at, updated_at,
-                        config_revision, config_sha256, config_updated_at, config_source
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        config_revision, config_sha256, config_updated_at, config_source,
+                        accepting_tasks, registered
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(project_id) DO UPDATE SET
                         name=excluded.name, repo_path=excluded.repo_path,
                         remote_url=excluded.remote_url, default_branch=excluded.default_branch,
@@ -227,7 +231,9 @@ class TaskStore:
                         updated_at=excluded.updated_at, config_revision=excluded.config_revision,
                         config_sha256=excluded.config_sha256,
                         config_updated_at=excluded.config_updated_at,
-                        config_source=excluded.config_source
+                        config_source=excluded.config_source,
+                        accepting_tasks=excluded.accepting_tasks,
+                        registered=1
                     """,
                     (
                         record["project_id"], record["name"], record["repo_path"],
@@ -236,6 +242,8 @@ class TaskStore:
                         _json(record["allowed_commands"]), int(record["auto_push"]),
                         int(record["auto_pr"]), created_at, now, revision,
                         record["config_sha256"], now, source,
+                        int(existing is None or reactivating or bool(existing["accepting_tasks"])),
+                        1,
                     ),
                 )
                 row = connection.execute(
@@ -263,30 +271,107 @@ class TaskStore:
         value["allowed_commands"] = _loads(value.pop("allowed_commands_json"), {})
         value["auto_push"] = bool(value["auto_push"])
         value["auto_pr"] = bool(value["auto_pr"])
+        value["accepting_tasks"] = bool(value.get("accepting_tasks", 1))
+        value["registered"] = bool(value.get("registered", 1))
         return value
 
-    def get_project(self, project_id: str) -> dict[str, Any]:
+    def get_project(self, project_id: str, *, include_removed: bool = False) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                "SELECT * FROM projects WHERE project_id = ?"
+                + ("" if include_removed else " AND registered = 1"),
+                (project_id,),
             ).fetchone()
         if row is None:
             raise InvalidTaskError(f"Unregistered project: {project_id}")
         return self._project(row)
 
-    def get_project_by_name(self, name: str) -> dict[str, Any]:
+    def get_project_by_name(self, name: str, *, include_removed: bool = False) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM projects WHERE name = ?", (name,)
+                "SELECT * FROM projects WHERE name = ?"
+                + ("" if include_removed else " AND registered = 1"),
+                (name,),
             ).fetchone()
         if row is None:
             raise InvalidTaskError(f"Unregistered project: {name}")
         return self._project(row)
 
-    def list_projects(self) -> list[dict[str, Any]]:
+    def list_projects(self, *, include_removed: bool = False) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM projects ORDER BY name").fetchall()
+            rows = connection.execute(
+                "SELECT * FROM projects"
+                + ("" if include_removed else " WHERE registered = 1")
+                + " ORDER BY name"
+            ).fetchall()
         return [self._project(row) for row in rows]
+
+    def set_project_accepting(self, project_id: str, accepting: bool) -> dict[str, Any]:
+        """Pause or resume new task intake without changing execution snapshots."""
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ? AND registered = 1",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unregistered project: {project_id}")
+            connection.execute(
+                "UPDATE projects SET accepting_tasks = ?, updated_at = ? WHERE project_id = ?",
+                (int(accepting), now, project_id),
+            )
+            self._event(
+                connection,
+                None,
+                "project_intake_changed",
+                None,
+                None,
+                {"project_id": project_id, "accepting_tasks": accepting},
+            )
+            updated = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            assert updated is not None
+            return self._project(updated)
+
+    def remove_project_registration(self, project_id: str) -> dict[str, Any]:
+        """Soft-remove a project while preserving task and event history."""
+        terminal = tuple(status.value for status in TERMINAL_STATUSES)
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ? AND registered = 1",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unregistered project: {project_id}")
+            active = connection.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE project_id = ? "
+                f"AND status NOT IN ({','.join('?' for _ in terminal)})",
+                (project_id, *terminal),
+            ).fetchone()
+            if int(active[0]) > 0:
+                raise InvalidTaskError(
+                    f"Project {project_id} has nonterminal tasks and cannot be removed"
+                )
+            connection.execute(
+                "UPDATE projects SET registered = 0, accepting_tasks = 0, updated_at = ? "
+                "WHERE project_id = ?",
+                (now, project_id),
+            )
+            self._event(
+                connection,
+                None,
+                "project_registration_removed",
+                None,
+                None,
+                {"project_id": project_id, "runtime_data_preserved": True},
+            )
+            updated = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            assert updated is not None
+            return self._project(updated)
 
     def nonterminal_task_count(self, project_id: str) -> int:
         terminal = tuple(status.value for status in TERMINAL_STATUSES)
@@ -379,6 +464,12 @@ class TaskStore:
             ).fetchone()
             if project_row is None:
                 raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
+            if not bool(project_row["registered"]):
+                raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
+            if not bool(project_row["accepting_tasks"]):
+                raise InvalidTaskError(
+                    f"Project is paused and not accepting new tasks: {record['project_id']}"
+                )
             profile = normalize_execution_profile(self._project(project_row))
             profile_json = canonical_profile_json(profile)
             profile_hash = config_sha256(profile)
