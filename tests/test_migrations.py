@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from project_brain.errors import MigrationError
+from project_brain.errors import InvalidTaskError, MigrationError
+from project_brain.project_config import LEGACY_CONFIG_REQUIRES_UPDATE
 from project_brain.schema import MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, SCHEMA_VERSION
 from project_brain.store import TaskStore
 
@@ -17,6 +22,36 @@ class MigrationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def create_v4_project_and_task(self, codex_command: list[str]) -> None:
+        old = TaskStore(
+            self.database,
+            migrations={1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4},
+            schema_version=4,
+        )
+        old.initialize()
+        with sqlite3.connect(self.database) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(
+                """
+                INSERT INTO projects(
+                    project_id,name,repo_path,remote_url,default_branch,worktree_root,
+                    codex_command_json,verification_commands_json,allowed_commands_json,
+                    auto_push,auto_pr,created_at,updated_at
+                ) VALUES('legacy','legacy','/tmp/repo','/tmp/remote.git','main','/tmp/worktrees',
+                    ?,'[]','{}',0,0,'2026-01-01','2026-01-01')
+                """,
+                (json.dumps(codex_command),),
+            )
+            connection.execute(
+                """
+                INSERT INTO tasks(
+                    task_id,project_id,dedupe_key,revision,source_type,goal,
+                    acceptance_criteria_json,task_type,payload_json,status,created_at,updated_at
+                ) VALUES('legacy-task','legacy','legacy-task',1,'test','goal','[]','codex','{}',
+                    'pending','2026-01-01','2026-01-01')
+                """
+            )
 
     def test_version_one_database_migrates_forward(self) -> None:
         TaskStore(
@@ -140,43 +175,33 @@ class MigrationTests(unittest.TestCase):
             TaskStore(self.database).initialize()
 
     def test_v5_backfills_project_revision_hash_and_task_snapshot(self) -> None:
-        old = TaskStore(
-            self.database,
-            migrations={1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4},
-            schema_version=4,
-        )
-        old.initialize()
-        with sqlite3.connect(self.database) as connection:
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(
-                """
-                INSERT INTO projects(
-                    project_id,name,repo_path,remote_url,default_branch,worktree_root,
-                    codex_command_json,verification_commands_json,allowed_commands_json,
-                    auto_push,auto_pr,created_at,updated_at
-                ) VALUES('legacy','legacy','/tmp/repo','/tmp/remote.git','main','/tmp/worktrees',
-                    '["codex"]','[]','{}',0,0,'2026-01-01','2026-01-01')
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO tasks(
-                    task_id,project_id,dedupe_key,revision,source_type,goal,
-                    acceptance_criteria_json,task_type,payload_json,status,created_at,updated_at
-                ) VALUES('legacy-task','legacy','legacy-task',1,'test','goal','[]','codex','{}',
-                    'pending','2026-01-01','2026-01-01')
-                """
-            )
+        executable = Path(sys.executable).resolve()
+        self.create_v4_project_and_task([executable.name])
         store = TaskStore(self.database)
-        store.initialize()
+        with patch.dict(os.environ, {"PATH": str(executable.parent)}):
+            store.initialize()
         project = store.get_project("legacy")
         task = store.get_task("legacy-task")
         self.assertEqual(project["config_revision"], 1)
+        self.assertEqual(project["codex_command"][0], str(executable))
+        self.assertEqual(project["config_source"], "schema_v5_migration")
         self.assertEqual(task["project_config_revision"], 1)
         self.assertEqual(task["project_config_sha256"], project["config_sha256"])
         self.assertEqual(store.task_execution_profile(task)["default_branch"], "main")
         store.initialize()
         self.assertEqual(store.get_project("legacy")["config_revision"], 1)
+
+    def test_v5_marks_unresolvable_relative_codex_for_operator_update(self) -> None:
+        missing = "project-brain-codex-that-does-not-exist"
+        self.create_v4_project_and_task([missing, "exec", "-"])
+        store = TaskStore(self.database)
+        with patch.dict(os.environ, {"PATH": ""}):
+            store.initialize()
+        project = store.get_project("legacy")
+        self.assertEqual(project["codex_command"][0], missing)
+        self.assertEqual(project["config_source"], LEGACY_CONFIG_REQUIRES_UPDATE)
+        with self.assertRaises(InvalidTaskError):
+            store.task_execution_profile("legacy-task")
 
     def test_v5_python_hook_failure_rolls_back_schema_and_data(self) -> None:
         TaskStore(

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from .errors import ConfigurationError
-from .project_config import EXECUTION_FIELDS, config_sha256, normalize_execution_profile
+from .project_config import (
+    EXECUTION_FIELDS,
+    LEGACY_CONFIG_REQUIRES_UPDATE,
+    config_sha256,
+    executable_available,
+    normalize_execution_profile,
+    normalize_legacy_execution_profile,
+)
 from .projects import ProjectRegistry
 from .runtime import RuntimePaths
 from .security import contains_known_secret
@@ -141,7 +147,11 @@ class ConfigurationManager:
             if existing is None:
                 action, current_revision, next_revision, fields = "add", None, 1, list(EXECUTION_FIELDS)
             else:
-                existing_profile = normalize_execution_profile(existing)
+                existing_profile = (
+                    normalize_legacy_execution_profile(existing)
+                    if existing.get("config_source") == LEGACY_CONFIG_REQUIRES_UPDATE
+                    else normalize_execution_profile(existing)
+                )
                 changed = [
                     field for field in EXECUTION_FIELDS
                     if profile[field] != existing_profile[field]
@@ -214,11 +224,16 @@ class ConfigurationManager:
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         projects = []
         for project in self.store.list_projects():
+            if project.get("config_source") == LEGACY_CONFIG_REQUIRES_UPDATE:
+                raise ConfigurationError(
+                    f"Project {project['project_id']} requires an operator Codex update before export"
+                )
+            profile = normalize_execution_profile(project)
             projects.append(
                 {
                     "project_id": project["project_id"],
                     "name": project["name"],
-                    **{field: project[field] for field in EXECUTION_FIELDS},
+                    **{field: profile[field] for field in EXECUTION_FIELDS},
                 }
             )
         data = json.dumps(
@@ -234,7 +249,15 @@ class ConfigurationManager:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temp_name, target)
+            if force:
+                os.replace(temp_name, target)
+            else:
+                try:
+                    os.link(temp_name, target)
+                except FileExistsError as exc:
+                    raise ConfigurationError(
+                        f"Refusing to overwrite config export: {target}"
+                    ) from exc
             os.chmod(target, 0o600)
             directory = os.open(target.parent, os.O_RDONLY)
             try:
@@ -250,7 +273,7 @@ class ConfigurationManager:
 def project_checks(project: dict[str, Any], runtime: RuntimePaths) -> dict[str, Any]:
     repo = Path(project["repo_path"])
     executable = project["codex_command"][0]
-    command_available = Path(executable).is_file() if "/" in executable else shutil.which(executable) is not None
+    command_available = executable_available(executable)
     try:
         actual_origin = ProjectRegistry._remote_url(repo)
         origin_matches = ProjectRegistry._normalize_remote(actual_origin) == ProjectRegistry._normalize_remote(project["remote_url"])
@@ -268,12 +291,13 @@ def project_checks(project: dict[str, Any], runtime: RuntimePaths) -> dict[str, 
         {"name": "origin", "passed": origin_matches},
         {"name": "default_branch", "passed": default_matches},
         {"name": "codex", "passed": command_available},
-        {"name": "gh", "passed": (not project["auto_pr"]) or shutil.which("gh") is not None},
+        {"name": "launchd_safe_config", "passed": project.get("config_source") != LEGACY_CONFIG_REQUIRES_UPDATE},
+        {"name": "gh", "passed": (not project["auto_pr"]) or executable_available("gh")},
         {"name": "worktree_root", "passed": Path(project["worktree_root"]).resolve() == runtime.project_worktree_root(project["project_id"]).resolve()},
     ]
     for check in project["verification_commands"]:
         argv0 = check["command"][0]
-        available = Path(argv0).is_file() if "/" in argv0 else shutil.which(argv0) is not None
+        available = executable_available(argv0)
         checks.append({"name": f"verification:{check['id']}", "passed": available})
     return {
         "project": safe_project(project),

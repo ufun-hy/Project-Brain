@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from .errors import ConfigurationError
 from .models import Project, STABLE_ID_PATTERN
+from .project_config import resolve_executable
 from .runtime import RuntimePaths
 from .security import command_contains_secret, contains_known_secret
 from .store import TaskStore
@@ -60,13 +60,17 @@ class ProjectRegistry:
             )
         codex_command = value.get("codex_command")
         if not codex_command:
-            codex_path = shutil.which(str(value.get("codex_path") or "codex"))
-            if not codex_path:
-                raise ConfigurationError("Codex executable was not found")
-            codex_command = [str(Path(codex_path).resolve()), "exec", "--sandbox", "workspace-write", "-"]
+            codex_command = [
+                str(value.get("codex_path") or "codex"),
+                "exec",
+                "--sandbox",
+                "workspace-write",
+                "-",
+            ]
         if not self._valid_command(codex_command):
             raise ConfigurationError("codex_command must be a non-empty array of strings")
         codex_command = list(codex_command)
+        codex_command[0] = resolve_executable(codex_command[0], "Codex executable")
         raw_allowed = value.get("allowed_commands") or {}
         if not isinstance(raw_allowed, dict) or any(
             not isinstance(name, str) or not self._valid_command(command)

@@ -24,7 +24,13 @@ from .security import redact_text
 from .store import TaskStore
 from .worktrees import WorktreeManager
 from .configuration import ConfigurationManager, project_checks, safe_project
-from .project_config import EXECUTION_FIELDS, config_sha256, normalize_execution_profile
+from .project_config import (
+    EXECUTION_FIELDS,
+    LEGACY_CONFIG_REQUIRES_UPDATE,
+    config_sha256,
+    normalize_execution_profile,
+    normalize_legacy_execution_profile,
+)
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -173,8 +179,18 @@ def _derived_project_id(repo: Path) -> str:
 def _confirm(plan: dict[str, Any], *, non_interactive: bool, json_output: bool) -> bool:
     if non_interactive:
         return True
-    _render(plan, json_output=json_output)
-    return input("Apply this project configuration? [y/N] ").strip().lower() in {"y", "yes"}
+    if json_output:
+        indent = None if os.environ.get("PROJECT_BRAIN_JSON_LINES") == "1" else 2
+        print(
+            json.dumps(_safe_output(plan), ensure_ascii=False, indent=indent),
+            file=sys.stderr,
+        )
+        print("Apply this project configuration? [y/N] ", end="", flush=True, file=sys.stderr)
+        answer = input()
+    else:
+        _render(plan, json_output=False)
+        answer = input("Apply this project configuration? [y/N] ")
+    return answer.strip().lower() in {"y", "yes"}
 
 
 def _human_status(value: dict[str, Any]) -> str:
@@ -344,10 +360,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.default_branch is None:
                     values["default_branch"] = ProjectRegistry._default_branch(updated_repo)
             if args.codex_path is not None:
-                codex = shutil.which(args.codex_path)
-                if not codex:
-                    raise ProjectBrainError(f"Codex executable was not found: {args.codex_path}")
-                values["codex_command"] = [str(Path(codex).resolve()), "exec", "--sandbox", "workspace-write", "-"]
+                values["codex_command"] = [
+                    args.codex_path,
+                    "exec",
+                    "--sandbox",
+                    "workspace-write",
+                    "-",
+                ]
             if args.auto_push is not None:
                 values["auto_push"] = args.auto_push
             if args.auto_pr is not None:
@@ -357,7 +376,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 values["verification_commands"] = verification
             prepared = ProjectRegistry(store, runtime).prepare(values)
             digest = config_sha256(normalize_execution_profile(prepared))
-            current_profile = normalize_execution_profile(current)
+            current_profile = (
+                normalize_legacy_execution_profile(current)
+                if current.get("config_source") == LEGACY_CONFIG_REQUIRES_UPDATE
+                else normalize_execution_profile(current)
+            )
             changed = [
                 field for field in EXECUTION_FIELDS
                 if prepared[field] != current_profile[field]

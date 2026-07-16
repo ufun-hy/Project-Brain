@@ -6,7 +6,16 @@ import json
 import sqlite3
 
 from .models import utc_now
-from .project_config import canonical_profile_json, config_sha256
+from .errors import ConfigurationError
+from .project_config import (
+    LEGACY_CONFIG_REQUIRES_UPDATE,
+    canonical_legacy_profile_json,
+    canonical_profile_json,
+    config_sha256,
+    legacy_config_sha256,
+    normalize_execution_profile,
+    normalize_legacy_execution_profile,
+)
 
 
 def backfill_project_snapshots(connection: sqlite3.Connection) -> None:
@@ -25,20 +34,28 @@ def backfill_project_snapshots(connection: sqlite3.Connection) -> None:
             "auto_push": bool(row["auto_push"]),
             "auto_pr": bool(row["auto_pr"]),
         }
-        serialized = canonical_profile_json(profile)
-        digest = config_sha256(profile)
+        try:
+            profile = normalize_execution_profile(profile)
+            serialized = canonical_profile_json(profile)
+            digest = config_sha256(profile)
+            source = "schema_v5_migration"
+        except ConfigurationError:
+            profile = normalize_legacy_execution_profile(profile)
+            serialized = canonical_legacy_profile_json(profile)
+            digest = legacy_config_sha256(profile)
+            source = LEGACY_CONFIG_REQUIRES_UPDATE
         connection.execute(
             "UPDATE projects SET repo_path = ?, remote_url = ?, default_branch = ?, "
             "worktree_root = ?, codex_command_json = ?, verification_commands_json = ?, "
             "allowed_commands_json = ?, auto_push = ?, auto_pr = ?, config_revision = 1, "
             "config_sha256 = ?, config_updated_at = ?, "
-            "config_source = 'schema_v5_migration' WHERE project_id = ?",
+            "config_source = ? WHERE project_id = ?",
             (
                 profile["repo_path"], profile["remote_url"], profile["default_branch"],
                 profile["worktree_root"], json.dumps(profile["codex_command"], separators=(",", ":")),
                 json.dumps(profile["verification_commands"], separators=(",", ":")),
                 json.dumps(profile["allowed_commands"], separators=(",", ":")),
-                int(profile["auto_push"]), int(profile["auto_pr"]), digest, now,
+                int(profile["auto_push"]), int(profile["auto_pr"]), digest, now, source,
                 row["project_id"],
             ),
         )

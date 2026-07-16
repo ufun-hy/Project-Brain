@@ -77,6 +77,12 @@ project-brain config export --file ./project-brain.export.json --json
 reported as `legacy_schema` by `config plan` and may be explicitly bootstrapped
 only while the database has never registered a project.
 
+Codex argv[0] is resolved to an absolute executable path before validation,
+planning, or persistence; exports therefore contain the fixed absolute path.
+For interactive `projects add/update --json`, the plan and prompt use stderr so
+stdout remains exactly one final JSON document. Use `--non-interactive` for
+automation.
+
 ## Canonical enqueue
 
 Source adapters translate their messages into a canonical JSON envelope and use

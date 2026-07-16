@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,7 @@ class CoreFixture:
             "remote_url": "file:///tmp/remote.git",
             "default_branch": "main",
             "worktree_root": str(self.runtime.project_worktree_root(project_id)),
-            "codex_command": ["codex", "exec", "-"],
+            "codex_command": [sys.executable, "exec", "-"],
             "verification_commands": [],
             "allowed_commands": {},
             "auto_push": False,

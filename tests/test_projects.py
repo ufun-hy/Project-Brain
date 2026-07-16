@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 
 from project_brain.errors import ConfigurationError
 from project_brain.projects import ProjectRegistry
@@ -40,6 +42,26 @@ class ProjectRegistryTests(unittest.TestCase):
         projects = self.fixture.store.list_projects()
         self.assertEqual({item["project_id"] for item in projects}, {"one-id", "two-id"})
         self.assertNotEqual(projects[0]["repo_path"], projects[0]["project_id"])
+        self.assertTrue(all(Path(item["codex_command"][0]).is_absolute() for item in projects))
+
+    def test_missing_or_non_executable_codex_is_rejected_before_persistence(self) -> None:
+        repo, remote = create_remote_clone(self.fixture.root, "bad-codex-path")
+        missing = self.fixture.root / "missing-codex"
+        non_executable = self.fixture.root / "non-executable-codex"
+        non_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        non_executable.chmod(0o644)
+        for path in (missing, non_executable):
+            with self.subTest(path=path), self.assertRaises(ConfigurationError):
+                self.registry.register(
+                    {
+                        "project_id": "bad-codex-path",
+                        "name": "bad-codex-path",
+                        "repo_path": str(repo),
+                        "remote_url": str(remote),
+                        "codex_command": [str(path), "exec", "-"],
+                    }
+                )
+        self.assertEqual(self.fixture.store.list_projects(), [])
 
     def test_external_worktree_root_is_rejected(self) -> None:
         repo, remote = create_remote_clone(self.fixture.root, "external-root")
@@ -50,7 +72,7 @@ class ProjectRegistryTests(unittest.TestCase):
                     "name": "external-root",
                     "repo_path": str(repo),
                     "remote_url": str(remote),
-                    "codex_command": ["python3", "-V"],
+                    "codex_command": [sys.executable, "-V"],
                     "worktree_root": str(self.fixture.root / "elsewhere"),
                 }
             )
@@ -64,7 +86,7 @@ class ProjectRegistryTests(unittest.TestCase):
                     "name": "overlap",
                     "repo_path": str(repo),
                     "remote_url": str(remote),
-                    "codex_command": ["python3", "-V"],
+                    "codex_command": [sys.executable, "-V"],
                     "worktree_root": str(repo / "task-worktrees"),
                 }
             )

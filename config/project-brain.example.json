@@ -7,13 +7,6 @@
       "repo_path": "~/code/Project-Brain",
       "remote_url": "git@github.com:example/Project-Brain.git",
       "default_branch": "main",
-      "codex_command": [
-        "codex",
-        "exec",
-        "--sandbox",
-        "workspace-write",
-        "-"
-      ],
       "verification_commands": [
         {
           "id": "core-tests",

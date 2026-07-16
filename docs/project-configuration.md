@@ -15,6 +15,13 @@ project-brain projects show example --json
 project-brain projects check example --json
 ```
 
+Codex argv[0] is resolved once to an absolute executable path and checked for
+execute permission before any project write. Declarative files may omit
+`codex_command` to use `codex` from the onboarding process PATH. Exported files
+always contain the resolved absolute command. In interactive JSON mode, the
+plan and confirmation prompt are written to stderr; stdout is one final JSON
+object. Add `--non-interactive` in scripts.
+
 `projects check` is read-only. It checks the repository, origin, default branch,
 Codex and optional `gh`, the managed worktree boundary, and whether each trusted
 verification executable exists. It never runs a verification command.
@@ -47,14 +54,20 @@ project-brain config export --file ./backup.json --json
 Validation and planning do not register, update, or remove projects. Apply is
 add/update/no-op only and is all-or-nothing across the file. Omitted database
 projects are reported as `registered_only`. Export is private and atomic;
-repeat export needs `--force`.
+without `--force`, its commit is an atomic no-replace operation, and repeat
+export or a concurrently created destination is rejected.
 
 ## Migration and rollback
 
 Before upgrading a long-lived runtime, stop the MCP server and workers and make
 a filesystem-level copy of `project-brain.db`. The first 0.5.0 command migrates
 schema v4 to v5 atomically and backfills revision 1 plus every task snapshot.
-On failure the transaction rolls back and retry is safe. To return to 0.4.0,
+Relative legacy Codex commands are resolved to absolute paths during migration
+when possible. An unresolvable command is marked
+`schema_v5_migration_requires_operator_update`; project checks report unhealthy,
+task execution fails closed, and export is blocked until `projects update
+--codex-path ...` installs a valid absolute executable. On failure the
+transaction rolls back and retry is safe. To return to 0.4.0,
 stop 0.5.0 and restore the pre-upgrade database copy; do not manually downgrade
 the live database.
 
