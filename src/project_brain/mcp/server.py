@@ -8,7 +8,6 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from project_brain.errors import ConfigurationError
-from project_brain.projects import ProjectRegistry
 from project_brain.runtime import RuntimePaths
 from project_brain.store import TaskStore
 
@@ -92,7 +91,5 @@ def run_mcp_server(
     validate_loopback_bind(host, port)
     store = TaskStore(runtime.database)
     store.initialize()
-    if not store.list_projects() and runtime.config_file.exists():
-        ProjectRegistry(store, runtime).load_config(runtime.config_file)
     server = create_mcp_server(runtime, host=host, port=port, store=store)
     server.run(transport="streamable-http")

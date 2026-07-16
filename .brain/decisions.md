@@ -119,3 +119,14 @@ processes. Supersession remains an atomic Store/state-machine operation: active
 execution/recovery/merge ownership is protected, revisions increase strictly,
 and terminal history is never rewritten. The adapter pins `mcp==1.28.1` until
 its private generated-model hardening passes the documented upgrade gate.
+
+## D-018: Bind every task to an immutable project execution snapshot
+
+SQLite is authoritative for project configuration; JSON is explicit
+bootstrap/import/export only. Execution-affecting project changes create a
+monotonic revision and canonical SHA-256. Task creation atomically stores that
+revision, hash, and full execution profile. All later execution, retry, review
+revision, recovery, verification, publication, release, cleanup, and forensics
+use the stored snapshot and fail closed if it is missing or changed. Display
+name changes do not create an execution revision. MCP remains read/control only
+and gains no configuration mutation tool.

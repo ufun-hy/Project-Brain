@@ -221,6 +221,18 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(len(first_evidence), 1)
         self.assertEqual(first_evidence[0]["attempt_number"], 1)
 
+        # Publication retry remains bound to the task snapshot even if the
+        # active project disables publication and changes execution settings.
+        active = self.fixture.store.get_project("project-one")
+        active["auto_push"] = False
+        active["auto_pr"] = False
+        active["codex_command"] = [sys.executable, "-c", "raise SystemExit(99)"]
+        self.fixture.store.register_project(active)
+        self.assertGreater(
+            self.fixture.store.get_project("project-one")["config_revision"],
+            first["task"]["project_config_revision"],
+        )
+
         # A different historical head/set must never leak into a publication
         # retry merely because the task's current attempt_count changed.
         with self.fixture.store.transaction(immediate=True) as connection:

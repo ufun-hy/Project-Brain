@@ -17,6 +17,7 @@ from mcp.client.streamable_http import streamable_http_client
 from project_brain.cli import build_parser
 from project_brain.errors import ConfigurationError
 from project_brain.locking import RuntimeLock
+from project_brain.schema import SCHEMA_VERSION
 from project_brain.mcp.server import (
     DEFAULT_MCP_HOST,
     DEFAULT_MCP_PORT,
@@ -255,7 +256,7 @@ class MCPTransportTests(unittest.TestCase):
         )
         reopened = TaskStore(self.fixture.runtime.database)
         reopened.initialize()
-        self.assertEqual(reopened.schema_version(), 4)
+        self.assertEqual(reopened.schema_version(), SCHEMA_VERSION)
         self.assertTrue(RuntimeLock.is_available(self.fixture.runtime.lock_file))
 
 

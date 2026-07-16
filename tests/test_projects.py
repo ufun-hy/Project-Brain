@@ -25,6 +25,7 @@ class ProjectRegistryTests(unittest.TestCase):
                 "name": "Project-Brain",
                 "repo_path": str(one),
                 "remote_url": str(one_remote),
+                "codex_command": ["python3", "-V"],
             }
         )
         self.registry.register(
@@ -33,6 +34,7 @@ class ProjectRegistryTests(unittest.TestCase):
                 "name": "kefu-ai",
                 "repo_path": str(two),
                 "remote_url": str(two_remote),
+                "codex_command": ["python3", "-V"],
             }
         )
         projects = self.fixture.store.list_projects()
@@ -48,6 +50,7 @@ class ProjectRegistryTests(unittest.TestCase):
                     "name": "external-root",
                     "repo_path": str(repo),
                     "remote_url": str(remote),
+                    "codex_command": ["python3", "-V"],
                     "worktree_root": str(self.fixture.root / "elsewhere"),
                 }
             )
@@ -61,6 +64,7 @@ class ProjectRegistryTests(unittest.TestCase):
                     "name": "overlap",
                     "repo_path": str(repo),
                     "remote_url": str(remote),
+                    "codex_command": ["python3", "-V"],
                     "worktree_root": str(repo / "task-worktrees"),
                 }
             )
@@ -87,6 +91,7 @@ class ProjectRegistryTests(unittest.TestCase):
                     "name": "unsafe-id",
                     "repo_path": str(repo),
                     "remote_url": str(remote),
+                    "codex_command": ["python3", "-V"],
                 }
             )
 

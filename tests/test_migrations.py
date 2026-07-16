@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from project_brain.errors import MigrationError
-from project_brain.schema import MIGRATION_1, MIGRATION_2, MIGRATION_3, SCHEMA_VERSION
+from project_brain.schema import MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, SCHEMA_VERSION
 from project_brain.store import TaskStore
 
 
@@ -138,6 +138,62 @@ class MigrationTests(unittest.TestCase):
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
         with self.assertRaises(MigrationError):
             TaskStore(self.database).initialize()
+
+    def test_v5_backfills_project_revision_hash_and_task_snapshot(self) -> None:
+        old = TaskStore(
+            self.database,
+            migrations={1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4},
+            schema_version=4,
+        )
+        old.initialize()
+        with sqlite3.connect(self.database) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(
+                """
+                INSERT INTO projects(
+                    project_id,name,repo_path,remote_url,default_branch,worktree_root,
+                    codex_command_json,verification_commands_json,allowed_commands_json,
+                    auto_push,auto_pr,created_at,updated_at
+                ) VALUES('legacy','legacy','/tmp/repo','/tmp/remote.git','main','/tmp/worktrees',
+                    '["codex"]','[]','{}',0,0,'2026-01-01','2026-01-01')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO tasks(
+                    task_id,project_id,dedupe_key,revision,source_type,goal,
+                    acceptance_criteria_json,task_type,payload_json,status,created_at,updated_at
+                ) VALUES('legacy-task','legacy','legacy-task',1,'test','goal','[]','codex','{}',
+                    'pending','2026-01-01','2026-01-01')
+                """
+            )
+        store = TaskStore(self.database)
+        store.initialize()
+        project = store.get_project("legacy")
+        task = store.get_task("legacy-task")
+        self.assertEqual(project["config_revision"], 1)
+        self.assertEqual(task["project_config_revision"], 1)
+        self.assertEqual(task["project_config_sha256"], project["config_sha256"])
+        self.assertEqual(store.task_execution_profile(task)["default_branch"], "main")
+        store.initialize()
+        self.assertEqual(store.get_project("legacy")["config_revision"], 1)
+
+    def test_v5_python_hook_failure_rolls_back_schema_and_data(self) -> None:
+        TaskStore(
+            self.database,
+            migrations={1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4},
+            schema_version=4,
+        ).initialize()
+
+        def fail(_connection):
+            raise RuntimeError("data backfill failed")
+
+        with self.assertRaises(RuntimeError):
+            TaskStore(self.database, data_migrations={5: fail}).initialize()
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
+        self.assertNotIn("execution_profile_json", columns)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@ experiments/gmail-inbox/.venv/
 *.zip
 
 # Python and Core local runtime artifacts
+.venv/
+*.egg-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/

@@ -67,8 +67,8 @@ class TaskEngine:
                 "task": None,
                 **recovery.as_dict(),
             }
-        project = self.store.get_project(task["project_id"])
         try:
+            project = self.store.task_execution_profile(task)
             worktree_record = self.worktrees.create(task, project)
             task = self.store.get_task(task["task_id"])
             worktree = Path(worktree_record["path"])

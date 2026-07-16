@@ -1,8 +1,9 @@
-"""Project registration and explicit Bridge v2 config migration."""
+"""Repository-aware project registration validation."""
 
 from __future__ import annotations
 
-import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,10 @@ class ProjectRegistry:
         self.runtime = runtime
 
     def register(self, value: dict[str, Any]) -> dict[str, Any]:
+        return self.store.register_project(self.prepare(value))
+
+    def prepare(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Validate and enrich one project without changing runtime state."""
         project_id = value.get("project_id")
         if not isinstance(project_id, str) or not project_id.strip():
             raise ConfigurationError("project_id is required for Core project registration")
@@ -53,9 +58,12 @@ class ProjectRegistry:
             raise ConfigurationError(
                 f"registered remote_url does not match repository origin: {remote_url}"
             )
-        codex_command = value.get("codex_command") or [
-            "codex", "exec", "--sandbox", "workspace-write", "-"
-        ]
+        codex_command = value.get("codex_command")
+        if not codex_command:
+            codex_path = shutil.which(str(value.get("codex_path") or "codex"))
+            if not codex_path:
+                raise ConfigurationError("Codex executable was not found")
+            codex_command = [str(Path(codex_path).resolve()), "exec", "--sandbox", "workspace-write", "-"]
         if not self._valid_command(codex_command):
             raise ConfigurationError("codex_command must be a non-empty array of strings")
         codex_command = list(codex_command)
@@ -115,7 +123,7 @@ class ProjectRegistry:
             name=str(value.get("name") or project_id),
             repo_path=str(repo),
             remote_url=remote_url,
-            default_branch=str(value.get("default_branch") or "main"),
+            default_branch=str(value.get("default_branch") or self._default_branch(repo)),
             worktree_root=str(worktree_root),
             codex_command=codex_command,
             verification_commands=verification_commands,
@@ -123,27 +131,10 @@ class ProjectRegistry:
             auto_push=bool(value.get("auto_push", True)),
             auto_pr=bool(value.get("auto_pr", True)),
         )
-        return self.store.register_project(project)
-
-    def load_config(self, path: str | Path | None = None) -> list[dict[str, Any]]:
-        config_path = Path(path).expanduser().resolve() if path else self.runtime.config_file
-        try:
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-        except FileNotFoundError as exc:
-            raise ConfigurationError(f"Missing config: {config_path}") from exc
-        except json.JSONDecodeError as exc:
-            raise ConfigurationError(f"Invalid JSON in {config_path}: {exc}") from exc
-        projects = data.get("projects")
-        if isinstance(projects, dict):
-            projects = [dict(value, name=value.get("name") or name) for name, value in projects.items()]
-        if not isinstance(projects, list):
-            raise ConfigurationError("Config requires a projects array")
-        return [self.register(project) for project in projects]
+        return project.as_record()
 
     @staticmethod
     def _remote_url(repo: Path) -> str:
-        import subprocess
-
         completed = subprocess.run(
             ["git", "-C", str(repo), "remote", "get-url", "origin"],
             text=True,
@@ -152,6 +143,28 @@ class ProjectRegistry:
         if completed.returncode != 0 or not completed.stdout.strip():
             raise ConfigurationError(f"Repository has no origin remote: {repo}")
         return completed.stdout.strip()
+
+    @staticmethod
+    def _default_branch(repo: Path) -> str:
+        completed = subprocess.run(
+            ["git", "-C", str(repo), "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+            text=True,
+            capture_output=True,
+        )
+        branch = completed.stdout.strip()
+        if completed.returncode == 0 and branch.startswith("origin/"):
+            return branch.removeprefix("origin/")
+        completed = subprocess.run(
+            ["git", "-C", str(repo), "remote", "show", "origin"],
+            text=True,
+            capture_output=True,
+        )
+        for line in completed.stdout.splitlines():
+            if "HEAD branch:" in line:
+                value = line.split("HEAD branch:", 1)[1].strip()
+                if value:
+                    return value
+        raise ConfigurationError("Unable to detect the origin default branch; pass --default-branch")
 
     @staticmethod
     def _valid_command(value: Any) -> bool:

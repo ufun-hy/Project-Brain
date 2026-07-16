@@ -42,8 +42,9 @@ def task_view(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> dict
     elapsed = None
     if updated:
         elapsed = max(0, int((datetime.now(timezone.utc) - updated).total_seconds()))
+    safe_task = {key: value for key, value in task.items() if key != "execution_profile"}
     return {
-        **task,
+        **safe_task,
         "project": projects.get(task["project_id"], {}).get("name", task["project_id"]),
         "elapsed_seconds": elapsed,
         "next_action": NEXT_ACTION.get(task["status"], "Inspect task state."),

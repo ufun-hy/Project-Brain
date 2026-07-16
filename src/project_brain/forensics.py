@@ -53,7 +53,7 @@ class FailureForensics:
         record = self.store.get_worktree(task_id)
         if record is None:
             raise WorktreeError(f"Task has no registered worktree: {task_id}")
-        project = self.store.get_project(task["project_id"])
+        project = self.store.task_execution_profile(task)
         worktree = self.worktrees.validate_managed_path(project, record["path"])
         target = self.runtime.forensic_archive_dir(
             task_id, worktree_id=int(record["worktree_id"])
@@ -113,6 +113,8 @@ class FailureForensics:
             "task_status": task["status"],
             "attempt_count": task["attempt_count"],
             "attempt_phase": task["attempt_phase"],
+            "project_config_revision": task.get("project_config_revision"),
+            "project_config_sha256": task.get("project_config_sha256"),
             "canonical_head_sha": task.get("commit"),
             "last_error": task.get("last_error"),
             "worktree_id": record["worktree_id"],

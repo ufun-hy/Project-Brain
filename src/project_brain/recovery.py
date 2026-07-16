@@ -351,10 +351,10 @@ class RecoveryManager:
         if record is None:
             return TaskStatus.FAILED, "Interrupted task has no registered worktree"
         try:
-            project = self.store.get_project(task["project_id"])
+            project = self.store.task_execution_profile(task)
             path = self.worktrees.validate_managed_path(project, record["path"])
             assert_registered_origin(project["repo_path"], project["remote_url"])
-        except (InvalidPathError, WorktreeError) as exc:
+        except (InvalidPathError, InvalidTaskError, WorktreeError) as exc:
             return TaskStatus.FAILED, f"Unsafe interrupted worktree metadata: {exc}"
         if not path.exists():
             if phase is AttemptPhase.REVIEW and task.get("commit"):

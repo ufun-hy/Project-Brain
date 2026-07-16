@@ -4,9 +4,22 @@ Last updated: 2026-07-16
 
 ## Current stage
 
-Core 0.3.0 is merged. RFC-004 MCP Adapter MVP and the F1-F4 review closure are
-implemented in the independent `codex/project-brain-mcp-adapter` worktree for
-Draft PR #13. PR #10 and PR #11 remain untouched.
+Core 0.3.0 is merged. RFC-004 remains in unmerged Draft PR #13. Core 0.5.0
+project onboarding and configuration snapshots are implemented on the stacked
+`codex/project-brain-config-v1` branch without modifying PR #10, #11, or #13.
+
+## Implemented project configuration
+
+- SQLite schema v5 is authoritative for project revisions/hashes and immutable
+  task execution snapshots. The Python backfill hook shares the DDL transaction.
+- Task creation atomically binds revision, canonical SHA-256, and execution JSON.
+  Execution, verification, publication retry, needs-changes, recovery, release,
+  cleanup, and forensics fail closed and never read active project execution data.
+- `init`, project add/show/check/update, and config status/validate/plan/apply/export
+  provide explicit onboarding and atomic declarative reconciliation. Worker and
+  MCP startup no longer silently import JSON.
+- MCP remains eight tools with no config mutation surface. Safe summaries add
+  project/task revision and short hash without paths, argv, or raw profiles.
 
 ## Implemented MCP adapter
 
@@ -43,10 +56,10 @@ Draft PR #13. PR #10 and PR #11 remain untouched.
   `origin/main` and remains frozen.
 - Source-neutral canonical enqueue rejects external command/argv and resolves
   criteria only through trusted project verification IDs.
-- SQLite schema v4 persists supervised child process groups and birth/executable
-  identity, canonical-head verification sets, atomic review verdicts, and
-  forensic archives with atomic forward migration/backfill and future-version
-  rejection.
+- SQLite schema v5 persists project snapshots plus supervised child process
+  groups and birth/executable identity, canonical-head verification sets,
+  atomic review verdicts, and forensic archives with atomic forward
+  migration/backfill and future-version rejection.
 - `needs_changes` reruns implementation with active findings and appends a new
   canonical commit. Publication-only transient failures resume publication.
 - Startup and CLI recovery persist Codex PID/PGID plus process identity,
@@ -66,19 +79,16 @@ Draft PR #13. PR #10 and PR #11 remain untouched.
 
 ## Verification status
 
-The full 139-test gate passes under Python 3.11 with `mcp==1.28.1`. This
-includes the original 131-test MCP delivery gate plus eight review-closure
-tests for supersession ownership/atomicity/revisions/terminal history, MCP
-state conflicts and claim blockers, dispatch annotations, SDK compatibility,
-and automatic worker reaping/exit audit. The real Streamable HTTP initialize,
-tools/list, health call, and clean-shutdown test also passes. GitHub Actions
-must remain green for every pushed PR head.
+The local Core gate contains 153 tests under Python 3.11 with `mcp==1.28.1`,
+including 14 onboarding/snapshot additions and the real Streamable HTTP
+initialize, tools/list, health, and clean-shutdown test. GitHub Actions must be
+green for the final pushed head before delivery is complete.
 
 ## Next concrete starting point
 
-Keep Draft PR #13 unmerged for independent review. Secure MCP Tunnel and
-ChatGPT acceptance require operator-owned Platform/workspace permissions and
-must not be claimed from local tests alone.
+Open a stacked Draft PR based on `codex/project-brain-mcp-adapter`. Keep Draft
+PR #13 unmodified and unmerged. Secure MCP Tunnel and ChatGPT acceptance remain
+the separate pending PR #13 external check and are not replaced by local tests.
 
 ## Scope limits
 
@@ -90,6 +100,8 @@ multi-agent execution, automatic merge, team billing, or a template marketplace.
 
 - `docs/rfc/RFC-003-core-v3.md`
 - `docs/rfc/RFC-004-mcp-adapter.md`
+- `docs/rfc/RFC-005-project-onboarding-and-config-snapshots.md`
+- `docs/project-configuration.md`
 - `docs/mcp-adapter.md`
 - `docs/core-v3-gap-analysis.md`
 - `docs/troubleshooting-recovery.md`
