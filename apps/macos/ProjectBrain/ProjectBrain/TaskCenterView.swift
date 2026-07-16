@@ -1,0 +1,185 @@
+import AppKit
+import ProjectBrainKit
+import SwiftUI
+
+struct TaskCenterView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        NavigationSplitView {
+            List(model.tasks) { task in
+                Button { model.selectTask(task) } label: {
+                    TaskRow(task: task)
+                }
+                .buttonStyle(.plain)
+            }
+            .overlay {
+                if model.tasks.isEmpty {
+                    ContentUnavailableView(
+                        "No tasks",
+                        systemImage: "checklist",
+                        description: Text("Project Brain is ready for a new task.")
+                    )
+                }
+            }
+            .navigationTitle("Task Center")
+            .navigationSplitViewColumnWidth(min: 320, ideal: 380)
+        } detail: {
+            if let detail = model.selectedTask {
+                TaskDetailView(task: detail)
+            } else {
+                ContentUnavailableView(
+                    "Select a task",
+                    systemImage: "sidebar.left",
+                    description: Text("Choose a task to inspect reliable state and evidence.")
+                )
+            }
+        }
+    }
+}
+
+private struct TaskRow: View {
+    let task: TaskSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(task.goal ?? task.taskID).font(.headline).lineLimit(1)
+                Spacer()
+                StatusBadge(status: task.status, text: task.presentedStatus)
+            }
+            Text("\(task.project) · attempt \(task.attemptCount)")
+                .font(.caption).foregroundStyle(.secondary)
+            if let next = task.nextAction {
+                Text(next).font(.caption).lineLimit(2)
+            }
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+private struct TaskDetailView: View {
+    let task: TaskDetail
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(task.goal ?? task.taskID).font(.largeTitle.bold())
+                        Text("\(task.project) · \(task.taskID)").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusBadge(status: task.status, text: task.status.title)
+                }
+
+                GroupBox("Execution") {
+                    LabeledContent("Phase", value: task.attemptPhase?.rawValue.capitalized ?? "—")
+                    LabeledContent("Attempt", value: String(task.attemptCount))
+                    LabeledContent("Branch", value: task.branch ?? "—")
+                    LabeledContent("Canonical commit", value: short(task.commit ?? task.headSHA))
+                    if let url = task.prURL, let destination = URL(string: url) {
+                        LabeledContent("Draft PR") {
+                            Button(url) { NSWorkspace.shared.open(destination) }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+
+                if !task.changedFiles.isEmpty {
+                    GroupBox("Changed files") {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(task.changedFiles, id: \.self) { Text($0).font(.system(.body, design: .monospaced)) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if !task.acceptanceCriteria.isEmpty {
+                    GroupBox("Verification criteria") {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(Array(task.acceptanceCriteria.enumerated()), id: \.offset) { index, item in
+                                Label(item.displayText, systemImage: "circle.dashed")
+                                    .accessibilityLabel("Criterion \(index + 1): \(item.displayText)")
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                GroupBox("Verification evidence") {
+                    if task.verification.isEmpty {
+                        Text("No verification evidence has been recorded.").foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(task.verification) { evidence in
+                                HStack(alignment: .top) {
+                                    Image(systemName: evidence.status == "passed" ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .foregroundStyle(evidence.status == "passed" ? .green : .red)
+                                    VStack(alignment: .leading) {
+                                        Text(evidence.criterionText ?? evidence.criterionID ?? "Verification")
+                                            .font(.headline)
+                                        Text(evidence.evidenceSummary ?? "No summary")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !task.reviews.isEmpty {
+                    GroupBox("Review findings") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(task.reviews) { review in
+                                Text(review.verdict?.replacingOccurrences(of: "_", with: " ").capitalized ?? "Review")
+                                    .font(.headline)
+                                ForEach(review.findings ?? []) { finding in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("[\(finding.severity.uppercased())] \(finding.requirement)")
+                                        Text(finding.evidence).foregroundStyle(.secondary)
+                                        if let file = finding.file { Text(file).font(.caption.monospaced()) }
+                                    }
+                                }
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if let error = task.lastError {
+                    GroupBox("Last error") {
+                        Text(error).foregroundStyle(.red).textSelection(.enabled)
+                    }
+                }
+                if let next = task.nextAction {
+                    GroupBox("Next action") { Text(next) }
+                }
+            }
+            .padding(28)
+        }
+    }
+
+    private func short(_ value: String?) -> String {
+        value.map { String($0.prefix(12)) } ?? "—"
+    }
+}
+
+struct StatusBadge: View {
+    let status: TaskStatus
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.bold())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.16), in: Capsule())
+            .foregroundStyle(color)
+    }
+
+    private var color: Color {
+        if status.needsAttention { return .orange }
+        if status.isActive { return .blue }
+        if status == .accepted { return .green }
+        return .secondary
+    }
+}

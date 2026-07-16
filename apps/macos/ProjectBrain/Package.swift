@@ -6,11 +6,18 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "ProjectBrainKit", targets: ["ProjectBrainKit"]),
+        .executable(name: "ProjectBrainApp", targets: ["ProjectBrainApp"]),
     ],
     targets: [
         .target(
             name: "ProjectBrainKit",
-            path: "ProjectBrainKit"
+            path: "ProjectBrainKit",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .executableTarget(
+            name: "ProjectBrainApp",
+            dependencies: ["ProjectBrainKit"],
+            path: "ProjectBrain"
         ),
         .testTarget(
             name: "ProjectBrainTests",

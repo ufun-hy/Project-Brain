@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import ServiceError
+from .executables import LAUNCHD_TOOL_PATH
 from .runtime import RuntimePaths
 
 
@@ -54,6 +55,7 @@ class ServiceSpec:
             "StandardOutPath": str(self.stdout_path),
             "StandardErrorPath": str(self.stderr_path),
             "ThrottleInterval": 10,
+            "EnvironmentVariables": {"PATH": LAUNCHD_TOOL_PATH},
         }
         if self.start_interval is not None:
             value["StartInterval"] = self.start_interval

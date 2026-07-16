@@ -11,6 +11,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from project_brain.cli import main
+from project_brain.executables import LAUNCHD_TOOL_PATH
 from project_brain.runtime import RuntimePaths
 from project_brain.services import LAUNCHCTL, MCP_LABEL, WORKER_LABEL, ServiceManager
 
@@ -76,6 +77,7 @@ class ServiceManagerTests(unittest.TestCase):
             self.assertEqual(spec.plist_path.read_bytes(), rendered[spec.name])
             value = plistlib.loads(rendered[spec.name])
             self.assertEqual(value["ProgramArguments"], list(spec.program_arguments))
+            self.assertEqual(value["EnvironmentVariables"], {"PATH": LAUNCHD_TOOL_PATH})
             self.assertTrue(all(isinstance(item, str) for item in value["ProgramArguments"]))
         self.assertTrue(all(command[0] == LAUNCHCTL for command in self.runner.commands))
         self.assertTrue(all("-lc" not in command for command in self.runner.commands))

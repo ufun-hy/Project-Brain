@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import re
-import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -15,6 +15,7 @@ from . import __version__
 from .application import health_report, status_report, task_view, worker_result_view
 from .engine import TaskEngine
 from .errors import AlreadyRunningError, InvalidTaskError, ProjectBrainError
+from .executables import find_executable
 from .locking import RuntimeLock
 from .ingress import TaskImporter
 from .projects import ProjectRegistry
@@ -170,6 +171,12 @@ def _project_options(parser: argparse.ArgumentParser, *, include_identity: bool)
     parser.add_argument("--verification-file", type=Path)
     parser.add_argument("--auto-push", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--auto-pr", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        dest="plan_only",
+        help="Return the validated mutation plan without writing",
+    )
     parser.add_argument("--non-interactive", action="store_true")
     _add_json(parser)
 
@@ -301,10 +308,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 3
     try:
         if args.command == "init":
+            git = find_executable("git")
+            codex = find_executable("codex")
+            gh = find_executable("gh")
+            gh_authenticated = False
+            if gh is not None:
+                try:
+                    gh_authenticated = subprocess.run(
+                        [gh, "auth", "status"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=5,
+                    ).returncode == 0
+                except (OSError, subprocess.TimeoutExpired):
+                    gh_authenticated = False
             checks = {
-                "git": shutil.which("git") is not None,
-                "codex": shutil.which("codex") is not None,
-                "gh": shutil.which("gh") is not None,
+                "git": git is not None,
+                "codex": codex is not None,
+                "gh": gh is not None,
+                "gh_authenticated": gh_authenticated,
             }
             value = {
                 "status": "already_initialized" if runtime_preexisting else "initialized",
@@ -392,7 +415,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "nonterminal_task_count": 0,
                 "task_snapshot_effect": "new tasks bind revision 1",
             }
-            if not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
+            if args.plan_only:
+                _render({"status": "planned", "plan": plan}, json_output=args.json_output)
+            elif not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
                 _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
             else:
                 with RuntimeLock(runtime.lock_file):
@@ -459,7 +484,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "nonterminal_task_count": nonterminal,
                 "task_snapshot_effect": "existing tasks keep their snapshot; new tasks bind next revision",
             }
-            if not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
+            if args.plan_only:
+                _render({"status": "planned", "plan": plan}, json_output=args.json_output)
+            elif not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
                 _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
             else:
                 with RuntimeLock(runtime.lock_file):

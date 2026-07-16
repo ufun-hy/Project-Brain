@@ -92,6 +92,57 @@ final class HelperInstallerTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
         XCTAssertThrowsError(try installer.install(bundledHelper: link))
     }
+
+    func testActivationFailureRollsBackUpgradeAndReactivatesOldHelper() throws {
+        let installer = HelperInstaller(applicationSupportDirectory: support, runner: runner)
+        let first = try installer.install(bundledHelper: bundled)
+        try Data("old-helper".utf8).write(to: first.destination)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: first.destination.path
+        )
+        let activationRunner = ActivationRunner(destination: first.destination.path)
+        let upgradingInstaller = HelperInstaller(
+            applicationSupportDirectory: support,
+            runner: activationRunner
+        )
+        let actions = LockedActions()
+
+        XCTAssertThrowsError(
+            try upgradingInstaller.install(bundledHelper: bundled) { _, action in
+                actions.append(action)
+                if action == .upgraded {
+                    throw HelperInstallerError.versionCheck("simulated service restart failure")
+                }
+            }
+        )
+        XCTAssertEqual(try Data(contentsOf: first.destination), Data("old-helper".utf8))
+        XCTAssertEqual(actions.values, [.upgraded, .current])
+    }
+}
+
+private final class LockedActions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [HelperInstallAction] = []
+
+    var values: [HelperInstallAction] { lock.withLock { stored } }
+    func append(_ action: HelperInstallAction) { lock.withLock { stored.append(action) } }
+}
+
+private final class ActivationRunner: HelperCommandRunning, @unchecked Sendable {
+    private let destination: String
+    private var destinationChecks = 0
+
+    init(destination: String) { self.destination = destination }
+
+    func run(executable: URL, arguments: [String]) throws -> HelperCommandResult {
+        if executable.path == destination {
+            destinationChecks += 1
+            let version = destinationChecks == 2 ? "project-brain 0.7.0" : "project-brain 0.6.0"
+            return HelperCommandResult(exitCode: 0, stdout: version + "\n", stderr: "")
+        }
+        return HelperCommandResult(exitCode: 0, stdout: "project-brain 0.7.0\n", stderr: "")
+    }
 }
 
 private final class FailingDestinationRunner: HelperCommandRunning, @unchecked Sendable {

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import os
-import shutil
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .locking import RuntimeLock
+from .executables import find_executable
 from .models import TaskStatus, parse_timestamp
 from .runtime import RuntimePaths
 from .security import redact_text
@@ -81,8 +81,10 @@ def health_report(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
         lock_available,
         "available" if lock_available else "held by another process",
     )
-    check("git", shutil.which("git") is not None, shutil.which("git") or "not found")
-    check("gh", shutil.which("gh") is not None, shutil.which("gh") or "not found")
+    git = find_executable("git")
+    gh = find_executable("gh")
+    check("git", git is not None, git or "not found")
+    check("gh", gh is not None, gh or "not found")
     for project in store.list_projects():
         repo = Path(project["repo_path"])
         check(
@@ -92,7 +94,9 @@ def health_report(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
         )
         executable = project.get("codex_command", [""])[0] if project.get("codex_command") else ""
         available = bool(executable) and (
-            Path(executable).expanduser().exists() if "/" in executable else shutil.which(executable) is not None
+            Path(executable).expanduser().exists()
+            if "/" in executable
+            else find_executable(executable) is not None
         )
         check(
             f"codex:{project['project_id']}",

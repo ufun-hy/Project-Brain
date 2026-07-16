@@ -96,7 +96,10 @@ public final class HelperInstaller: @unchecked Sendable {
         applicationSupportDirectory.appending(path: Self.relativeDestination)
     }
 
-    public func install(bundledHelper: URL) throws -> HelperInstallResult {
+    public func install(
+        bundledHelper: URL,
+        onActivated: @Sendable (URL, HelperInstallAction) throws -> Void = { _, _ in }
+    ) throws -> HelperInstallResult {
         try validateRegularFile(bundledHelper, requireExecutable: true)
         let bundledVersion = try version(of: bundledHelper)
         let destination = destination.standardizedFileURL
@@ -147,15 +150,21 @@ public final class HelperInstaller: @unchecked Sendable {
             try atomicRename(candidate, destination)
             candidateExists = false
             try syncDirectory(binDirectory)
+            let action: HelperInstallAction = upgrading ? .upgraded : .installed
             do {
                 guard try version(of: destination) == bundledVersion else {
                     throw HelperInstallerError.versionCheck(
                         "Installed helper did not report the bundled version"
                     )
                 }
+                try onActivated(destination, action)
             } catch {
                 if upgrading, fileManager.fileExists(atPath: rollback.path) {
                     try atomicRename(rollback, destination)
+                    try syncDirectory(binDirectory)
+                    try? onActivated(destination, .current)
+                } else if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
                     try syncDirectory(binDirectory)
                 }
                 throw error
@@ -165,7 +174,7 @@ public final class HelperInstaller: @unchecked Sendable {
                 try syncDirectory(binDirectory)
             }
             return HelperInstallResult(
-                action: upgrading ? .upgraded : .installed,
+                action: action,
                 version: bundledVersion,
                 destination: destination
             )

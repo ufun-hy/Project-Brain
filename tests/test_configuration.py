@@ -408,6 +408,16 @@ class ConfigurationTests(unittest.TestCase):
                 code = main(["--runtime-root", str(runtime), *arguments])
             return code, json.loads(stream.getvalue())
 
+        code, preview = invoke(
+            "projects", "add", str(self.repo), "--project-id", "cli-project",
+            "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",
+            "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(preview["status"], "planned")
+        self.assertEqual(preview["plan"]["action"], "add")
+        self.assertEqual(TaskStore(runtime / "project-brain.db").list_projects(), [])
+
         code, added = invoke(
             "projects", "add", str(self.repo), "--project-id", "cli-project",
             "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",

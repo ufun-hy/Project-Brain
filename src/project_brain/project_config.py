@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
 from .errors import ConfigurationError
+from .executables import find_executable
 from .models import STABLE_ID_PATTERN
 from .security import command_contains_secret, contains_known_secret
 
@@ -41,7 +41,7 @@ def executable_available(value: str) -> bool:
     if _has_path_component(expanded):
         path = Path(expanded)
         return path.is_file() and os.access(path, os.X_OK)
-    return shutil.which(expanded) is not None
+    return find_executable(expanded) is not None
 
 
 def resolve_executable(value: str, label: str) -> str:
@@ -49,7 +49,7 @@ def resolve_executable(value: str, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise ConfigurationError(f"{label} must be a non-empty executable")
     expanded = str(Path(value).expanduser()) if _has_path_component(value) else value
-    candidate = shutil.which(expanded)
+    candidate = find_executable(expanded)
     if candidate is None:
         raise ConfigurationError(f"{label} was not found or is not executable: {value}")
     resolved = Path(candidate).expanduser().resolve()
