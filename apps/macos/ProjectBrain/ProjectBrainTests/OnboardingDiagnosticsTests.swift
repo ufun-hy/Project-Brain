@@ -31,7 +31,10 @@ final class OnboardingDiagnosticsTests: XCTestCase {
             services: [],
             checks: [check],
             projects: [],
-            connection: ConnectionSnapshot(tunnelConfigured: true)
+            connection: ConnectionSnapshot(
+                tunnelID: "tunnel_0123456789abcdef0123456789abcdef",
+                runtimeTokenConfigured: true
+            )
         )
         let rendered = String(decoding: try report.encoded(), as: UTF8.self)
         XCTAssertFalse(rendered.contains("/Users/example"))
@@ -42,6 +45,35 @@ final class OnboardingDiagnosticsTests: XCTestCase {
     func testExternalAcceptanceDefaultsPendingAndIsNotDerivedFromLocalMCP() {
         let connection = ConnectionSnapshot(localMCPStatus: "running")
         XCTAssertEqual(connection.externalAcceptance, .notStarted)
+        XCTAssertNotEqual(connection.externalAcceptance, .passed)
+    }
+
+    func testTunnelReadyToTestRequiresVerifiedLocalTransportAndRuntimeStatus() {
+        let tunnelID = "tunnel_0123456789abcdef0123456789abcdef"
+        let tokenOnly = ConnectionSnapshot(
+            tunnelID: tunnelID,
+            runtimeTokenConfigured: true
+        )
+        XCTAssertEqual(tokenOnly.externalAcceptance, .notStarted)
+
+        let ready = ConnectionSnapshot(
+            localMCPTransportHealthy: true,
+            tunnelID: tunnelID,
+            runtimeTokenConfigured: true,
+            tunnelClientAvailable: true,
+            tunnelProcessRunning: true,
+            tunnelHealthy: true,
+            tunnelReady: true,
+            workspaceConfiguration: .operatorDeclared
+        )
+        XCTAssertEqual(ready.externalAcceptance, .readyToTest)
+        XCTAssertEqual(ready.externalVerification, .notVerified)
+    }
+
+    func testOperatorDeclarationDoesNotBecomeExternalVerification() {
+        let connection = ConnectionSnapshot(workspaceConfiguration: .operatorDeclared)
+        XCTAssertTrue(connection.workspaceConfigured)
+        XCTAssertEqual(connection.externalVerification, .notVerified)
         XCTAssertNotEqual(connection.externalAcceptance, .passed)
     }
 

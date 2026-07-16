@@ -9,7 +9,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .errors import ConfigurationError, InvalidTaskError, MigrationError, StateTransitionError
+from .errors import (
+    ConfigurationError,
+    InvalidTaskError,
+    MigrationError,
+    StateConflictError,
+    StateTransitionError,
+)
 from .models import (
     ALLOWED_TRANSITIONS,
     AttemptPhase,
@@ -141,6 +147,7 @@ class TaskStore:
         projects: list[Project | dict[str, Any]],
         *,
         source: str,
+        expected_plans: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Atomically add/update projects after every record has been normalized."""
         prepared: list[dict[str, Any]] = []
@@ -180,6 +187,22 @@ class TaskStore:
                 existing = connection.execute(
                     "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
                 ).fetchone()
+                expected = (expected_plans or {}).get(record["project_id"])
+                if expected is not None:
+                    current_revision = int(existing["config_revision"]) if existing else None
+                    current_sha256 = existing["config_sha256"] if existing else None
+                    current_name = existing["name"] if existing else None
+                    if (
+                        expected.get("project_id") != record["project_id"]
+                        or expected.get("current_revision") != current_revision
+                        or expected.get("current_sha256") != current_sha256
+                        or expected.get("current_name") != current_name
+                        or expected.get("next_sha256") != record["config_sha256"]
+                        or expected.get("next_name") != record["name"]
+                    ):
+                        raise StateConflictError(
+                            "Project state no longer matches the confirmed mutation plan"
+                        )
                 reactivating = existing is not None and not bool(existing["registered"])
                 if existing is None:
                     action = "add"
@@ -193,6 +216,13 @@ class TaskStore:
                         action = "rename"
                     if reactivating and action in {"noop", "rename"}:
                         action = "reactivate"
+                if expected is not None and (
+                    expected.get("action") != action
+                    or expected.get("next_revision") != revision
+                ):
+                    raise StateConflictError(
+                        "Project mutation no longer matches the confirmed action"
+                    )
                 if action == "noop":
                     results.append({"action": action, "project": self._project(existing)})
                     continue

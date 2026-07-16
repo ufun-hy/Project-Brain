@@ -34,13 +34,24 @@ private struct ProductSnapshot: Sendable {
     let projects: [ProjectSummary]
     let services: ServiceStatusResponse
     let health: HealthResponse
+    let selectedTask: TaskDetail?
+
+    var serviceOnline: Bool {
+        let states = Dictionary(uniqueKeysWithValues: services.services.map { ($0.name, $0.state) })
+        return ["healthy", "running"].contains(states["worker"])
+            && states["mcp"] == "running"
+    }
 }
 
 private actor ProductShellBackend {
     private let installer: HelperInstaller
     private var client: CoreClient?
+    private var tunnelClient: TunnelClient?
 
-    init(installer: HelperInstaller) { self.installer = installer }
+    init(installer: HelperInstaller) {
+        self.installer = installer
+        self.tunnelClient = Self.makeTunnelClient()
+    }
 
     func prepare(bundledHelper: URL) throws -> ProductSnapshot {
         let result = try installer.install(bundledHelper: bundledHelper) { destination, action in
@@ -54,16 +65,18 @@ private actor ProductShellBackend {
         let client = try CoreClient(executable: result.destination)
         _ = try client.initializeRuntime()
         self.client = client
-        return try loadSnapshot(client: client)
+        return try loadSnapshot(client: client, selectedTaskID: nil)
     }
 
-    func refresh() throws -> ProductSnapshot { try loadSnapshot(client: requireClient()) }
+    func refresh(selectedTaskID: String?) throws -> ProductSnapshot {
+        try loadSnapshot(client: requireClient(), selectedTaskID: selectedTaskID)
+    }
     func task(_ identifier: String) throws -> TaskDetail { try requireClient().task(identifier) }
     func planProject(_ draft: ProjectDraft) throws -> ProjectMutationResponse {
         try requireClient().planProject(draft)
     }
-    func addProject(_ draft: ProjectDraft) throws -> ProjectMutationResponse {
-        try requireClient().addProject(draft)
+    func addProject(_ draft: ProjectDraft, planToken: String) throws -> ProjectMutationResponse {
+        try requireClient().addProject(draft, planToken: planToken)
     }
     func planProjectUpdate(
         _ identifier: String,
@@ -73,9 +86,10 @@ private actor ProductShellBackend {
     }
     func updateProject(
         _ identifier: String,
-        draft: ProjectUpdateDraft
+        draft: ProjectUpdateDraft,
+        planToken: String
     ) throws -> ProjectMutationResponse {
-        try requireClient().updateProject(identifier, draft: draft)
+        try requireClient().updateProject(identifier, draft: draft, planToken: planToken)
     }
     func planLifecycle(
         projectID: String,
@@ -89,10 +103,31 @@ private actor ProductShellBackend {
     ) throws -> ProjectLifecycleAppliedResponse {
         try requireClient().applyProjectLifecycle(projectID, action: action)
     }
-    func health() throws -> HealthResponse { try requireClient().health() }
+    func readiness() throws -> HealthResponse { try requireClient().readiness() }
     func service(_ action: ServiceAction) throws -> (ActionResponse, ServiceStatusResponse) {
         let client = try requireClient()
         return (try client.perform(action), try client.serviceStatus())
+    }
+
+    func tunnelAvailable() -> Bool {
+        if tunnelClient == nil { tunnelClient = Self.makeTunnelClient() }
+        return tunnelClient != nil
+    }
+
+    func connectTunnel(_ configuration: TunnelConfiguration) throws -> TunnelRuntimeStatus {
+        try requireTunnelClient().connect(configuration)
+    }
+
+    func tunnelStatus(runtimeToken: String?) throws -> TunnelRuntimeStatus {
+        try requireTunnelClient().status(runtimeToken: runtimeToken)
+    }
+
+    func stopTunnel(runtimeToken: String?) throws -> TunnelRuntimeStatus {
+        try requireTunnelClient().stop(runtimeToken: runtimeToken)
+    }
+
+    func reconnectTunnel(_ configuration: TunnelConfiguration) throws -> TunnelRuntimeStatus {
+        try requireTunnelClient().reconnect(configuration)
     }
 
     private func requireClient() throws -> CoreClient {
@@ -102,13 +137,27 @@ private actor ProductShellBackend {
         return client
     }
 
-    private func loadSnapshot(client: CoreClient) throws -> ProductSnapshot {
+    private func requireTunnelClient() throws -> TunnelClient {
+        if tunnelClient == nil { tunnelClient = Self.makeTunnelClient() }
+        guard let tunnelClient else { throw TunnelClientError.unavailable }
+        return tunnelClient
+    }
+
+    private func loadSnapshot(client: CoreClient, selectedTaskID: String?) throws -> ProductSnapshot {
         ProductSnapshot(
             tasks: try client.tasks(),
             projects: try client.projects(),
             services: try client.serviceStatus(),
-            health: try client.health()
+            health: try client.readiness(),
+            selectedTask: try selectedTaskID.map(client.task)
         )
+    }
+
+    private static func makeTunnelClient() -> TunnelClient? {
+        guard let executable = TunnelClient.discover() else { return nil }
+        let profiles = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: ".project-brain/tunnel/profiles")
+        return try? TunnelClient(executable: executable, profileDirectory: profiles)
     }
 }
 
@@ -136,7 +185,9 @@ final class AppModel: ObservableObject {
     private let onboardingStore: OnboardingStore
     private let connectionStore: ConnectionStore
     private let keychain: KeychainStore
+    private let observation: StateObservationLoop<ProductSnapshot>
     private var didBootstrap = false
+    private var tunnelStatusTask: Task<Void, Never>?
 
     init(
         installer: HelperInstaller = HelperInstaller(),
@@ -148,8 +199,12 @@ final class AppModel: ObservableObject {
         self.onboardingStore = onboardingStore
         self.connectionStore = connectionStore
         self.keychain = keychain
+        self.observation = StateObservationLoop()
         self.onboarding = onboardingStore.load()
         self.connection = connectionStore.load()
+        self.connection.runtimeTokenConfigured =
+            (try? keychain.read(account: "secure-mcp-tunnel-token")) != nil
+        self.connection.tunnelClientAvailable = TunnelClient.discover() != nil
     }
 
     var menuSnapshot: MenuBarSnapshot {
@@ -185,6 +240,7 @@ final class AppModel: ObservableObject {
                 self.onboarding.stage = .project
                 self.persistOnboarding()
             }
+            if self.onboarding.completed { self.startObservation() }
         }
     }
 
@@ -210,9 +266,9 @@ final class AppModel: ObservableObject {
     }
 
     func applyNewProject() {
-        guard let draft = projectDraft else { return }
+        guard let draft = projectDraft, let token = projectPlan?.plan.planToken else { return }
         runOperation {
-            try await self.backend.addProject(draft)
+            try await self.backend.addProject(draft, planToken: token)
         } onSuccess: { response in
             if self.onboarding.completed {
                 self.projectPlan = nil
@@ -234,9 +290,9 @@ final class AppModel: ObservableObject {
     }
 
     func applyProjectUpdate(projectID: String) {
-        guard let draft = updateDraft else { return }
+        guard let draft = updateDraft, let token = updatePlan?.plan.planToken else { return }
         runOperation {
-            try await self.backend.updateProject(projectID, draft: draft)
+            try await self.backend.updateProject(projectID, draft: draft, planToken: token)
         } onSuccess: { _ in
             self.updatePlan = nil
             self.updateDraft = nil
@@ -275,7 +331,7 @@ final class AppModel: ObservableObject {
 
     func runOnboardingHealthCheck() {
         runOperation {
-            try await self.backend.health()
+            try await self.backend.readiness()
         } onSuccess: { response in
             self.health = response
             if response.status == "healthy" {
@@ -295,7 +351,7 @@ final class AppModel: ObservableObject {
         onboarding.completed = true
         onboarding.lastError = nil
         persistOnboarding()
-        refresh()
+        startObservation()
     }
 
     func goBackOnboarding() {
@@ -307,8 +363,9 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() {
+        let taskID = selectedTask?.taskID
         runOperation {
-            try await self.backend.refresh()
+            try await self.backend.refresh(selectedTaskID: taskID)
         } onSuccess: { self.apply($0) }
     }
 
@@ -327,40 +384,92 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func saveTunnelToken(_ token: String) {
-        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    func saveAndStartTunnel(tunnelID: String, token: String) {
+        let configuration = TunnelConfiguration(tunnelID: tunnelID, runtimeToken: token)
+        guard TunnelClient.isValidTunnelID(tunnelID) else {
+            present(TunnelClientError.invalidTunnelID)
+            return
+        }
+        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            present(TunnelClientError.missingToken)
+            return
+        }
         do {
             try keychain.save(token, account: "secure-mcp-tunnel-token")
-            connection.tunnelConfigured = true
-            connection.externalAcceptance = .readyToTest
+            connection.tunnelID = tunnelID
+            connection.runtimeTokenConfigured = true
             connectionStore.save(connection)
         } catch {
             present(error)
+            return
         }
+        runOperation {
+            try await self.backend.connectTunnel(configuration)
+        } onSuccess: { self.applyTunnelStatus($0) }
     }
 
-    func removeTunnelToken() {
+    func startTunnel() {
         do {
-            try keychain.remove(account: "secure-mcp-tunnel-token")
-            connection.tunnelConfigured = false
-            connection.externalAcceptance = .notStarted
-            connectionStore.save(connection)
-        } catch {
-            present(error)
+            let configuration = try tunnelConfiguration()
+            runOperation {
+                try await self.backend.connectTunnel(configuration)
+            } onSuccess: { self.applyTunnelStatus($0) }
+        } catch { present(error) }
+    }
+
+    func stopTunnel() {
+        let token = try? keychain.read(account: "secure-mcp-tunnel-token")
+        runOperation {
+            try await self.backend.stopTunnel(runtimeToken: token ?? nil)
+        } onSuccess: { self.applyTunnelStatus($0) }
+    }
+
+    func reconnectTunnel() {
+        do {
+            let configuration = try tunnelConfiguration()
+            runOperation {
+                try await self.backend.reconnectTunnel(configuration)
+            } onSuccess: { self.applyTunnelStatus($0) }
+        } catch { present(error) }
+    }
+
+    func checkTunnelStatus() { refreshTunnelStatus(silent: false) }
+
+    func removeTunnelConfiguration() {
+        let token = try? keychain.read(account: "secure-mcp-tunnel-token")
+        Task {
+            _ = try? await backend.stopTunnel(runtimeToken: token ?? nil)
+            do {
+                try keychain.remove(account: "secure-mcp-tunnel-token")
+                connection.runtimeTokenConfigured = false
+                connection.tunnelProcessRunning = false
+                connection.tunnelHealthy = false
+                connection.tunnelReady = false
+                connection.tunnelRuntimeState = "not_configured"
+                connectionStore.save(connection)
+            } catch { present(error) }
         }
     }
 
     func markWorkspaceConfigured() {
-        connection.workspaceConfigured = true
-        if connection.tunnelConfigured {
-            connection.externalAcceptance = .readyToTest
-        }
+        connection.workspaceConfiguration = .operatorDeclared
         connectionStore.save(connection)
     }
 
     func restartOnboarding() {
+        Task { await observation.cancel() }
         onboarding = OnboardingProgress()
         persistOnboarding()
+    }
+
+    func setApplicationActive(_ active: Bool) {
+        Task { await observation.setForeground(active) }
+        if active, onboarding.completed { refreshSilently() }
+    }
+
+    func shutdown() {
+        tunnelStatusTask?.cancel()
+        Task { await observation.cancel() }
     }
 
     func exportDiagnostics(to url: URL) {
@@ -392,10 +501,78 @@ final class AppModel: ObservableObject {
         projects = snapshot.projects
         services = snapshot.services
         health = snapshot.health
+        if snapshot.selectedTask != nil { selectedTask = snapshot.selectedTask }
         connection.localMCPStatus = snapshot.services.services
             .first(where: { $0.name == "mcp" })?.state ?? "unknown"
+        connection.localMCPTransportHealthy = snapshot.health.checks
+            .first(where: { $0.name == "mcp_transport" })?.passed == true
+        connection.tunnelClientAvailable = TunnelClient.discover() != nil
         connection.lastCheckedAt = ISO8601DateFormatter().string(from: Date())
         connectionStore.save(connection)
+        refreshTunnelStatus(silent: true)
+    }
+
+    private func startObservation() {
+        let backend = backend
+        Task {
+            await observation.start(
+                selection: { [weak self] in await self?.selectedTaskIdentifier() },
+                refresh: { identifier in
+                    let snapshot = try await backend.refresh(selectedTaskID: identifier)
+                    return ObservationUpdate(
+                        value: snapshot,
+                        serviceOnline: snapshot.serviceOnline
+                    )
+                },
+                consume: { [weak self] snapshot in self?.apply(snapshot) }
+            )
+        }
+    }
+
+    private func selectedTaskIdentifier() -> String? { selectedTask?.taskID }
+
+    private func refreshSilently() {
+        let identifier = selectedTask?.taskID
+        Task {
+            do { apply(try await backend.refresh(selectedTaskID: identifier)) }
+            catch { /* observation loop applies bounded backoff */ }
+        }
+    }
+
+    private func refreshTunnelStatus(silent: Bool) {
+        guard connection.tunnelClientAvailable,
+              !connection.tunnelID.isEmpty,
+              tunnelStatusTask == nil else { return }
+        let token = try? keychain.read(account: "secure-mcp-tunnel-token")
+        tunnelStatusTask = Task {
+            defer { tunnelStatusTask = nil }
+            do {
+                applyTunnelStatus(try await backend.tunnelStatus(runtimeToken: token ?? nil))
+            } catch {
+                connection.tunnelProcessRunning = false
+                connection.tunnelHealthy = false
+                connection.tunnelReady = false
+                connection.tunnelRuntimeState = "unavailable"
+                connectionStore.save(connection)
+                if !silent { present(error) }
+            }
+        }
+    }
+
+    private func applyTunnelStatus(_ status: TunnelRuntimeStatus) {
+        connection.apply(status)
+        connection.lastCheckedAt = ISO8601DateFormatter().string(from: Date())
+        connectionStore.save(connection)
+    }
+
+    private func tunnelConfiguration() throws -> TunnelConfiguration {
+        guard let token = try keychain.read(account: "secure-mcp-tunnel-token") else {
+            throw TunnelClientError.missingToken
+        }
+        guard TunnelClient.isValidTunnelID(connection.tunnelID) else {
+            throw TunnelClientError.invalidTunnelID
+        }
+        return TunnelConfiguration(tunnelID: connection.tunnelID, runtimeToken: token)
     }
 
     private func persistOnboarding() { onboardingStore.save(onboarding) }

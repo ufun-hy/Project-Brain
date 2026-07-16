@@ -17,8 +17,9 @@ and must not be marked Ready or merged during repository acceptance.
 - Seven-step persisted onboarding: privacy, helper/runtime, project selection,
   plan confirmation, Worker/MCP install, health, and external-pending handoff.
 - Typed fixed-argv Core adapter, durable task/evidence presentation, project
-  lifecycle/config management, launchd service control, Keychain connection
-  preparation, and redacted diagnostics.
+  lifecycle/config management with transaction-bound plan tokens, launchd
+  service control, a controlled official Tunnel runtime adapter, automatic
+  state observation, unified product readiness, and redacted diagnostics.
 - PyInstaller onefile Core helper with exact version validation and atomic
   install/upgrade/rollback. Failed service activation restores and reactivates
   the previously runnable helper.
@@ -35,6 +36,13 @@ and must not be marked Ready or merged during repository acceptance.
   runtime deletion, or blind cleanup controls.
 - Worker and MCP use fixed launchd labels and absolute helper argv. MCP remains
   loopback-only.
+- Stop/uninstall address launchd jobs by exact `gui/<uid>/<label>` targets;
+  partial activation is rolled back and exercised by a real macOS CI lifecycle.
+- Onboarding Ready requires GitHub auth, all project checks, Worker/MCP state,
+  and a real MCP initialize handshake.
+- Tunnel `ready_to_test` is derived from local transport plus official runtime
+  `process_running`/`healthy`/`ready`; operator declaration is not external
+  verification.
 - Credentials enter macOS Keychain, not SQLite, plist, logs, tasks, diagnostics,
   or PR data.
 - Service uninstall preserves the runtime, project repositories, registration,
@@ -43,9 +51,9 @@ and must not be marked Ready or merged during repository acceptance.
 
 ## Verification status
 
-Local Python/Core/MCP and fixture integration tests pass. The SwiftUI executable
+Local Python/Core/MCP and fixture integration tests pass (186 tests). The SwiftUI executable
 and ProjectBrainKit compile locally. The host does not contain full Xcode, so
-XCTest and `Project Brain.app` build acceptance remain pending until the Draft
+the 25 XCTest cases and `Project Brain.app` build acceptance remain pending until the Draft
 PR macOS GitHub Actions job is green. Exact counts, SHAs, URLs, and isolation
 evidence are recorded at delivery.
 

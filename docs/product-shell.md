@@ -5,7 +5,7 @@
 Project Brain is a native macOS 14 menu bar app with a management window. The
 first-run flow installs the bundled Core helper, initializes the private local
 runtime, validates and registers a Git repository through an explicit plan,
-installs the Worker and MCP launchd services, and runs local health checks.
+installs the Worker and MCP launchd services, and runs unified readiness checks.
 
 After onboarding, the app provides:
 
@@ -15,7 +15,10 @@ After onboarding, the app provides:
 - project add/update plan and confirmation, intake pause/resume, and
   data-preserving soft removal;
 - fixed Worker/MCP install, start, stop, restart, status, and uninstall actions;
-- Keychain-backed Secure MCP Tunnel token preparation;
+- a controlled official `tunnel-client` adapter for tunnel configuration,
+  connect/status/stop/reconnect, and local/runtime readiness;
+- automatic foreground/background task observation with selected-detail refresh
+  and bounded failure/offline backoff;
 - local health, service, task-recovery, and external-readiness diagnostics;
 - a JSON diagnostic export that omits credentials, argv, runtime paths, repo
   paths, raw task payloads, and artifact contents.
@@ -55,14 +58,22 @@ artifact; signed, notarized, universal distribution is a separate release task.
 2. Install the bundled helper and initialize `~/.project-brain/`.
 3. Choose a Git repository using the native directory picker.
 4. Review the detected project ID, configuration revision/hash, changed fields,
-   and immutable task-snapshot effect.
+   immutable task-snapshot effect, and commit-bound plan token.
 5. Confirm the plan. No project configuration is written before confirmation.
 6. Install and start Worker and loopback-only MCP.
-7. Run local health checks and finish onboarding.
+7. Run the unified readiness checks and finish onboarding. Readiness requires
+   Core health, every project check, GitHub authentication, a healthy Worker,
+   a running MCP service, and a successful MCP initialize handshake.
 
 Onboarding progress is persisted and resumes from the last stage after an
 interruption. Errors show a user-facing cause and next action; Python tracebacks
 are not shown in the UI.
+
+After onboarding, a single non-overlapping observation loop refreshes task and
+service state every 3 seconds in the foreground and less often in the
+background. Returning to the foreground triggers an immediate refresh. If a
+task detail is open, that exact task is refreshed with the list. Failures use
+exponential backoff and offline services use a slower interval.
 
 ## Managed files and services
 
@@ -90,6 +101,12 @@ does not remove the helper, database, task history, results, worktrees, project
 repositories, or project registration. Product Shell v1 intentionally has no
 runtime deletion action.
 
+Loaded jobs are addressed by the single launchd service target
+`gui/<uid>/<label>`. Only a confirmed not-loaded response is idempotent;
+permission and other launchctl failures surface as service errors. Partial
+install rolls back already activated jobs while retaining the generated private
+plists for an explicit retry.
+
 ## Helper upgrade and recovery
 
 The app validates the bundled helper with the fixed `--version` argv, copies it
@@ -100,9 +117,25 @@ activation restores and reactivates the previous helper.
 
 ## Connection acceptance
 
-Connection Center can store a tunnel token only in macOS Keychain and mark the
-workspace configuration as prepared. Before a real external flow, the product
-shows only `not_started` or `ready_to_test`.
+Connection Center discovers the official `tunnel-client` only from fixed system
+locations and runs the official long-lived `runtimes connect/status/stop`
+workflow with fixed arguments. The target is always
+`http://127.0.0.1:7677/mcp`; tunnel IDs must match `tunnel_` plus 32 lowercase
+hex characters. The Runtime API key is stored in Keychain and passed only as
+`CONTROL_PLANE_API_KEY`, never as argv or profile content.
+
+`ready_to_test` is derived, not manually assigned. It requires a valid tunnel
+ID, a stored Runtime API key, a successful local MCP initialize handshake, and
+a tunnel status reporting `process_running`, `healthy`, and `ready`. An
+operator can separately declare that ChatGPT workspace configuration is
+prepared, but this never becomes `externally_verified`. Only the deferred real
+ChatGPT flow can produce external success.
+
+Project add/update apply operations submit the exact plan token shown in the
+UI. Core recomputes it under the runtime lock and verifies the expected current
+revision/hash/name, next hash/name, and action again inside the write
+transaction. A concurrent change returns `state_conflict` and requires a fresh
+plan.
 
 These remain pending and cannot be replaced by local mocks:
 

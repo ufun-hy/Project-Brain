@@ -14,6 +14,7 @@ from .models import TaskStatus, parse_timestamp
 from .runtime import RuntimePaths
 from .security import redact_text
 from .store import SCHEMA_VERSION, TaskStore
+from .project_config import executable_available
 
 
 NEXT_ACTION = {
@@ -93,11 +94,7 @@ def health_report(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
             str(repo),
         )
         executable = project.get("codex_command", [""])[0] if project.get("codex_command") else ""
-        available = bool(executable) and (
-            Path(executable).expanduser().exists()
-            if "/" in executable
-            else find_executable(executable) is not None
-        )
+        available = bool(executable) and executable_available(executable)
         check(
             f"codex:{project['project_id']}",
             available,

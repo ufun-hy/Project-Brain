@@ -15,9 +15,9 @@ adapter; it does not copy DevSpace's arbitrary file or terminal authority.
 
 `Project Brain.app` is the primary user entry point on macOS 14+. It provides a
 seven-step first-run flow, project plan/apply confirmation, Worker and MCP
-service management, task and verification evidence, Keychain-backed connection
-preparation, and redacted diagnostic export without asking the user to run a
-CLI or maintain Python.
+service management, automatic task/evidence observation, unified readiness,
+Keychain-backed managed Tunnel connection, and redacted diagnostic export
+without asking the user to run a CLI or maintain Python.
 
 The app embeds a self-contained Core helper, installs it atomically under
 `~/Library/Application Support/Project Brain/bin/`, and rolls back both the
@@ -72,7 +72,10 @@ python3.11 -m venv ~/.project-brain/app/venv
 ~/.project-brain/app/venv/bin/pip install -e .
 project-brain init --json
 project-brain projects add /absolute/path/to/repository \
-  --project-id my-project --non-interactive --json
+  --project-id my-project --plan --json
+project-brain projects add /absolute/path/to/repository \
+  --project-id my-project --non-interactive \
+  --plan-token 'v1:<token-from-the-plan>' --json
 ```
 
 The actual repository `origin` must match the registered `remote_url`.
@@ -96,8 +99,9 @@ only while the database has never registered a project.
 Codex argv[0] is resolved to an absolute executable path before validation,
 planning, or persistence; exports therefore contain the fixed absolute path.
 For interactive `projects add/update --json`, the plan and prompt use stderr so
-stdout remains exactly one final JSON document. Use `--non-interactive` for
-automation.
+stdout remains exactly one final JSON document. Automated add/update must first
+read `plan.plan_token`, then pass that exact value with
+`--non-interactive --plan-token`; stale or missing tokens fail closed.
 
 ## Canonical enqueue
 
@@ -153,6 +157,7 @@ project-brain tasks recover <task-id> --execute --confirm-no-agent --json
 project-brain tasks recover <task-id> --execute --resume --json
 project-brain tasks recover <task-id> --execute --cancel --json
 project-brain health --json
+project-brain readiness --json
 project-brain apply --json
 project-brain cleanup --dry-run --json
 project-brain cleanup --execute --json
@@ -253,8 +258,9 @@ scripts/verify-core.sh
 ```
 
 The same command runs in Linux CI. macOS CI additionally packages the frozen
-helper, runs Swift tests, builds `Project Brain.app`, verifies the embedded
-helper, and checks Gmail legacy isolation. Tests use temporary repositories,
+helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
+`Project Brain.app`, verifies the embedded helper, and checks Gmail legacy
+isolation. Tests use temporary repositories,
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.
 

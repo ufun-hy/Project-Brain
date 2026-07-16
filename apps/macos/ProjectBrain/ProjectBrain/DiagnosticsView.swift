@@ -55,12 +55,12 @@ struct DiagnosticsView: View {
                         }
                         diagnosticRow(
                             name: "MCP loopback endpoint",
-                            passed: model.connection.localMCPStatus == "running",
-                            detail: model.connection.localMCPStatus == "running"
-                                ? "launchd reports the loopback-only service running; transport acceptance remains pending"
-                                : "local MCP service is not running",
-                            severity: .warning,
-                            blocks: false,
+                            passed: model.connection.localMCPTransportHealthy,
+                            detail: model.connection.localMCPTransportHealthy
+                                ? "MCP initialize handshake succeeded"
+                                : "MCP initialize handshake failed",
+                            severity: .error,
+                            blocks: true,
                             repair: .restartServices,
                             advice: "Restart MCP, then repeat the connection check."
                         )
@@ -95,16 +95,38 @@ struct DiagnosticsView: View {
                         diagnosticRow(
                             name: "Tunnel configuration",
                             passed: model.connection.tunnelConfigured,
-                            detail: model.connection.tunnelConfigured ? "credential stored in Keychain" : "not configured",
+                            detail: model.connection.tunnelConfigured
+                                ? "valid tunnel id and Runtime API key configured"
+                                : "incomplete configuration",
                             severity: .warning,
                             blocks: false,
                             repair: .openConnectionCenter,
                             advice: "Configure the Tunnel credential in Connection Center when ready."
                         )
                         diagnosticRow(
-                            name: "ChatGPT external acceptance",
-                            passed: model.connection.externalAcceptance == .passed,
-                            detail: model.connection.externalAcceptance.title,
+                            name: "Tunnel runtime",
+                            passed: model.connection.tunnelProcessRunning
+                                && model.connection.tunnelHealthy
+                                && model.connection.tunnelReady,
+                            detail: model.connection.tunnelRuntimeState,
+                            severity: .warning,
+                            blocks: false,
+                            repair: .openConnectionCenter,
+                            advice: "Start or reconnect the managed tunnel runtime."
+                        )
+                        diagnosticRow(
+                            name: "Workspace operator declaration",
+                            passed: model.connection.workspaceConfiguration == .operatorDeclared,
+                            detail: model.connection.workspaceConfiguration.rawValue,
+                            severity: .warning,
+                            blocks: false,
+                            repair: .openConnectionCenter,
+                            advice: "Declare the ChatGPT workspace setup only after configuring it."
+                        )
+                        diagnosticRow(
+                            name: "ChatGPT external verification",
+                            passed: model.connection.externalVerification == .passed,
+                            detail: model.connection.externalVerification.rawValue,
                             severity: .warning,
                             blocks: false,
                             repair: .openConnectionCenter,

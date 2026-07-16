@@ -184,27 +184,32 @@ public final class CoreClient: @unchecked Sendable {
     public func task(_ identifier: String) throws -> TaskDetail { try execute(.task(identifier)) }
     public func projects() throws -> [ProjectSummary] { try execute(.projects) }
     public func health() throws -> HealthResponse { try execute(.health) }
+    public func readiness() throws -> HealthResponse { try execute(.readiness) }
     public func serviceStatus() throws -> ServiceStatusResponse { try execute(.serviceStatus) }
     public func perform(_ action: ServiceAction) throws -> ActionResponse {
         try execute(.service(action))
     }
     public func planProject(_ draft: ProjectDraft) throws -> ProjectMutationResponse {
-        try execute(.addProject(draft, execute: false))
+        try execute(.addProject(draft, planToken: nil))
     }
-    public func addProject(_ draft: ProjectDraft) throws -> ProjectMutationResponse {
-        try execute(.addProject(draft, execute: true))
+    public func addProject(
+        _ draft: ProjectDraft,
+        planToken: String
+    ) throws -> ProjectMutationResponse {
+        try execute(.addProject(draft, planToken: planToken))
     }
     public func planProjectUpdate(
         _ identifier: String,
         draft: ProjectUpdateDraft
     ) throws -> ProjectMutationResponse {
-        try execute(.updateProject(identifier, draft, execute: false))
+        try execute(.updateProject(identifier, draft, planToken: nil))
     }
     public func updateProject(
         _ identifier: String,
-        draft: ProjectUpdateDraft
+        draft: ProjectUpdateDraft,
+        planToken: String
     ) throws -> ProjectMutationResponse {
-        try execute(.updateProject(identifier, draft, execute: true))
+        try execute(.updateProject(identifier, draft, planToken: planToken))
     }
     public func planProjectLifecycle(
         _ identifier: String,

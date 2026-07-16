@@ -20,14 +20,42 @@ class FakeLaunchctl:
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
         self.print_results: dict[str, tuple[int, str]] = {}
+        self.loaded: set[str] = set()
+        self.bootstrap_failures: set[str] = set()
+        self.bootout_failures: set[str] = set()
 
     def __call__(self, argv, **_kwargs):
         command = list(argv)
         self.commands.append(command)
-        if len(command) >= 3 and command[1] == "print":
-            code, output = self.print_results.get(command[2], (1, "not loaded"))
+        if len(command) == 3 and command[1] == "print":
+            if command[2] in self.print_results:
+                code, output = self.print_results[command[2]]
+            elif command[2] in self.loaded:
+                code, output = 0, "state = running"
+            else:
+                code, output = 1, "Could not find service; not loaded"
             return subprocess.CompletedProcess(command, code, output, "")
-        return subprocess.CompletedProcess(command, 0, "", "")
+        if len(command) == 4 and command[1] == "bootstrap":
+            label = plistlib.loads(Path(command[3]).read_bytes())["Label"]
+            target = f"{command[2]}/{label}"
+            if label in self.bootstrap_failures:
+                return subprocess.CompletedProcess(command, 5, "", "simulated bootstrap failure")
+            self.loaded.add(target)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if len(command) == 3 and command[1] == "bootout":
+            if command[2] in self.bootout_failures:
+                return subprocess.CompletedProcess(command, 5, "", "permission denied")
+            if command[2] not in self.loaded:
+                return subprocess.CompletedProcess(
+                    command, 1, "", "Could not find service; not loaded"
+                )
+            self.loaded.remove(command[2])
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if len(command) == 4 and command[1:3] == ["kickstart", "-k"]:
+            if command[3] not in self.loaded:
+                return subprocess.CompletedProcess(command, 1, "", "not loaded")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 64, "", "invalid launchctl argv")
 
 
 class ServiceManagerTests(unittest.TestCase):
@@ -81,6 +109,39 @@ class ServiceManagerTests(unittest.TestCase):
             self.assertTrue(all(isinstance(item, str) for item in value["ProgramArguments"]))
         self.assertTrue(all(command[0] == LAUNCHCTL for command in self.runner.commands))
         self.assertTrue(all("-lc" not in command for command in self.runner.commands))
+        bootouts = [command for command in self.runner.commands if command[1] == "bootout"]
+        self.assertTrue(bootouts)
+        self.assertTrue(all(len(command) == 3 for command in bootouts))
+        self.assertEqual(
+            {command[2] for command in bootouts},
+            {
+                f"gui/501/{WORKER_LABEL}",
+                f"gui/501/{MCP_LABEL}",
+            },
+        )
+
+    def test_bootout_ignores_only_absent_services_and_propagates_other_errors(self) -> None:
+        self.assertEqual(self.manager.stop()["status"], "stopped")
+        self.manager.install()
+        worker_target = f"gui/501/{WORKER_LABEL}"
+        self.runner.bootout_failures.add(worker_target)
+        with self.assertRaisesRegex(Exception, "permission denied"):
+            self.manager.stop()
+        self.assertIn(worker_target, self.runner.loaded)
+
+    def test_partial_install_rolls_back_activated_services_and_is_retryable(self) -> None:
+        self.runner.bootstrap_failures.add(MCP_LABEL)
+        with self.assertRaisesRegex(Exception, "partially applied"):
+            self.manager.install()
+        self.assertEqual(self.runner.loaded, set())
+        self.assertTrue(all(spec.plist_path.is_file() for spec in self.manager.specs()))
+
+        self.runner.bootstrap_failures.clear()
+        self.assertEqual(self.manager.install()["status"], "installed")
+        self.assertEqual(
+            self.runner.loaded,
+            {f"gui/501/{WORKER_LABEL}", f"gui/501/{MCP_LABEL}"},
+        )
 
     def test_stop_and_uninstall_preserve_runtime_database_and_history(self) -> None:
         self.manager.install()

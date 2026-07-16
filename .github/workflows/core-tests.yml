@@ -41,6 +41,10 @@ jobs:
           env -i HOME="$HOME" PATH=/usr/bin:/bin "${{ runner.temp }}/helper-dist/project-brain" --version
           env -i HOME="$HOME" PATH=/usr/bin:/bin "${{ runner.temp }}/helper-dist/project-brain" --runtime-root "${{ runner.temp }}/frozen-runtime" init --json
           env -i HOME="$HOME" PATH=/usr/bin:/bin "${{ runner.temp }}/helper-dist/project-brain" --runtime-root "${{ runner.temp }}/frozen-runtime" status --json
+      - name: Verify real launchd lifecycle
+        env:
+          PROJECT_BRAIN_HELPER: ${{ runner.temp }}/helper-dist/project-brain
+        run: python scripts/verify-macos-launchd-lifecycle.py
       - name: Run Swift model and adapter tests
         run: swift test --package-path apps/macos/ProjectBrain
       - name: Build and test Project Brain.app

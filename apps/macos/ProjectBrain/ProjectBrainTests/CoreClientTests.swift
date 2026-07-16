@@ -48,11 +48,13 @@ final class CoreClientTests: XCTestCase {
             autoPR: true
         )
         let runtime = URL(filePath: "/Users/example/.project-brain")
-        let plan = CoreCommand.addProject(draft, execute: false).arguments(runtimeRoot: runtime)
-        let apply = CoreCommand.addProject(draft, execute: true).arguments(runtimeRoot: runtime)
+        let plan = CoreCommand.addProject(draft, planToken: nil).arguments(runtimeRoot: runtime)
+        let token = "v1:abc123"
+        let apply = CoreCommand.addProject(draft, planToken: token).arguments(runtimeRoot: runtime)
         XCTAssertTrue(plan.contains("--plan"))
         XCTAssertFalse(plan.contains("--non-interactive"))
         XCTAssertTrue(apply.contains("--non-interactive"))
+        XCTAssertEqual(apply.suffix(3), ["--plan-token", token, "--json"])
         XCTAssertFalse(apply.contains("--plan"))
     }
 
@@ -79,7 +81,7 @@ final class CoreClientTests: XCTestCase {
     func testAllCommandsComeFromClosedTypedAllowlist() {
         let runtime = URL(filePath: "/Users/example/.project-brain")
         let commands: [CoreCommand] = [
-            .initialize, .status, .tasks, .task("task-1"), .projects, .health,
+            .initialize, .status, .tasks, .task("task-1"), .projects, .health, .readiness,
             .serviceStatus, .service(.restart),
             .projectLifecycle("project-1", .pause, execute: false),
         ]

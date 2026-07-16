@@ -16,25 +16,144 @@ public enum ExternalAcceptanceStatus: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum WorkspaceConfigurationStatus: String, Codable, Sendable {
+    case notDeclared = "not_declared"
+    case operatorDeclared = "operator_declared"
+}
+
+public enum ExternalVerificationStatus: String, Codable, Sendable {
+    case notVerified = "not_verified"
+    case passed
+    case failed
+}
+
 public struct ConnectionSnapshot: Codable, Equatable, Sendable {
     public var localMCPStatus: String
-    public var tunnelConfigured: Bool
-    public var workspaceConfigured: Bool
+    public var localMCPTransportHealthy: Bool
+    public var tunnelID: String
+    public var runtimeTokenConfigured: Bool
+    public var tunnelClientAvailable: Bool
+    public var tunnelProcessRunning: Bool
+    public var tunnelHealthy: Bool
+    public var tunnelReady: Bool
+    public var tunnelRuntimeState: String
+    public var tunnelUIURL: String?
+    public var workspaceConfiguration: WorkspaceConfigurationStatus
+    public var externalVerification: ExternalVerificationStatus
     public var lastCheckedAt: String?
-    public var externalAcceptance: ExternalAcceptanceStatus
+
+    public var tunnelConfigured: Bool {
+        runtimeTokenConfigured && TunnelClient.isValidTunnelID(tunnelID)
+    }
+
+    public var workspaceConfigured: Bool {
+        workspaceConfiguration == .operatorDeclared
+    }
+
+    public var externalAcceptance: ExternalAcceptanceStatus {
+        if externalVerification == .passed { return .passed }
+        if externalVerification == .failed { return .failed }
+        if tunnelConfigured,
+           tunnelClientAvailable,
+           localMCPTransportHealthy,
+           tunnelProcessRunning,
+           tunnelHealthy,
+           tunnelReady {
+            return .readyToTest
+        }
+        return .notStarted
+    }
 
     public init(
         localMCPStatus: String = "unknown",
-        tunnelConfigured: Bool = false,
-        workspaceConfigured: Bool = false,
+        localMCPTransportHealthy: Bool = false,
+        tunnelID: String = "",
+        runtimeTokenConfigured: Bool = false,
+        tunnelClientAvailable: Bool = false,
+        tunnelProcessRunning: Bool = false,
+        tunnelHealthy: Bool = false,
+        tunnelReady: Bool = false,
+        tunnelRuntimeState: String = "not_configured",
+        tunnelUIURL: String? = nil,
+        workspaceConfiguration: WorkspaceConfigurationStatus = .notDeclared,
+        externalVerification: ExternalVerificationStatus = .notVerified,
         lastCheckedAt: String? = nil,
-        externalAcceptance: ExternalAcceptanceStatus = .notStarted
+        _ compatibility: Void = ()
     ) {
         self.localMCPStatus = localMCPStatus
-        self.tunnelConfigured = tunnelConfigured
-        self.workspaceConfigured = workspaceConfigured
+        self.localMCPTransportHealthy = localMCPTransportHealthy
+        self.tunnelID = tunnelID
+        self.runtimeTokenConfigured = runtimeTokenConfigured
+        self.tunnelClientAvailable = tunnelClientAvailable
+        self.tunnelProcessRunning = tunnelProcessRunning
+        self.tunnelHealthy = tunnelHealthy
+        self.tunnelReady = tunnelReady
+        self.tunnelRuntimeState = tunnelRuntimeState
+        self.tunnelUIURL = tunnelUIURL
+        self.workspaceConfiguration = workspaceConfiguration
+        self.externalVerification = externalVerification
         self.lastCheckedAt = lastCheckedAt
-        self.externalAcceptance = externalAcceptance
+    }
+
+    public mutating func apply(_ status: TunnelRuntimeStatus) {
+        if let tunnelID = status.tunnelID { self.tunnelID = tunnelID }
+        tunnelProcessRunning = status.processRunning
+        tunnelHealthy = status.healthy
+        tunnelReady = status.ready
+        tunnelRuntimeState = status.runtimeState
+        tunnelUIURL = status.uiURL?.absoluteString
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case localMCPStatus, localMCPTransportHealthy, tunnelID, runtimeTokenConfigured
+        case tunnelClientAvailable, tunnelProcessRunning, tunnelHealthy, tunnelReady
+        case tunnelRuntimeState, tunnelUIURL, workspaceConfiguration, externalVerification
+        case lastCheckedAt
+        case legacyTunnelConfigured = "tunnelConfigured"
+        case legacyWorkspaceConfigured = "workspaceConfigured"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        localMCPStatus = try values.decodeIfPresent(String.self, forKey: .localMCPStatus) ?? "unknown"
+        localMCPTransportHealthy = try values.decodeIfPresent(Bool.self, forKey: .localMCPTransportHealthy) ?? false
+        tunnelID = try values.decodeIfPresent(String.self, forKey: .tunnelID) ?? ""
+        runtimeTokenConfigured = try values.decodeIfPresent(Bool.self, forKey: .runtimeTokenConfigured)
+            ?? values.decodeIfPresent(Bool.self, forKey: .legacyTunnelConfigured)
+            ?? false
+        tunnelClientAvailable = try values.decodeIfPresent(Bool.self, forKey: .tunnelClientAvailable) ?? false
+        tunnelProcessRunning = try values.decodeIfPresent(Bool.self, forKey: .tunnelProcessRunning) ?? false
+        tunnelHealthy = try values.decodeIfPresent(Bool.self, forKey: .tunnelHealthy) ?? false
+        tunnelReady = try values.decodeIfPresent(Bool.self, forKey: .tunnelReady) ?? false
+        tunnelRuntimeState = try values.decodeIfPresent(String.self, forKey: .tunnelRuntimeState) ?? "not_configured"
+        tunnelUIURL = try values.decodeIfPresent(String.self, forKey: .tunnelUIURL)
+        workspaceConfiguration = try values.decodeIfPresent(
+            WorkspaceConfigurationStatus.self,
+            forKey: .workspaceConfiguration
+        ) ?? ((try values.decodeIfPresent(Bool.self, forKey: .legacyWorkspaceConfigured)) == true
+            ? .operatorDeclared : .notDeclared)
+        externalVerification = try values.decodeIfPresent(
+            ExternalVerificationStatus.self,
+            forKey: .externalVerification
+        ) ?? .notVerified
+        lastCheckedAt = try values.decodeIfPresent(String.self, forKey: .lastCheckedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(localMCPStatus, forKey: .localMCPStatus)
+        try values.encode(localMCPTransportHealthy, forKey: .localMCPTransportHealthy)
+        try values.encode(tunnelID, forKey: .tunnelID)
+        try values.encode(runtimeTokenConfigured, forKey: .runtimeTokenConfigured)
+        try values.encode(tunnelClientAvailable, forKey: .tunnelClientAvailable)
+        try values.encode(tunnelProcessRunning, forKey: .tunnelProcessRunning)
+        try values.encode(tunnelHealthy, forKey: .tunnelHealthy)
+        try values.encode(tunnelReady, forKey: .tunnelReady)
+        try values.encode(tunnelRuntimeState, forKey: .tunnelRuntimeState)
+        try values.encodeIfPresent(tunnelUIURL, forKey: .tunnelUIURL)
+        try values.encode(workspaceConfiguration, forKey: .workspaceConfiguration)
+        try values.encode(externalVerification, forKey: .externalVerification)
+        try values.encodeIfPresent(lastCheckedAt, forKey: .lastCheckedAt)
     }
 }
 

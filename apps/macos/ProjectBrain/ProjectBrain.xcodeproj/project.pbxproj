@@ -12,8 +12,10 @@
 		144B51BBA191FFF89D33D238 /* ProjectBrainKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A0AE9726341D630153857E89 /* ProjectBrainKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2A4C3F35B0919A751D36D877 /* ConnectionCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3382C3F973ECDD34F66419A /* ConnectionCenterView.swift */; };
 		3089FD28B0C0CA43664DA167 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 873E4D827FE101BC6F62D9C9 /* MenuBarView.swift */; };
+		42075170A33FEEED9D532A34 /* TunnelClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C299B4C9A3E46FBDD77BCE3E /* TunnelClientTests.swift */; };
 		43447D33F338A871055A2E8C /* ProjectBrainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C4C34FCF584219FE960E5E /* ProjectBrainApp.swift */; };
 		4B05A064187E86481CF09E12 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266AF4ABF8DF229B7BAD02F5 /* Onboarding.swift */; };
+		4D32CC8C38E40715F279D437 /* StateObservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DA9B4ADF7834D650DC9E096 /* StateObservation.swift */; };
 		539C02D8B6142D426541586A /* CoreClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4595CA5CC38BED4393CD84DD /* CoreClientTests.swift */; };
 		53C79688C4AB108185FAE3AF /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A7FB5018744643A08C9F9F4 /* AppModel.swift */; };
 		56F2A1498E27C7C937EACE85 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59DDBAFDFAC4CEAFEFF7CBE9 /* DiagnosticsView.swift */; };
@@ -26,8 +28,10 @@
 		8DD3FAC18361708C69409D52 /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51BEE3360CAF0AA76405A884 /* CoreClient.swift */; };
 		8F5DB383EB775761AB29F31D /* CoreModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D539B3B5F2AD0DBDE7E31F /* CoreModelsTests.swift */; };
 		8FAC559BE0C6CBA7D26ABDF5 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE1BCD1E84388904E62F7B30 /* SettingsView.swift */; };
+		ADB2D262459F704511549D82 /* StateObservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA20796DF63A3E6F58BD5807 /* StateObservationTests.swift */; };
 		B68C0EA5D4DBDA9A3344A046 /* HelperInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D2D73135C583E1F105682D6 /* HelperInstaller.swift */; };
 		C2007740D70DFD4B78FEE088 /* OnboardingDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4E5AAB52EE45D152631ED82 /* OnboardingDiagnosticsTests.swift */; };
+		C2249D08271CC72FDACD6F94 /* TunnelClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA956674A8BA232FC02B9A71 /* TunnelClient.swift */; };
 		C43BE3A57C668D5CFB049C75 /* ProjectBrainKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A0AE9726341D630153857E89 /* ProjectBrainKit.framework */; };
 		C5916A800D90EBCA570E6A2F /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0478A89B42ADB5C00FD9FAE /* OnboardingView.swift */; };
 		E335AD993BC2FD41B188BEA2 /* HelperInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B29220DA16DAACDE5AE7D0 /* HelperInstallerTests.swift */; };
@@ -90,6 +94,7 @@
 		60C9509B670A38FFA7F52F3C /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		63C4C34FCF584219FE960E5E /* ProjectBrainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectBrainApp.swift; sourceTree = "<group>"; };
 		69F9D66D23444591489E40EE /* ProjectBrain.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ProjectBrain.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6DA9B4ADF7834D650DC9E096 /* StateObservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateObservation.swift; sourceTree = "<group>"; };
 		72CD5376852674982C1643CC /* CoreModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreModels.swift; sourceTree = "<group>"; };
 		781E30254349A70C8726954D /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		873E4D827FE101BC6F62D9C9 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
@@ -99,12 +104,15 @@
 		A0AE9726341D630153857E89 /* ProjectBrainKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ProjectBrainKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		A47D93A98219EABF14692C9B /* ProjectBrainTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ProjectBrainTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A9FCF0D49478D167771F549F /* ProjectsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsView.swift; sourceTree = "<group>"; };
+		AA956674A8BA232FC02B9A71 /* TunnelClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelClient.swift; sourceTree = "<group>"; };
 		ACBAC85D03E0116847C41375 /* TaskCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskCenterView.swift; sourceTree = "<group>"; };
 		AE1BCD1E84388904E62F7B30 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B4E5AAB52EE45D152631ED82 /* OnboardingDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingDiagnosticsTests.swift; sourceTree = "<group>"; };
+		C299B4C9A3E46FBDD77BCE3E /* TunnelClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelClientTests.swift; sourceTree = "<group>"; };
 		C3382C3F973ECDD34F66419A /* ConnectionCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionCenterView.swift; sourceTree = "<group>"; };
 		D041B09753695B3EF9BB5294 /* ExecutableDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutableDiscovery.swift; sourceTree = "<group>"; };
 		D0478A89B42ADB5C00FD9FAE /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		EA20796DF63A3E6F58BD5807 /* StateObservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateObservationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -153,6 +161,8 @@
 				96D539B3B5F2AD0DBDE7E31F /* CoreModelsTests.swift */,
 				14B29220DA16DAACDE5AE7D0 /* HelperInstallerTests.swift */,
 				B4E5AAB52EE45D152631ED82 /* OnboardingDiagnosticsTests.swift */,
+				EA20796DF63A3E6F58BD5807 /* StateObservationTests.swift */,
+				C299B4C9A3E46FBDD77BCE3E /* TunnelClientTests.swift */,
 			);
 			path = ProjectBrainTests;
 			sourceTree = "<group>";
@@ -203,6 +213,8 @@
 				8D2D73135C583E1F105682D6 /* HelperInstaller.swift */,
 				60C9509B670A38FFA7F52F3C /* KeychainStore.swift */,
 				266AF4ABF8DF229B7BAD02F5 /* Onboarding.swift */,
+				6DA9B4ADF7834D650DC9E096 /* StateObservation.swift */,
+				AA956674A8BA232FC02B9A71 /* TunnelClient.swift */,
 			);
 			path = ProjectBrainKit;
 			sourceTree = "<group>";
@@ -336,6 +348,8 @@
 				B68C0EA5D4DBDA9A3344A046 /* HelperInstaller.swift in Sources */,
 				7E4C26530FDC216393C8AC79 /* KeychainStore.swift in Sources */,
 				4B05A064187E86481CF09E12 /* Onboarding.swift in Sources */,
+				4D32CC8C38E40715F279D437 /* StateObservation.swift in Sources */,
+				C2249D08271CC72FDACD6F94 /* TunnelClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -347,6 +361,8 @@
 				8F5DB383EB775761AB29F31D /* CoreModelsTests.swift in Sources */,
 				E335AD993BC2FD41B188BEA2 /* HelperInstallerTests.swift in Sources */,
 				C2007740D70DFD4B78FEE088 /* OnboardingDiagnosticsTests.swift in Sources */,
+				ADB2D262459F704511549D82 /* StateObservationTests.swift in Sources */,
+				42075170A33FEEED9D532A34 /* TunnelClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -182,6 +182,7 @@ public struct ProjectSummary: Codable, Identifiable, Equatable, Sendable {
 }
 
 public struct ProjectPlan: Codable, Equatable, Sendable {
+    public let planToken: String
     public let projectID: String
     public let action: String
     public let currentRevision: Int?
@@ -193,6 +194,7 @@ public struct ProjectPlan: Codable, Equatable, Sendable {
     public let taskSnapshotEffect: String
 
     enum CodingKeys: String, CodingKey {
+        case planToken = "plan_token"
         case projectID = "project_id"
         case action
         case currentRevision = "current_revision"

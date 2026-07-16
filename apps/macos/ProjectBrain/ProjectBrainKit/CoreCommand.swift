@@ -77,15 +77,16 @@ public enum CoreCommand: Equatable, Sendable {
     case task(String)
     case projects
     case health
+    case readiness
     case serviceStatus
     case service(ServiceAction)
-    case addProject(ProjectDraft, execute: Bool)
-    case updateProject(String, ProjectUpdateDraft, execute: Bool)
+    case addProject(ProjectDraft, planToken: String?)
+    case updateProject(String, ProjectUpdateDraft, planToken: String?)
     case projectLifecycle(String, ProjectLifecycleAction, execute: Bool)
 
     public var acceptedExitCodes: Set<Int32> {
         switch self {
-        case .health: [0, 1]
+        case .health, .readiness: [0, 1]
         default: [0]
         }
     }
@@ -105,11 +106,13 @@ public enum CoreCommand: Equatable, Sendable {
             value += ["projects", "list", "--json"]
         case .health:
             value += ["health", "--json"]
+        case .readiness:
+            value += ["readiness", "--json"]
         case .serviceStatus:
             value += ["service", "status", "--json"]
         case .service(let action):
             value += ["service", action.rawValue, "--json"]
-        case .addProject(let draft, let execute):
+        case .addProject(let draft, let planToken):
             value += ["projects", "add", draft.repository.path]
             if let projectID = draft.projectID, !projectID.isEmpty {
                 value += ["--project-id", projectID]
@@ -124,8 +127,13 @@ public enum CoreCommand: Equatable, Sendable {
             }
             value += [draft.autoPush ? "--auto-push" : "--no-auto-push"]
             value += [draft.autoPR ? "--auto-pr" : "--no-auto-pr"]
-            value += [execute ? "--non-interactive" : "--plan", "--json"]
-        case .updateProject(let identifier, let draft, let execute):
+            if let planToken {
+                value += ["--non-interactive", "--plan-token", planToken]
+            } else {
+                value.append("--plan")
+            }
+            value.append("--json")
+        case .updateProject(let identifier, let draft, let planToken):
             value += ["projects", "update", identifier]
             if let name = draft.name, !name.isEmpty { value += ["--name", name] }
             if let branch = draft.defaultBranch, !branch.isEmpty {
@@ -141,7 +149,12 @@ public enum CoreCommand: Equatable, Sendable {
             if let autoPR = draft.autoPR {
                 value.append(autoPR ? "--auto-pr" : "--no-auto-pr")
             }
-            value += [execute ? "--non-interactive" : "--plan", "--json"]
+            if let planToken {
+                value += ["--non-interactive", "--plan-token", planToken]
+            } else {
+                value.append("--plan")
+            }
+            value.append("--json")
         case .projectLifecycle(let identifier, let action, let execute):
             value += ["projects", action.rawValue, identifier]
             if execute { value.append("--execute") }

@@ -21,23 +21,34 @@ from tests.helpers import create_remote_clone
 class StatefulLaunchctl:
     def __init__(self) -> None:
         self.loaded: set[str] = set()
+        self.commands: list[list[str]] = []
 
     def __call__(self, argv, **_kwargs):
         arguments = list(argv)
+        self.commands.append(arguments)
         action = arguments[1]
-        if action == "bootstrap":
+        if action == "bootstrap" and len(arguments) == 4:
             label = plistlib.loads(Path(arguments[3]).read_bytes())["Label"]
-            self.loaded.add(label)
+            self.loaded.add(f"{arguments[2]}/{label}")
             return subprocess.CompletedProcess(arguments, 0, "", "")
-        if action == "bootout" and len(arguments) > 3:
-            self.loaded.discard(arguments[3])
+        if action == "bootout" and len(arguments) == 3:
+            if arguments[2] not in self.loaded:
+                return subprocess.CompletedProcess(
+                    arguments, 1, "", "Could not find service; not loaded"
+                )
+            self.loaded.remove(arguments[2])
             return subprocess.CompletedProcess(arguments, 0, "", "")
-        if action == "print":
-            label = arguments[2].rsplit("/", 1)[-1]
-            if label in self.loaded:
+        if action == "print" and len(arguments) == 3:
+            if arguments[2] in self.loaded:
                 return subprocess.CompletedProcess(arguments, 0, "state = running", "")
+            return subprocess.CompletedProcess(
+                arguments, 1, "", "Could not find service; not loaded"
+            )
+        if action == "kickstart" and len(arguments) == 4 and arguments[2] == "-k":
+            if arguments[3] in self.loaded:
+                return subprocess.CompletedProcess(arguments, 0, "", "")
             return subprocess.CompletedProcess(arguments, 1, "", "not loaded")
-        return subprocess.CompletedProcess(arguments, 0, "", "")
+        return subprocess.CompletedProcess(arguments, 64, "", "invalid launchctl argv")
 
 
 class ProductShellFixtureIntegrationTests(unittest.TestCase):
@@ -64,7 +75,7 @@ class ProductShellFixtureIntegrationTests(unittest.TestCase):
             self.assertEqual(invoke(
                 "projects", "add", str(repo), "--project-id", "fixture",
                 "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",
-                "--non-interactive", "--json",
+                "--non-interactive", "--plan-token", plan["plan"]["plan_token"], "--json",
             )[0], 0)
 
             helper = root / "project-brain"
@@ -124,6 +135,9 @@ class ProductShellFixtureIntegrationTests(unittest.TestCase):
             result = services.uninstall()
             self.assertTrue(result["runtime_preserved"])
             self.assertEqual((runtime / "project-brain.db").read_bytes(), database_before)
+            bootouts = [command for command in launchctl.commands if command[1] == "bootout"]
+            self.assertTrue(bootouts)
+            self.assertTrue(all(len(command) == 3 for command in bootouts))
 
 
 if __name__ == "__main__":

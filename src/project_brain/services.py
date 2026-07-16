@@ -199,20 +199,67 @@ class ServiceManager:
         detail = (result.stderr or result.stdout or "launchctl failed").strip()[:1000]
         return ServiceError(f"{action} failed: {detail}")
 
+    def _service_target(self, spec: ServiceSpec) -> str:
+        return f"{self.domain}/{spec.label}"
+
+    @staticmethod
+    def _is_not_loaded(result: subprocess.CompletedProcess[str]) -> bool:
+        detail = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+        return any(
+            marker in detail
+            for marker in (
+                "could not find service",
+                "service not found",
+                "no such process",
+                "not loaded",
+            )
+        )
+
+    def _bootout(self, spec: ServiceSpec) -> bool:
+        """Stop one registered service; absence is the only idempotent success."""
+        target = self._service_target(spec)
+        loaded = self._launchctl("print", target)
+        if loaded.returncode != 0:
+            if self._is_not_loaded(loaded):
+                return False
+            raise self._command_error(f"inspect {spec.name} before stop", loaded)
+        result = self._launchctl("bootout", target)
+        if result.returncode == 0:
+            return True
+        if self._is_not_loaded(result):
+            return False
+        raise self._command_error(f"stop {spec.name}", result)
+
     def install(self) -> dict[str, Any]:
         self._validate_helper()
         self.runtime.logs_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.runtime.logs_dir, 0o700)
         self.launch_agents_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for spec in self.specs():
+        specs = self.specs()
+        for spec in specs:
             self._write_private_plist(spec.plist_path, spec.plist(self.runtime))
-            self._launchctl("bootout", self.domain, spec.label)
-            result = self._launchctl("bootstrap", self.domain, str(spec.plist_path))
-            if result.returncode != 0:
-                raise self._command_error(f"install {spec.name}", result)
+        activated: list[ServiceSpec] = []
+        try:
+            for spec in specs:
+                self._bootout(spec)
+                result = self._launchctl("bootstrap", self.domain, str(spec.plist_path))
+                if result.returncode != 0:
+                    raise self._command_error(f"install {spec.name}", result)
+                activated.append(spec)
+        except ServiceError as exc:
+            rollback_errors: list[str] = []
+            for active in reversed(activated):
+                try:
+                    self._bootout(active)
+                except ServiceError as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+            detail = "activated services rolled back; generated plists retained for retry"
+            if rollback_errors:
+                detail += "; rollback errors: " + "; ".join(rollback_errors)
+            raise ServiceError(f"Service install was partially applied: {exc}; {detail}") from exc
         return {
             "status": "installed",
-            "services": [spec.name for spec in self.specs()],
+            "services": [spec.name for spec in specs],
             "runtime_preserved": True,
         }
 
@@ -220,19 +267,21 @@ class ServiceManager:
         for spec in self.specs():
             if not spec.plist_path.is_file():
                 raise ServiceError(f"Service is not installed: {spec.name}")
-            loaded = self._launchctl("print", f"{self.domain}/{spec.label}")
+            loaded = self._launchctl("print", self._service_target(spec))
             if loaded.returncode != 0:
+                if not self._is_not_loaded(loaded):
+                    raise self._command_error(f"inspect {spec.name} before start", loaded)
                 result = self._launchctl("bootstrap", self.domain, str(spec.plist_path))
                 if result.returncode != 0:
                     raise self._command_error(f"start {spec.name}", result)
-            result = self._launchctl("kickstart", "-k", f"{self.domain}/{spec.label}")
+            result = self._launchctl("kickstart", "-k", self._service_target(spec))
             if result.returncode != 0:
                 raise self._command_error(f"start {spec.name}", result)
         return {"status": "started", "services": [spec.name for spec in self.specs()]}
 
     def stop(self) -> dict[str, Any]:
         for spec in self.specs():
-            self._launchctl("bootout", self.domain, spec.label)
+            self._bootout(spec)
         return {"status": "stopped", "services": [spec.name for spec in self.specs()]}
 
     def restart(self) -> dict[str, Any]:
@@ -242,8 +291,10 @@ class ServiceManager:
 
     def uninstall(self) -> dict[str, Any]:
         removed: list[str] = []
-        for spec in self.specs():
-            self._launchctl("bootout", self.domain, spec.label)
+        specs = self.specs()
+        for spec in specs:
+            self._bootout(spec)
+        for spec in specs:
             if spec.plist_path.is_file():
                 spec.plist_path.unlink()
                 removed.append(spec.name)
@@ -277,12 +328,14 @@ class ServiceManager:
 
     def _service_status(self, spec: ServiceSpec) -> dict[str, Any]:
         installed = spec.plist_path.is_file()
-        result = self._launchctl("print", f"{self.domain}/{spec.label}")
+        result = self._launchctl("print", self._service_target(spec))
         output = (result.stdout or "").lower()
         last_exit = re.search(r"last exit code\s*=\s*(-?\d+)", output)
         exit_code = int(last_exit.group(1)) if last_exit else None
-        if result.returncode != 0:
+        if result.returncode != 0 and self._is_not_loaded(result):
             state = "stopped" if installed else "not_installed"
+        elif result.returncode != 0:
+            state = "unhealthy"
         elif "state = running" in output:
             state = "running"
         elif exit_code not in (None, 0):

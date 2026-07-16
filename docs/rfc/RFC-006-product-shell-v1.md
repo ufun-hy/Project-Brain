@@ -63,6 +63,7 @@ The initial allowlist is:
 - `init --json`
 - `status --json`
 - `health --json`
+- `readiness --json`
 - `projects list/add/update/pause/resume/remove`
 - `tasks list/show`
 - `service plan/install/start/stop/restart/status/uninstall`
@@ -83,8 +84,12 @@ profile hashes:
 Soft removal is refused while nonterminal tasks exist. Re-registering the same
 project ID restores intake without changing old task snapshots.
 
-All project changes expose a plan first. The App asks for confirmation and only
-then invokes the corresponding explicit execute operation.
+All project changes expose a plan first. Add/update plans include a deterministic
+token bound to project/action, current revision/hash/name, next revision/hash/name,
+changed fields, and snapshot effect. The App sends that exact token after
+confirmation. Core recomputes it under `RuntimeLock` and repeats current/next
+assertions inside the same database write transaction; drift returns
+`state_conflict` without a write.
 
 ## launchd services
 
@@ -99,6 +104,11 @@ Product Shell manages exactly two per-user services:
 wrapper is permitted. Plists are generated with `plistlib`, written through a
 private fsynced temporary file, atomically replaced at mode `0600`, and loaded into
 the current `gui/<uid>` domain. Logs remain under `~/.project-brain/logs/`.
+
+Job removal uses one service target argument, `gui/<uid>/<label>`. Only an
+explicit not-loaded result is treated as idempotent. Any other inspect or
+bootout failure is a service error. Partial install unloads jobs activated by
+that attempt and preserves the generated plists for retry.
 
 `service plan` is read-only. Install/reinstall, start, stop, restart, and uninstall
 are idempotent. Uninstall removes only the two owned plists and launchd jobs; it
@@ -126,6 +136,20 @@ plist presence and `launchctl print`. Process presence never implies task succes
   operator guidance, and redacted export;
 - settings for helper repair, fixed service lifecycle, onboarding, and safety
   boundaries.
+
+After onboarding the App owns one sequential observation loop. Foreground state
+is refreshed every 3 seconds; background and offline states use slower intervals.
+Returning to the foreground triggers an immediate refresh. Failures use bounded
+exponential backoff, and the loop refreshes the selected task detail together
+with task summaries. Reset and shutdown cancel the loop.
+
+The connection adapter discovers `tunnel-client` only from fixed executable
+locations and exposes fixed `runtimes connect/status/stop` operations for the
+alias/profile `project-brain` and loopback endpoint
+`http://127.0.0.1:7677/mcp`. Runtime keys remain Keychain-only and enter the
+process as `CONTROL_PLANE_API_KEY`. `ready_to_test` requires local MCP transport
+health plus tunnel `process_running`, `healthy`, and `ready`; operator workspace
+declaration and external verification are separate states.
 
 The UI never marks Tunnel, ChatGPT developer mode, or real-project acceptance as
 passed from local checks. Those states begin at `not_started` or `ready_to_test`
@@ -162,7 +186,11 @@ Repository acceptance requires all existing Core/MCP tests plus:
   schema v6, project pause, and soft-removal tests;
 - helper bundle, version, install, upgrade, and rollback tests;
 - Swift decoding, status aggregation, onboarding recovery, project confirmation,
+  plan-token binding, automatic observation, tunnel lifecycle/failures,
   error presentation, fixed argv, Keychain/log redaction, and helper installer tests;
+- unified readiness regressions for Worker exit, MCP no-response, GitHub auth,
+  and non-executable Codex, plus a real MCP initialize probe;
+- a real macOS launchd install/status/stop/start/uninstall CI lifecycle;
 - fixture-runtime service integration without real Codex, PR creation, Tunnel token,
   or user repositories;
 - Linux Core CI and macOS helper/App build plus Swift tests;

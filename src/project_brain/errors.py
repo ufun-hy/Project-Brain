@@ -61,6 +61,10 @@ class StateTransitionError(ProjectBrainError):
     category = "state_transition"
 
 
+class StateConflictError(ProjectBrainError):
+    category = "state_conflict"
+
+
 class MigrationError(ProjectBrainError):
     category = "migration"
 

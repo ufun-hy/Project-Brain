@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 @main
 struct ProjectBrainApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
 
     var body: some Scene {
@@ -9,6 +11,14 @@ struct ProjectBrainApp: App {
             ManagementView(model: model)
                 .frame(minWidth: 980, minHeight: 680)
                 .task { model.bootstrap() }
+                .onChange(of: scenePhase) { _, phase in
+                    model.setApplicationActive(phase == .active)
+                }
+                .onReceive(NotificationCenter.default.publisher(
+                    for: NSApplication.willTerminateNotification
+                )) { _ in
+                    model.shutdown()
+                }
         }
         .defaultSize(width: 1120, height: 760)
 

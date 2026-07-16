@@ -421,7 +421,7 @@ class ConfigurationTests(unittest.TestCase):
         code, added = invoke(
             "projects", "add", str(self.repo), "--project-id", "cli-project",
             "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",
-            "--non-interactive", "--json",
+            "--non-interactive", "--plan-token", preview["plan"]["plan_token"], "--json",
         )
         self.assertEqual(code, 0)
         self.assertEqual(added["project"]["config_revision"], 1)
@@ -443,9 +443,15 @@ class ConfigurationTests(unittest.TestCase):
         code, checked = invoke("projects", "check", "cli-project", "--json")
         self.assertEqual(code, 0)
         self.assertFalse(checked["verification_executed"])
+        code, update_preview = invoke(
+            "projects", "update", "cli-project", "--name", "Display Name",
+            "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
         code, updated = invoke(
             "projects", "update", "cli-project", "--name", "Display Name",
-            "--non-interactive", "--json",
+            "--non-interactive", "--plan-token", update_preview["plan"]["plan_token"],
+            "--json",
         )
         self.assertEqual(code, 0)
         self.assertEqual(updated["plan"]["action"], "rename")
@@ -472,6 +478,61 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(exported["status"], "exported")
         self.assertNotIn("path", exported)
         self.assertEqual(json.loads(target.read_text())["schema_version"], 1)
+
+    def test_project_apply_tokens_bind_add_update_and_concurrent_state(self) -> None:
+        runtime = self.fixture.root / "token-runtime"
+
+        def invoke(*arguments):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main(["--runtime-root", str(runtime), *arguments])
+            rendered = stdout.getvalue() or stderr.getvalue()
+            return code, json.loads(rendered)
+
+        add_arguments = (
+            "projects", "add", str(self.repo), "--project-id", "token-project",
+            "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",
+        )
+        code, preview = invoke(*add_arguments, "--plan", "--json")
+        self.assertEqual(code, 0)
+        token = preview["plan"]["plan_token"]
+        self.assertRegex(token, r"^v1:[0-9a-f]{64}$")
+
+        code, missing = invoke(*add_arguments, "--non-interactive", "--json")
+        self.assertEqual(code, 2)
+        self.assertEqual(missing["error_category"], "state_conflict")
+
+        code, applied = invoke(
+            *add_arguments, "--non-interactive", "--plan-token", token, "--json"
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(applied["plan"]["plan_token"], token)
+
+        code, stale_add = invoke(
+            *add_arguments, "--non-interactive", "--plan-token", token, "--json"
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(stale_add["error_category"], "state_conflict")
+
+        code, update_preview = invoke(
+            "projects", "update", "token-project", "--name", "Reviewed name",
+            "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
+        update_token = update_preview["plan"]["plan_token"]
+        store = TaskStore(runtime / "project-brain.db")
+        concurrent = store.get_project("token-project")
+        concurrent["name"] = "Concurrent name"
+        store.apply_projects([concurrent], source="concurrent_test")
+
+        code, stale_update = invoke(
+            "projects", "update", "token-project", "--name", "Reviewed name",
+            "--non-interactive", "--plan-token", update_token, "--json",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(stale_update["error_category"], "state_conflict")
+        self.assertEqual(store.get_project("token-project")["name"], "Concurrent name")
 
 
 if __name__ == "__main__":
