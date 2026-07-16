@@ -42,9 +42,9 @@ executes only `<candidate> --version`, and atomically replaces the installed hel
 The previous executable is retained as rollback state until the replacement passes
 validation. Upgrade failure restores the previously runnable helper.
 
-The helper is built with PyInstaller `onedir`. This choice avoids requiring Python
-or a user-created virtual environment, keeps launch time predictable for the
-periodic worker, and makes bundled dynamic libraries inspectable. The archive is
+The helper is built as a PyInstaller `onefile` executable. This avoids requiring
+Python or a user-created virtual environment and matches the single-file atomic
+upgrade protocol. It incurs a small extraction cost at process startup and is
 architecture-specific. v1 CI produces an Apple Silicon artifact; universal and
 signed/notarized distribution remains a release-engineering follow-up.
 

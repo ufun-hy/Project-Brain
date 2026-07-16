@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from . import __version__
 from .application import health_report, status_report, task_view, worker_result_view
 from .engine import TaskEngine
 from .errors import AlreadyRunningError, InvalidTaskError, ProjectBrainError
@@ -40,7 +41,7 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="project-brain")
-    parser.add_argument("--version", action="version", version="%(prog)s 0.6.0")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--runtime-root", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
 

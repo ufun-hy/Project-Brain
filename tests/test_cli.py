@@ -7,7 +7,7 @@ import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from project_brain.cli import main
+from project_brain.cli import build_parser, main
 from project_brain.locking import RuntimeLock
 from project_brain.models import TaskStatus
 from project_brain.worktrees import WorktreeManager
@@ -35,6 +35,13 @@ class CLITests(unittest.TestCase):
         with redirect_stdout(output):
             code = main(["--runtime-root", str(self.fixture.runtime.root), *args])
         return code, output.getvalue()
+
+    def test_version_is_available_without_runtime_initialization(self) -> None:
+        output = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
+            build_parser().parse_args(["--version"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(output.getvalue().strip(), "project-brain 0.6.0")
 
     def test_status_json_shows_stage_project_and_next_action(self) -> None:
         self.fixture.add_task("status-task")
