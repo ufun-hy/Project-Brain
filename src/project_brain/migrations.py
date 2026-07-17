@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 
 from .models import utc_now
 from .errors import ConfigurationError
@@ -69,4 +70,15 @@ def backfill_project_snapshots(connection: sqlite3.Connection) -> None:
         )
 
 
-DATA_MIGRATIONS = {5: backfill_project_snapshots}
+def create_installation_identity(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "INSERT INTO installation_identity(singleton, installation_id, created_at) "
+        "VALUES (1, ?, ?)",
+        (str(uuid.uuid4()), utc_now()),
+    )
+
+
+DATA_MIGRATIONS = {
+    5: backfill_project_snapshots,
+    7: create_installation_identity,
+}

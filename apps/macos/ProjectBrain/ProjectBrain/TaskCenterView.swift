@@ -127,6 +127,18 @@ private struct TaskDetailView: View {
                     }
                 }
 
+                if let seal = task.verificationSet {
+                    GroupBox("Verification seal") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            LabeledContent("Status", value: seal.status.capitalized)
+                            LabeledContent("Canonical head", value: short(seal.canonicalHeadSHA))
+                            LabeledContent("Attempt", value: String(seal.sourceAttemptNumber))
+                            LabeledContent("Verification set", value: String(seal.verificationSetID))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
                 if !task.reviews.isEmpty {
                     GroupBox("Review findings") {
                         VStack(alignment: .leading, spacing: 12) {

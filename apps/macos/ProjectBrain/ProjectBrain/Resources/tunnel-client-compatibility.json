@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "supported": [
+    {
+      "version": "0.0.10",
+      "platform": "macos",
+      "architectures": [
+        "arm64"
+      ],
+      "runtimes_contract": 1
+    }
+  ]
+}

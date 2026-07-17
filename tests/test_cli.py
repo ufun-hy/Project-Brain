@@ -41,7 +41,7 @@ class CLITests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             build_parser().parse_args(["--version"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertEqual(output.getvalue().strip(), "project-brain 0.6.0")
+        self.assertEqual(output.getvalue().strip(), "project-brain 0.7.0")
 
     def test_status_json_shows_stage_project_and_next_action(self) -> None:
         self.fixture.add_task("status-task")
@@ -65,6 +65,30 @@ class CLITests(unittest.TestCase):
         self.assertIn("reviews", value)
         self.assertIn("forensic_archive", value)
         self.assertIn("events", value)
+
+    def test_acceptance_cli_has_lifecycle_but_no_pass_override(self) -> None:
+        code, created_output = self.invoke(
+            "acceptance",
+            "create",
+            "--app-version",
+            "0.7.0",
+            "--tunnel-fingerprint",
+            "a" * 64,
+            "--json",
+        )
+        created = json.loads(created_output)
+        self.assertEqual(code, 0)
+        self.assertEqual(created["run"]["status"], "challenge_ready")
+        self.assertNotIn(created["challenge"], json.dumps(created["run"]))
+
+        _, waiting_output = self.invoke(
+            "acceptance", "waiting", created["run"]["run_id"], "--json"
+        )
+        self.assertEqual(json.loads(waiting_output)["run"]["status"], "waiting_for_chatgpt")
+        _, status_output = self.invoke("acceptance", "status", "--json")
+        self.assertEqual(json.loads(status_output)["current"]["status"], "waiting_for_chatgpt")
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["acceptance", "pass"])
 
     def test_source_neutral_enqueue_and_commit_bound_review_commands(self) -> None:
         task_file = self.fixture.root / "task.json"

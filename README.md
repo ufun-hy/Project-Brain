@@ -7,7 +7,7 @@ them.
 
 The existing live Gmail Bridge under `experiments/gmail-inbox/` is frozen legacy
 behavior and is not part of the Core architecture. This change does not modify,
-migrate, launch, or replace it. Project Brain 0.6.0 adds a native macOS menu bar
+migrate, launch, or replace it. Project Brain 0.7.0 adds a native macOS menu bar
 and management app over the versioned Core configuration and controlled MCP
 adapter; it does not copy DevSpace's arbitrary file or terminal authority.
 
@@ -19,11 +19,15 @@ service management, automatic task/evidence observation, unified readiness,
 Keychain-backed managed Tunnel connection, and redacted diagnostic export
 without asking the user to run a CLI or maintain Python.
 
-The app embeds a self-contained Core helper, installs it atomically under
-`~/Library/Application Support/Project Brain/bin/`, and rolls back both the
-helper and service activation if an upgrade cannot be validated. The source
-build, unsigned CI artifact, first-run guide, and current distribution limits
-are documented in [`docs/product-shell.md`](docs/product-shell.md).
+The app embeds a self-contained Core helper and can import a user-downloaded,
+reviewed Tunnel Client into its private App Support directory. Both installers
+use atomic replacement and rollback. RC1 build 4 adds an MCP transport-probe
+wizard with explicit external-acceptance Pending state. The optional fixed
+one-document Draft PR task remains locked because the current Tunnel contract
+does not provide trusted ChatGPT control-plane attestation. The unsigned
+internal RC artifact, first-run guide, and current
+external limits are documented in [`docs/product-shell.md`](docs/product-shell.md)
+and [`docs/product-shell-rc1-verification.md`](docs/product-shell-rc1-verification.md).
 
 ![Project Brain first-run welcome](docs/images/product-shell-onboarding.png)
 
@@ -170,10 +174,12 @@ The Streamable HTTP endpoint is `http://127.0.0.1:7677/mcp`. The no-auth MVP
 rejects every non-loopback bind. ChatGPT access uses OpenAI Secure MCP Tunnel;
 do not expose the local endpoint as an unauthenticated public service.
 
-The eight allowlisted tools cover health, projects, canonical task create,
+The nine allowlisted tools cover health, projects, canonical task create,
 asynchronous queue dispatch, bounded task list/detail, exact-head review, and
-read-only recovery preview. They expose no shell, arbitrary files, cleanup,
-recovery resolution, acceptance, or merge operation. Dispatch starts a fixed
+read-only recovery preview. The ninth tool is a strict, one-field, no-side-effect
+MCP transport probe. Its source is explicitly unattributed and it cannot set
+external ChatGPT verification. The tools expose no shell, arbitrary files, cleanup,
+recovery resolution, manual acceptance setter, or merge operation. Dispatch starts a fixed
 one-shot Core worker and returns immediately; `RuntimeLock` and the global
 claim gate remain authoritative. A daemon reaper actively waits for each
 spawned process and records its bounded exit audit without terminating safely
@@ -259,8 +265,9 @@ scripts/verify-core.sh
 
 The same command runs in Linux CI. macOS CI additionally packages the frozen
 helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
-`Project Brain.app`, verifies the embedded helper, and checks Gmail legacy
-isolation. Tests use temporary repositories,
+`Project Brain.app`, creates an unsigned internal RC1 DMG/ZIP plus build
+manifest, verifies all artifact hashes, verifies the embedded helper and static
+Tunnel compatibility manifest, and checks Gmail legacy isolation. Tests use temporary repositories,
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.
 
@@ -273,3 +280,5 @@ are in [`docs/project-configuration.md`](docs/project-configuration.md) and
 Product Shell architecture and repository acceptance evidence are in
 [`docs/rfc/RFC-006-product-shell-v1.md`](docs/rfc/RFC-006-product-shell-v1.md)
 and [`docs/product-shell-verification.md`](docs/product-shell-verification.md).
+RC1 installation, acceptance authority, artifact boundaries, and external
+Pending gates are in [`docs/rfc/RFC-007-zero-cli-rc1.md`](docs/rfc/RFC-007-zero-cli-rc1.md).

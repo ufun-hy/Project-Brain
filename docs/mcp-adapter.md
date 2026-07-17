@@ -1,6 +1,6 @@
 # Project Brain MCP Adapter
 
-Project Brain 0.4.0 includes a controlled, loopback-only MCP adapter. It lets an
+Project Brain 0.7.0 includes a controlled, loopback-only MCP adapter. It lets an
 MCP client create canonical Codex tasks, start the next one-shot Core worker,
 inspect bounded state/evidence, and submit exact-head reviews. It is not a
 remote shell or workspace browser.
@@ -128,10 +128,15 @@ Current references:
 | `project_brain_tasks_get` | read | Bounded current evidence, reviews, archive metadata, and recent events |
 | `project_brain_tasks_review` | write | Atomic `approved` or `needs_changes` verdict for the exact canonical head |
 | `project_brain_tasks_recovery_preview` | read | Dry-run classifier and identity state only |
+| `project_brain_acceptance_probe` | write | Consume one waiting, hash-bound transport challenge and record unattributed evidence; no external-verification, task, file, Git, or process authority |
 
 There are no tools for arbitrary files, directories, shell, Git reset/clean/
 checkout/merge, free-form Codex commands, task-directed claim bypass, recovery
-resolution, cleanup, acceptance, or PR merge.
+resolution, cleanup, manual acceptance mutation, or PR merge. The acceptance
+probe accepts only the one-time `challenge` string. It records
+`mcp_transport_probe_passed` with `external_chatgpt_verified=false`; request
+headers, source IP, Host, Origin, and User-Agent are not trusted source evidence.
+It is not an external-acceptance setter.
 
 Create accepts only stable IDs, revision, goal, criteria, a bounded prompt, and
 optional expiry/supersession. Every schema rejects unknown fields. Any nesting
@@ -160,18 +165,22 @@ response returns only the log ID, never its absolute local path.
 ## Manual acceptance checklist
 
 1. Start the server and complete local initialize/tools/list.
-2. Confirm all eight tool schemas and read/write annotations.
-3. Through Secure MCP Tunnel and a ChatGPT developer-mode draft app, list
+2. Confirm all nine tool schemas and read/write annotations.
+3. Generate a challenge in Product Shell and use the connector to call only
+   `project_brain_acceptance_probe`; confirm the App records an unattributed MCP
+   transport probe while external ChatGPT acceptance remains Pending.
+4. Through Secure MCP Tunnel and a ChatGPT developer-mode draft app, list
    projects and create a documentation-only real task.
-4. Dispatch, poll status, inspect bounded verification evidence and the Draft
+5. Dispatch, poll status, inspect bounded verification evidence and the Draft
    PR, then submit `needs_changes` for the exact head.
-5. Dispatch again and confirm the new canonical commit descends from the old
+6. Dispatch again and confirm the new canonical commit descends from the old
    commit; submit `approved` but do not merge.
-6. Confirm the registered main checkout and legacy Gmail/MenuBar files were not
+7. Confirm the registered main checkout and legacy Gmail/MenuBar files were not
    changed.
 
-Steps that require a tunnel ID, runtime key, or ChatGPT workspace permissions
-cannot be replaced by local tests. Report them as externally pending when
+Steps that require a tunnel ID, runtime key, ChatGPT workspace permissions, or
+trusted control-plane attestation cannot be replaced by local tests. Report them
+as externally pending when
 those credentials are unavailable.
 
 ## Distinctions and non-goals

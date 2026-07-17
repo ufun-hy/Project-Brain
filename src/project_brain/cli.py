@@ -40,6 +40,8 @@ from .project_config import (
     normalize_legacy_execution_profile,
 )
 from .project_plans import bind_project_plan, require_matching_project_plan
+from .acceptance import ExternalAcceptanceManager
+from .acceptance_tasks import acceptance_task_plan, create_acceptance_task
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -140,6 +142,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cancel a recovery-blocked task as a terminal failure",
     )
     _add_json(task_recover)
+
+    acceptance = sub.add_parser(
+        "acceptance", help="Manage Product Shell external acceptance without a pass override"
+    )
+    acceptance_sub = acceptance.add_subparsers(dest="acceptance_command", required=True)
+    acceptance_status = acceptance_sub.add_parser("status")
+    _add_json(acceptance_status)
+    acceptance_create = acceptance_sub.add_parser("create")
+    acceptance_create.add_argument("--app-version", required=True)
+    acceptance_create.add_argument("--tunnel-fingerprint", required=True)
+    _add_json(acceptance_create)
+    acceptance_waiting = acceptance_sub.add_parser("waiting")
+    acceptance_waiting.add_argument("run_id")
+    _add_json(acceptance_waiting)
+    acceptance_reset = acceptance_sub.add_parser("reset")
+    acceptance_reset.add_argument("run_id")
+    _add_json(acceptance_reset)
+    acceptance_task_plan_parser = acceptance_sub.add_parser("task-plan")
+    acceptance_task_plan_parser.add_argument("project_id")
+    _add_json(acceptance_task_plan_parser)
+    acceptance_task_create = acceptance_sub.add_parser("task-create")
+    acceptance_task_create.add_argument("project_id")
+    acceptance_task_create.add_argument("--plan-token", required=True)
+    _add_json(acceptance_task_create)
 
     health = sub.add_parser("health", help="Check runtime and project prerequisites")
     _add_json(health)
@@ -617,6 +643,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             task = task_view(store.get_task(args.task_id), projects)
             task["attempts"] = store.list_attempts(args.task_id)
             task["verification"] = store.list_verifications(args.task_id)
+            task["verification_set"] = (
+                store.get_verification_set(int(task["verification_set_id"]))
+                if task.get("verification_set_id")
+                else None
+            )
             task["reviews"] = store.list_reviews(args.task_id)
             task["forensic_archive"] = store.get_forensic_archive(args.task_id)
             task["events"] = store.list_events(args.task_id)
@@ -660,6 +691,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {"mode": "execute" if args.execute else "dry_run", "actions": actions},
                 json_output=args.json_output,
             )
+        elif args.command == "acceptance":
+            manager = ExternalAcceptanceManager(store)
+            if args.acceptance_command == "status":
+                value = manager.status()
+            elif args.acceptance_command == "create":
+                with RuntimeLock(runtime.lock_file):
+                    value = manager.create_challenge(
+                        app_version=args.app_version,
+                        tunnel_fingerprint=args.tunnel_fingerprint,
+                    )
+            elif args.acceptance_command == "waiting":
+                with RuntimeLock(runtime.lock_file):
+                    value = {
+                        "status": "waiting_for_chatgpt",
+                        "run": manager.mark_waiting(args.run_id),
+                    }
+            elif args.acceptance_command == "reset":
+                with RuntimeLock(runtime.lock_file):
+                    value = {"status": "failed", "run": manager.reset(args.run_id)}
+            elif args.acceptance_command == "task-plan":
+                value = acceptance_task_plan(store, args.project_id)
+            elif args.acceptance_command == "task-create":
+                with RuntimeLock(runtime.lock_file):
+                    task, created, plan = create_acceptance_task(
+                        store,
+                        project_id=args.project_id,
+                        plan_token=args.plan_token,
+                    )
+                value = {
+                    "status": "created" if created else "duplicate",
+                    "plan": plan,
+                    "task": task_view(
+                        task,
+                        {item["project_id"]: item for item in store.list_projects()},
+                    ),
+                }
+            _render(value, json_output=args.json_output)
         elif args.command == "health":
             value = health_report(store, runtime)
             human = "\n".join(

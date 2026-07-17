@@ -83,6 +83,12 @@ public enum CoreCommand: Equatable, Sendable {
     case addProject(ProjectDraft, planToken: String?)
     case updateProject(String, ProjectUpdateDraft, planToken: String?)
     case projectLifecycle(String, ProjectLifecycleAction, execute: Bool)
+    case acceptanceStatus
+    case acceptanceCreate(appVersion: String, tunnelFingerprint: String)
+    case acceptanceWaiting(String)
+    case acceptanceReset(String)
+    case acceptanceTaskPlan(String)
+    case acceptanceTaskCreate(String, planToken: String)
 
     public var acceptedExitCodes: Set<Int32> {
         switch self {
@@ -159,6 +165,27 @@ public enum CoreCommand: Equatable, Sendable {
             value += ["projects", action.rawValue, identifier]
             if execute { value.append("--execute") }
             value.append("--json")
+        case .acceptanceStatus:
+            value += ["acceptance", "status", "--json"]
+        case .acceptanceCreate(let appVersion, let tunnelFingerprint):
+            value += [
+                "acceptance", "create",
+                "--app-version", appVersion,
+                "--tunnel-fingerprint", tunnelFingerprint,
+                "--json",
+            ]
+        case .acceptanceWaiting(let runID):
+            value += ["acceptance", "waiting", runID, "--json"]
+        case .acceptanceReset(let runID):
+            value += ["acceptance", "reset", runID, "--json"]
+        case .acceptanceTaskPlan(let projectID):
+            value += ["acceptance", "task-plan", projectID, "--json"]
+        case .acceptanceTaskCreate(let projectID, let planToken):
+            value += [
+                "acceptance", "task-create", projectID,
+                "--plan-token", planToken,
+                "--json",
+            ]
         }
         return value
     }

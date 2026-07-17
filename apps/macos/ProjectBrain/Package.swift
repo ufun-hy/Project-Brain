@@ -17,7 +17,8 @@ let package = Package(
         .executableTarget(
             name: "ProjectBrainApp",
             dependencies: ["ProjectBrainKit"],
-            path: "ProjectBrain"
+            path: "ProjectBrain",
+            resources: [.copy("Resources/tunnel-client-compatibility.json")]
         ),
         .testTarget(
             name: "ProjectBrainTests",

@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -296,6 +296,150 @@ ALTER TABLE projects ADD COLUMN accepting_tasks INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE projects ADD COLUMN registered INTEGER NOT NULL DEFAULT 1;
 """
 
+MIGRATION_7 = """
+CREATE TABLE installation_identity (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    installation_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE external_acceptance_runs (
+    run_id TEXT PRIMARY KEY,
+    challenge_sha256 TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK(status IN (
+        'not_started', 'challenge_ready', 'waiting_for_chatgpt', 'passed',
+        'failed', 'expired', 'superseded'
+    )),
+    core_version TEXT NOT NULL,
+    app_version TEXT NOT NULL,
+    installation_id TEXT NOT NULL REFERENCES installation_identity(installation_id),
+    tunnel_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    waiting_at TEXT,
+    verified_at TEXT,
+    failure_code TEXT,
+    ingress TEXT,
+    probe_count INTEGER NOT NULL DEFAULT 0 CHECK(probe_count >= 0)
+);
+
+CREATE INDEX external_acceptance_status_created_idx
+    ON external_acceptance_runs(status, created_at);
+CREATE INDEX external_acceptance_verified_idx
+    ON external_acceptance_runs(verified_at);
+
+CREATE TABLE external_acceptance_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT REFERENCES external_acceptance_runs(run_id),
+    event_type TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX external_acceptance_events_run_idx
+    ON external_acceptance_events(run_id, event_id);
+"""
+
+MIGRATION_8 = """
+ALTER TABLE external_acceptance_events RENAME TO external_acceptance_events_v7;
+ALTER TABLE external_acceptance_runs RENAME TO external_acceptance_runs_v7;
+
+DROP INDEX external_acceptance_status_created_idx;
+DROP INDEX external_acceptance_verified_idx;
+DROP INDEX external_acceptance_events_run_idx;
+
+CREATE TABLE external_acceptance_runs (
+    run_id TEXT PRIMARY KEY,
+    challenge_sha256 TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK(status IN (
+        'not_started', 'challenge_ready', 'waiting_for_chatgpt',
+        'mcp_transport_probe_passed', 'failed', 'expired', 'superseded'
+    )),
+    core_version TEXT NOT NULL,
+    app_version TEXT NOT NULL,
+    acceptance_contract_version INTEGER NOT NULL,
+    installation_id TEXT NOT NULL REFERENCES installation_identity(installation_id),
+    tunnel_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    waiting_at TEXT,
+    verified_at TEXT,
+    failure_code TEXT,
+    ingress TEXT,
+    probe_count INTEGER NOT NULL DEFAULT 0 CHECK(probe_count >= 0)
+);
+
+INSERT INTO external_acceptance_runs(
+    run_id, challenge_sha256, status, core_version, app_version,
+    acceptance_contract_version, installation_id, tunnel_fingerprint,
+    created_at, expires_at, waiting_at, verified_at, failure_code, ingress,
+    probe_count
+)
+SELECT
+    run_id,
+    challenge_sha256,
+    CASE WHEN status = 'passed' THEN 'mcp_transport_probe_passed' ELSE status END,
+    core_version,
+    app_version,
+    1,
+    installation_id,
+    tunnel_fingerprint,
+    created_at,
+    expires_at,
+    waiting_at,
+    verified_at,
+    failure_code,
+    CASE
+        WHEN status = 'passed' THEN 'local_or_tunneled_mcp_unattributed'
+        ELSE ingress
+    END,
+    probe_count
+FROM external_acceptance_runs_v7;
+
+CREATE TABLE external_acceptance_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT REFERENCES external_acceptance_runs(run_id),
+    event_type TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+INSERT INTO external_acceptance_events(
+    event_id, run_id, event_type, from_status, to_status, payload_json, created_at
+)
+SELECT
+    event_id,
+    run_id,
+    CASE
+        WHEN event_type = 'acceptance_probe_passed'
+            THEN 'mcp_transport_probe_recorded'
+        ELSE event_type
+    END,
+    CASE WHEN from_status = 'passed' THEN 'mcp_transport_probe_passed' ELSE from_status END,
+    CASE WHEN to_status = 'passed' THEN 'mcp_transport_probe_passed' ELSE to_status END,
+    CASE
+        WHEN event_type = 'acceptance_probe_passed'
+            THEN '{"external_chatgpt_verified":false,"ingress":"local_or_tunneled_mcp_unattributed","migrated_from_v7":true}'
+        ELSE payload_json
+    END,
+    created_at
+FROM external_acceptance_events_v7;
+
+DROP TABLE external_acceptance_events_v7;
+DROP TABLE external_acceptance_runs_v7;
+
+CREATE INDEX external_acceptance_status_created_idx
+    ON external_acceptance_runs(status, created_at);
+CREATE INDEX external_acceptance_verified_idx
+    ON external_acceptance_runs(verified_at);
+CREATE INDEX external_acceptance_events_run_idx
+    ON external_acceptance_events(run_id, event_id);
+"""
+
 MIGRATIONS = {
     1: MIGRATION_1,
     2: MIGRATION_2,
@@ -303,4 +447,6 @@ MIGRATIONS = {
     4: MIGRATION_4,
     5: MIGRATION_5,
     6: MIGRATION_6,
+    7: MIGRATION_7,
+    8: MIGRATION_8,
 }

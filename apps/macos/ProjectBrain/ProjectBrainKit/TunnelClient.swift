@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct TunnelProcessResult: Equatable, Sendable {
@@ -201,9 +202,13 @@ public final class TunnelClient: @unchecked Sendable {
     }
 
     public static func allowedExecutableURLs(
-        home: URL = FileManager.default.homeDirectoryForCurrentUser
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        applicationSupportDirectory: URL? = nil
     ) -> [URL] {
-        [
+        let support = applicationSupportDirectory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return [
+            support.appending(path: TunnelClientInstaller.relativeDestination),
             URL(filePath: "/opt/homebrew/bin/tunnel-client"),
             URL(filePath: "/usr/local/bin/tunnel-client"),
             home.appending(path: ".local/bin/tunnel-client"),
@@ -218,6 +223,12 @@ public final class TunnelClient: @unchecked Sendable {
 
     public static func isValidTunnelID(_ value: String) -> Bool {
         value.range(of: #"^tunnel_[0-9a-f]{32}$"#, options: .regularExpression) != nil
+    }
+
+    public static func fingerprint(_ tunnelID: String) -> String {
+        SHA256.hash(data: Data(tunnelID.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     public func connect(_ configuration: TunnelConfiguration) throws -> TunnelRuntimeStatus {

@@ -8,6 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		049BA5A4A75E506CDDB6CFDB /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9FCF0D49478D167771F549F /* ProjectsView.swift */; };
+		111111111111111111111111 /* ExternalAcceptancePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211111111111111111111111 /* ExternalAcceptancePresentation.swift */; };
+		112222222222222222222222 /* TunnelClientInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 212222222222222222222222 /* TunnelClientInstaller.swift */; };
+		113333333333333333333333 /* TunnelClientInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 213333333333333333333333 /* TunnelClientInstallerTests.swift */; };
+		114444444444444444444444 /* tunnel-client-compatibility.json in Resources */ = {isa = PBXBuildFile; fileRef = 214444444444444444444444 /* tunnel-client-compatibility.json */; };
+		115555555555555555555555 /* ExternalAcceptancePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 215555555555555555555555 /* ExternalAcceptancePresentationTests.swift */; };
 		0F1A71DC5B1EFEA227767E66 /* ProjectBrainKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A0AE9726341D630153857E89 /* ProjectBrainKit.framework */; };
 		144B51BBA191FFF89D33D238 /* ProjectBrainKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A0AE9726341D630153857E89 /* ProjectBrainKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2A4C3F35B0919A751D36D877 /* ConnectionCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3382C3F973ECDD34F66419A /* ConnectionCenterView.swift */; };
@@ -84,6 +89,11 @@
 
 /* Begin PBXFileReference section */
 		14B29220DA16DAACDE5AE7D0 /* HelperInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperInstallerTests.swift; sourceTree = "<group>"; };
+		211111111111111111111111 /* ExternalAcceptancePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalAcceptancePresentation.swift; sourceTree = "<group>"; };
+		212222222222222222222222 /* TunnelClientInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelClientInstaller.swift; sourceTree = "<group>"; };
+		213333333333333333333333 /* TunnelClientInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelClientInstallerTests.swift; sourceTree = "<group>"; };
+		214444444444444444444444 /* tunnel-client-compatibility.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "Resources/tunnel-client-compatibility.json"; sourceTree = "<group>"; };
+		215555555555555555555555 /* ExternalAcceptancePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalAcceptancePresentationTests.swift; sourceTree = "<group>"; };
 		14FCAD15B7C524000B2925B8 /* ManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagementView.swift; sourceTree = "<group>"; };
 		266AF4ABF8DF229B7BAD02F5 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		36EE8A4AF87D2B60D7E34966 /* Diagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics.swift; sourceTree = "<group>"; };
@@ -163,6 +173,8 @@
 				B4E5AAB52EE45D152631ED82 /* OnboardingDiagnosticsTests.swift */,
 				EA20796DF63A3E6F58BD5807 /* StateObservationTests.swift */,
 				C299B4C9A3E46FBDD77BCE3E /* TunnelClientTests.swift */,
+				213333333333333333333333 /* TunnelClientInstallerTests.swift */,
+				215555555555555555555555 /* ExternalAcceptancePresentationTests.swift */,
 			);
 			path = ProjectBrainTests;
 			sourceTree = "<group>";
@@ -198,6 +210,7 @@
 				A9FCF0D49478D167771F549F /* ProjectsView.swift */,
 				AE1BCD1E84388904E62F7B30 /* SettingsView.swift */,
 				ACBAC85D03E0116847C41375 /* TaskCenterView.swift */,
+				214444444444444444444444 /* tunnel-client-compatibility.json */,
 			);
 			path = ProjectBrain;
 			sourceTree = "<group>";
@@ -209,12 +222,14 @@
 				47490B2F46B4FC159E15C4EA /* CoreCommand.swift */,
 				72CD5376852674982C1643CC /* CoreModels.swift */,
 				36EE8A4AF87D2B60D7E34966 /* Diagnostics.swift */,
+				211111111111111111111111 /* ExternalAcceptancePresentation.swift */,
 				D041B09753695B3EF9BB5294 /* ExecutableDiscovery.swift */,
 				8D2D73135C583E1F105682D6 /* HelperInstaller.swift */,
 				60C9509B670A38FFA7F52F3C /* KeychainStore.swift */,
 				266AF4ABF8DF229B7BAD02F5 /* Onboarding.swift */,
 				6DA9B4ADF7834D650DC9E096 /* StateObservation.swift */,
 				AA956674A8BA232FC02B9A71 /* TunnelClient.swift */,
+				212222222222222222222222 /* TunnelClientInstaller.swift */,
 			);
 			path = ProjectBrainKit;
 			sourceTree = "<group>";
@@ -229,6 +244,7 @@
 				FCAB59563253D73D25FFF22C /* Sources */,
 				B42E45AD0830E57EFCB1A938 /* Frameworks */,
 				4E49CCAD3DB0C7A410FA9B56 /* Embed Frameworks */,
+				311111111111111111111111 /* Resources */,
 				E9CA2975DE77389DBE12AB90 /* Embed self-contained Core helper */,
 			);
 			buildRules = (
@@ -313,6 +329,17 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		311111111111111111111111 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				114444444444444444444444 /* tunnel-client-compatibility.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXShellScriptBuildPhase section */
 		E9CA2975DE77389DBE12AB90 /* Embed self-contained Core helper */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -344,12 +371,14 @@
 				7D1326D9EB95D418A3D32496 /* CoreCommand.swift in Sources */,
 				8192EEA40BC0ABEA51F2F3B3 /* CoreModels.swift in Sources */,
 				FF57347E85F75709ACB7C86D /* Diagnostics.swift in Sources */,
+				111111111111111111111111 /* ExternalAcceptancePresentation.swift in Sources */,
 				8805E0F39415C29C6CB61F0C /* ExecutableDiscovery.swift in Sources */,
 				B68C0EA5D4DBDA9A3344A046 /* HelperInstaller.swift in Sources */,
 				7E4C26530FDC216393C8AC79 /* KeychainStore.swift in Sources */,
 				4B05A064187E86481CF09E12 /* Onboarding.swift in Sources */,
 				4D32CC8C38E40715F279D437 /* StateObservation.swift in Sources */,
 				C2249D08271CC72FDACD6F94 /* TunnelClient.swift in Sources */,
+				112222222222222222222222 /* TunnelClientInstaller.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -363,6 +392,8 @@
 				C2007740D70DFD4B78FEE088 /* OnboardingDiagnosticsTests.swift in Sources */,
 				ADB2D262459F704511549D82 /* StateObservationTests.swift in Sources */,
 				42075170A33FEEED9D532A34 /* TunnelClientTests.swift in Sources */,
+				113333333333333333333333 /* TunnelClientInstallerTests.swift in Sources */,
+				115555555555555555555555 /* ExternalAcceptancePresentationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -427,7 +458,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Project Brain";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -437,7 +468,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.0;
+				MARKETING_VERSION = 0.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.projectbrain.ProductBrain;
 				PRODUCT_NAME = "Project Brain";
 				SDKROOT = macosx;
@@ -625,7 +656,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Project Brain";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -635,7 +666,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.0;
+				MARKETING_VERSION = 0.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.projectbrain.ProductBrain;
 				PRODUCT_NAME = "Project Brain";
 				SDKROOT = macosx;

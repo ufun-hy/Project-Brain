@@ -39,7 +39,7 @@ public struct ConnectionSnapshot: Codable, Equatable, Sendable {
     public var tunnelRuntimeState: String
     public var tunnelUIURL: String?
     public var workspaceConfiguration: WorkspaceConfigurationStatus
-    public var externalVerification: ExternalVerificationStatus
+    public private(set) var externalVerification: ExternalVerificationStatus
     public var lastCheckedAt: String?
 
     public var tunnelConfigured: Bool {
@@ -91,7 +91,8 @@ public struct ConnectionSnapshot: Codable, Equatable, Sendable {
         self.tunnelRuntimeState = tunnelRuntimeState
         self.tunnelUIURL = tunnelUIURL
         self.workspaceConfiguration = workspaceConfiguration
-        self.externalVerification = externalVerification
+        _ = externalVerification
+        self.externalVerification = .notVerified
         self.lastCheckedAt = lastCheckedAt
     }
 
@@ -102,6 +103,18 @@ public struct ConnectionSnapshot: Codable, Equatable, Sendable {
         tunnelReady = status.ready
         tunnelRuntimeState = status.runtimeState
         tunnelUIURL = status.uiURL?.absoluteString
+    }
+
+    public mutating func applyExternalAuthority(
+        _ acceptance: ExternalAcceptanceStatusResponse?
+    ) {
+        if acceptance?.applicableExternalChatGPTVerification != nil {
+            externalVerification = .passed
+        } else if acceptance?.externalChatGPTVerification.status == "failed" {
+            externalVerification = .failed
+        } else {
+            externalVerification = .notVerified
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -132,10 +145,9 @@ public struct ConnectionSnapshot: Codable, Equatable, Sendable {
             forKey: .workspaceConfiguration
         ) ?? ((try values.decodeIfPresent(Bool.self, forKey: .legacyWorkspaceConfigured)) == true
             ? .operatorDeclared : .notDeclared)
-        externalVerification = try values.decodeIfPresent(
-            ExternalVerificationStatus.self,
-            forKey: .externalVerification
-        ) ?? .notVerified
+        // UserDefaults is not authoritative for external acceptance. Core's
+        // Core's schema-v8 authority is applied after the helper snapshot loads.
+        externalVerification = .notVerified
         lastCheckedAt = try values.decodeIfPresent(String.self, forKey: .lastCheckedAt)
     }
 
@@ -231,7 +243,7 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
     public let services: [ServiceItem]
     public let checks: [HealthCheck]
     public let projects: [SafeProjectDiagnostic]
-    public let connection: ConnectionSnapshot
+    public let connection: SafeConnectionDiagnostic
 
     public init(
         generatedAt: String,
@@ -241,7 +253,9 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
         services: [ServiceItem],
         checks: [HealthCheck],
         projects: [ProjectSummary],
-        connection: ConnectionSnapshot
+        connection: ConnectionSnapshot,
+        tunnelClient: TunnelClientValidation? = nil,
+        acceptance: ExternalAcceptanceStatusResponse? = nil
     ) {
         self.generatedAt = generatedAt
         self.appVersion = appVersion
@@ -252,13 +266,59 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
             HealthCheck(name: $0.name, status: $0.status, detail: SecretRedactor.redact($0.detail))
         }
         self.projects = projects.map(SafeProjectDiagnostic.init)
-        self.connection = connection
+        self.connection = SafeConnectionDiagnostic(
+            connection,
+            tunnelClient: tunnelClient,
+            acceptance: acceptance
+        )
     }
 
     public func encoded() throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(self)
+    }
+}
+
+public struct SafeConnectionDiagnostic: Codable, Equatable, Sendable {
+    public let localMCPStatus: String
+    public let localMCPTransportHealthy: Bool
+    public let tunnelFingerprint: String?
+    public let runtimeCredentialConfigured: Bool
+    public let tunnelClientAvailable: Bool
+    public let tunnelClientVersion: String?
+    public let tunnelClientSHA256: String?
+    public let tunnelProcessRunning: Bool
+    public let tunnelHealthy: Bool
+    public let tunnelReady: Bool
+    public let tunnelRuntimeState: String
+    public let workspaceConfiguration: WorkspaceConfigurationStatus
+    public let externalVerification: ExternalVerificationStatus
+    public let currentAcceptanceStatus: ExternalAcceptanceRunStatus?
+    public let lastExternalPassAt: String?
+
+    public init(
+        _ connection: ConnectionSnapshot,
+        tunnelClient: TunnelClientValidation?,
+        acceptance: ExternalAcceptanceStatusResponse?
+    ) {
+        localMCPStatus = SecretRedactor.redact(connection.localMCPStatus)
+        localMCPTransportHealthy = connection.localMCPTransportHealthy
+        tunnelFingerprint = TunnelClient.isValidTunnelID(connection.tunnelID)
+            ? TunnelClient.fingerprint(connection.tunnelID)
+            : nil
+        runtimeCredentialConfigured = connection.runtimeTokenConfigured
+        tunnelClientAvailable = connection.tunnelClientAvailable
+        tunnelClientVersion = tunnelClient?.version
+        tunnelClientSHA256 = tunnelClient?.sha256
+        tunnelProcessRunning = connection.tunnelProcessRunning
+        tunnelHealthy = connection.tunnelHealthy
+        tunnelReady = connection.tunnelReady
+        tunnelRuntimeState = SecretRedactor.redact(connection.tunnelRuntimeState)
+        workspaceConfiguration = connection.workspaceConfiguration
+        externalVerification = connection.externalVerification
+        currentAcceptanceStatus = acceptance?.current?.status
+        lastExternalPassAt = acceptance?.applicableExternalChatGPTVerification?.verifiedAt
     }
 }
 

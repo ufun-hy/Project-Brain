@@ -25,7 +25,7 @@ final class OnboardingDiagnosticsTests: XCTestCase {
         )
         let report = DiagnosticReport(
             generatedAt: "2026-07-16T00:00:00Z",
-            appVersion: "0.6.0",
+            appVersion: "0.7.0",
             aggregateStatus: .needsAttention,
             taskCounts: ["failed": 1],
             services: [],

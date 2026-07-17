@@ -15,6 +15,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from project_brain.cli import build_parser
+from project_brain.acceptance import ExternalAcceptanceManager
 from project_brain.errors import ConfigurationError
 from project_brain.locking import RuntimeLock
 from project_brain.schema import SCHEMA_VERSION
@@ -39,6 +40,7 @@ EXPECTED_TOOLS = {
     "project_brain_tasks_get",
     "project_brain_tasks_review",
     "project_brain_tasks_recovery_preview",
+    "project_brain_acceptance_probe",
 }
 
 
@@ -86,6 +88,7 @@ class MCPServerSchemaTests(unittest.TestCase):
             "project_brain_tasks_get": (True, False, True, False),
             "project_brain_tasks_review": (False, False, False, False),
             "project_brain_tasks_recovery_preview": (True, False, True, False),
+            "project_brain_acceptance_probe": (False, False, False, False),
         }
         for tool in tools:
             self.assertFalse(tool.inputSchema["additionalProperties"])
@@ -112,6 +115,9 @@ class MCPServerSchemaTests(unittest.TestCase):
                 "codex_command",
             }.isdisjoint(create.inputSchema["properties"])
         )
+        probe = next(tool for tool in tools if tool.name == "project_brain_acceptance_probe")
+        self.assertEqual(set(probe.inputSchema["properties"]), {"challenge"})
+        self.assertEqual(probe.inputSchema["required"], ["challenge"])
 
     def test_pinned_sdk_private_schema_hardening_compatibility_contract(self) -> None:
         self.assertEqual(importlib.metadata.version("mcp"), "1.28.1")
@@ -204,6 +210,12 @@ class MCPTransportTests(unittest.TestCase):
 
     def test_streamable_http_initialize_tools_list_and_clean_shutdown(self) -> None:
         port = self._free_port()
+        acceptance = ExternalAcceptanceManager(self.fixture.store)
+        created = acceptance.create_challenge(
+            app_version="0.7.0",
+            tunnel_fingerprint="a" * 64,
+        )
+        acceptance.mark_waiting(created["run"]["run_id"])
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -230,8 +242,15 @@ class MCPTransportTests(unittest.TestCase):
             )
             self.assertTrue(transport_ready, detail)
 
-            async def inspect_transport() -> tuple[str, set[str], str]:
-                async with httpx.AsyncClient(trust_env=False) as http_client:
+            async def inspect_transport() -> tuple[str, set[str], str, str, bool]:
+                async with httpx.AsyncClient(
+                    trust_env=False,
+                    headers={
+                        "X-OpenAI-Connector": "spoofed",
+                        "X-Forwarded-For": "203.0.113.1",
+                        "User-Agent": "ChatGPT-Connector-spoof",
+                    },
+                ) as http_client:
                     async with streamable_http_client(
                         f"http://127.0.0.1:{port}/mcp",
                         http_client=http_client,
@@ -241,16 +260,26 @@ class MCPTransportTests(unittest.TestCase):
                             initialized = await session.initialize()
                             tools = await session.list_tools()
                             health = await session.call_tool("project_brain_system_health", {})
+                            probe = await session.call_tool(
+                                "project_brain_acceptance_probe",
+                                {"challenge": created["challenge"]},
+                            )
                             return (
                                 initialized.serverInfo.name,
                                 {tool.name for tool in tools.tools},
                                 health.structuredContent["status"],
+                                probe.structuredContent["status"],
+                                probe.structuredContent["result"]["external_chatgpt_verified"],
                             )
 
-            name, tool_names, health_status = asyncio.run(inspect_transport())
+            name, tool_names, health_status, probe_status, external_verified = asyncio.run(
+                inspect_transport()
+            )
             self.assertEqual(name, "Project Brain")
             self.assertEqual(tool_names, EXPECTED_TOOLS)
             self.assertEqual(health_status, "ok")
+            self.assertEqual(probe_status, "ok")
+            self.assertFalse(external_verified)
         finally:
             process.terminate()
             stdout, stderr = process.communicate(timeout=10)
@@ -262,6 +291,14 @@ class MCPTransportTests(unittest.TestCase):
         reopened = TaskStore(self.fixture.runtime.database)
         reopened.initialize()
         self.assertEqual(reopened.schema_version(), SCHEMA_VERSION)
+        external = ExternalAcceptanceManager(reopened).status()
+        self.assertEqual(
+            external["last_transport_probe"]["run_id"], created["run"]["run_id"]
+        )
+        self.assertEqual(external["external_chatgpt_verification"]["status"], "pending")
+        self.assertIsNone(external["applicable_external_chatgpt_verification"])
+        self.assertEqual(reopened.list_tasks(), [])
+        self.assertEqual(list(self.fixture.runtime.worktrees_dir.rglob("*")), [])
         self.assertTrue(RuntimeLock.is_available(self.fixture.runtime.lock_file))
 
 

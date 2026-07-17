@@ -130,3 +130,43 @@ revision, recovery, verification, publication, release, cleanup, and forensics
 use the stored snapshot and fail closed if it is missing or changed. Display
 name changes do not create an execution revision. MCP remains read/control only
 and gains no configuration mutation tool.
+
+## D-019: Make external acceptance an MCP-ingress authority (superseded)
+
+External acceptance is a durable Core schema-v7 state machine, not a UI flag or
+operator declaration. One-time challenge plaintext is returned once and never
+persisted; only its SHA-256 is stored. A run binds app/Core versions,
+installation identity, Tunnel fingerprint, and expiry. Only the registered,
+strict, no-side-effect MCP probe can consume a waiting challenge and write
+`passed`; Core CLI and Swift expose no pass command. Historical pass remains
+independent from current Tunnel health. Fixture and CI probes never represent
+real ChatGPT external acceptance. D-021 supersedes the authority conclusion:
+loopback MCP ingress is not source-authenticated.
+
+## D-020: Import reviewed Tunnel binaries; never silently download them
+
+Product Shell opens the official Platform entry point but does not fetch or
+execute arbitrary URLs. The user selects one regular executable. A static
+bundled manifest allowlists reviewed version/platform/architecture/runtime-
+contract combinations, beginning with Tunnel Client 0.0.10 arm64. The app uses
+fixed `--version`, bounded output/time, Mach-O and SHA-256 validation, private
+same-directory staging, fsync, atomic replacement, rollback, and fail-closed
+removal after confirmed stop. User confirmation of official origin is shown as
+such and is never mislabeled as cryptographic supply-chain verification.
+
+## D-021: Keep MCP transport evidence distinct from ChatGPT authority
+
+The Secure MCP Tunnel contract currently supplies no signed request attestation,
+mTLS identity, or other source signal that a loopback client cannot forge.
+Therefore schema v8 migrates legacy `passed` rows and records challenge
+completion only as `mcp_transport_probe_passed` with unattributed ingress.
+`external_chatgpt_verified` remains Pending, and the future real-project task
+fails closed. Historical evidence is applicable to the current transport only
+when installation, app, Core, Tunnel fingerprint, acceptance contract, and
+readiness all match; applicability still does not elevate it to ChatGPT proof.
+
+Tunnel selection is zero-execution static preflight. Fixed `--version` requires
+explicit user authorization. Installation additionally proves the reviewed
+read-only `runtimes list --json` contract under an isolated temporary HOME while
+the old binary is still available for rollback; invalid contracts remove fresh
+installs or restore the previous SHA.
