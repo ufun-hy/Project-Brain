@@ -55,9 +55,9 @@ and must not be marked Ready or merged during repository acceptance.
 
 Local Python/Core/MCP and fixture integration tests pass (186 tests). The SwiftUI executable
 and ProjectBrainKit compile locally. The host does not contain full Xcode, so
-the 27 XCTest cases and `Project Brain.app` build acceptance remain pending until the Draft
-PR macOS GitHub Actions job is green. Exact counts, SHAs, URLs, and isolation
-evidence are recorded at delivery.
+local XCTest execution is not claimed; all 27 XCTest cases and the
+`Project Brain.app` build pass in the Draft PR macOS GitHub Actions job. Exact
+counts, SHAs, URLs, and isolation evidence are recorded at delivery.
 
 ## External acceptance
 
