@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -291,4 +291,16 @@ ALTER TABLE tasks ADD COLUMN project_config_sha256 TEXT;
 ALTER TABLE tasks ADD COLUMN execution_profile_json TEXT;
 """
 
-MIGRATIONS = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4, 5: MIGRATION_5}
+MIGRATION_6 = """
+ALTER TABLE projects ADD COLUMN accepting_tasks INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE projects ADD COLUMN registered INTEGER NOT NULL DEFAULT 1;
+"""
+
+MIGRATIONS = {
+    1: MIGRATION_1,
+    2: MIGRATION_2,
+    3: MIGRATION_3,
+    4: MIGRATION_4,
+    5: MIGRATION_5,
+    6: MIGRATION_6,
+}

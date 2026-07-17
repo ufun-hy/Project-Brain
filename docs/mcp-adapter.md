@@ -84,26 +84,28 @@ Prerequisites are managed outside this repository:
 - ChatGPT developer-mode access for the intended workspace/account;
 - the current public `tunnel-client` release.
 
-Follow the current official quickstart rather than pinning a tunnel-client
-download URL. A local no-auth HTTP profile is initialized along these lines:
+Product Shell wraps the current official long-lived runtime flow. It uses a
+fixed alias/profile, fixed loopback MCP URL, and an environment-backed runtime
+key reference equivalent to:
 
 ```bash
-tunnel-client help quickstart
-tunnel-client profiles samples show sample_mcp_remote_no_auth
-
 export CONTROL_PLANE_API_KEY="<runtime-api-key>"
-tunnel-client init \
-  --sample sample_mcp_remote_no_auth \
-  --profile project-brain-local \
+tunnel-client runtimes connect \
+  --alias project-brain \
   --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
-  --mcp-server-url http://127.0.0.1:7677/mcp
-
-tunnel-client doctor --profile project-brain-local --explain
-tunnel-client run --profile project-brain-local
+  --profile project-brain \
+  --profile-dir ~/.project-brain/tunnel/profiles \
+  --mcp-server-url http://127.0.0.1:7677/mcp \
+  --runtime-api-key env:CONTROL_PLANE_API_KEY \
+  --json
+tunnel-client runtimes status project-brain --json
+tunnel-client runtimes stop project-brain --json
 ```
 
-Never commit the runtime API key or tunnel profile. Keep `project-brain serve`
-and `tunnel-client run` healthy while scanning tools or calling the app. In
+Ordinary users perform this through Connection Center, not a terminal. Never
+commit the runtime API key or generated profile. Connection Center reports
+ready only when the local MCP initialize succeeds and tunnel status says the
+managed process is running, healthy, and ready. In
 ChatGPT developer mode, create a draft app, choose Tunnel as the connection,
 select the associated tunnel, scan tools, and review write-action permissions.
 OpenAI may request confirmation for write actions.

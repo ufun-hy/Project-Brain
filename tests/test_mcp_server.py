@@ -24,6 +24,7 @@ from project_brain.mcp.server import (
     create_mcp_server,
     validate_loopback_bind,
 )
+from project_brain.readiness import mcp_transport_probe
 from project_brain.store import TaskStore
 
 from tests.helpers import CoreFixture, pythonpath_env
@@ -224,6 +225,10 @@ class MCPTransportTests(unittest.TestCase):
         )
         try:
             self._wait_for_port(port)
+            transport_ready, detail = mcp_transport_probe(
+                f"http://127.0.0.1:{port}/mcp"
+            )
+            self.assertTrue(transport_ready, detail)
 
             async def inspect_transport() -> tuple[str, set[str], str]:
                 async with httpx.AsyncClient(trust_env=False) as http_client:

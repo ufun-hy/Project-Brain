@@ -36,3 +36,9 @@ __pycache__/
 *.db-shm
 *.db-wal
 .project-brain/
+
+# Generated Product Shell build outputs
+build/
+dist/
+apps/macos/ProjectBrain/.build/
+apps/macos/ProjectBrain/Resources/project-brain/

@@ -14,6 +14,10 @@ class ConfigurationError(ProjectBrainError):
     category = "configuration"
 
 
+class ServiceError(ProjectBrainError):
+    category = "service"
+
+
 class InvalidTaskError(ProjectBrainError):
     category = "invalid_task"
 
@@ -55,6 +59,10 @@ class AlreadyRunningError(ProjectBrainError):
 
 class StateTransitionError(ProjectBrainError):
     category = "state_transition"
+
+
+class StateConflictError(ProjectBrainError):
+    category = "state_conflict"
 
 
 class MigrationError(ProjectBrainError):

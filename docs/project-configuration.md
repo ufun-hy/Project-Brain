@@ -6,7 +6,8 @@ Initialize the private runtime, then register a real Git checkout. `projects
 add` resolves the checkout to an absolute real path, verifies `origin`, detects
 the remote default branch, derives a stable project ID when omitted, resolves
 the Codex executable, assigns only the managed runtime worktree root, prints a
-plan, and asks for confirmation unless `--non-interactive` is used.
+plan, and asks for confirmation unless an exact plan token is supplied for a
+non-interactive apply.
 
 ```bash
 project-brain init --json
@@ -20,7 +21,10 @@ execute permission before any project write. Declarative files may omit
 `codex_command` to use `codex` from the onboarding process PATH. Exported files
 always contain the resolved absolute command. In interactive JSON mode, the
 plan and confirmation prompt are written to stderr; stdout is one final JSON
-object. Add `--non-interactive` in scripts.
+object. Scripts must first request `--plan --json`, then pass the returned
+`plan.plan_token` with `--non-interactive --plan-token`. Core recomputes the
+token under the runtime lock and validates current/next values again inside the
+write transaction, so concurrent changes fail with `state_conflict`.
 
 `projects check` is read-only. It checks the repository, origin, default branch,
 Codex and optional `gh`, the managed worktree boundary, and whether each trusted

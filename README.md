@@ -7,10 +7,25 @@ them.
 
 The existing live Gmail Bridge under `experiments/gmail-inbox/` is frozen legacy
 behavior and is not part of the Core architecture. This change does not modify,
-migrate, launch, or replace it. Project Brain 0.5.0 adds versioned project
-onboarding and immutable per-task execution snapshots while retaining the
-controlled MCP adapter for canonical Core operations; it does not copy
-DevSpace's arbitrary file or terminal authority.
+migrate, launch, or replace it. Project Brain 0.6.0 adds a native macOS menu bar
+and management app over the versioned Core configuration and controlled MCP
+adapter; it does not copy DevSpace's arbitrary file or terminal authority.
+
+## Product Shell for macOS
+
+`Project Brain.app` is the primary user entry point on macOS 14+. It provides a
+seven-step first-run flow, project plan/apply confirmation, Worker and MCP
+service management, automatic task/evidence observation, unified readiness,
+Keychain-backed managed Tunnel connection, and redacted diagnostic export
+without asking the user to run a CLI or maintain Python.
+
+The app embeds a self-contained Core helper, installs it atomically under
+`~/Library/Application Support/Project Brain/bin/`, and rolls back both the
+helper and service activation if an upgrade cannot be validated. The source
+build, unsigned CI artifact, first-run guide, and current distribution limits
+are documented in [`docs/product-shell.md`](docs/product-shell.md).
+
+![Project Brain first-run welcome](docs/images/product-shell-onboarding.png)
 
 ## Guarantees
 
@@ -45,9 +60,10 @@ DevSpace's arbitrary file or terminal authority.
   Draft PR after exact base/head/SHA/repository validation. Core never merges
   automatically.
 
-## Install and configure
+## Developer install and internal CLI
 
-Python 3.10+, Git, Codex (or another explicitly configured local agent), and
+The following path is for Core development and automation, not ordinary Product
+Shell onboarding. Python 3.10+, Git, Codex (or another explicitly configured local agent), and
 GitHub CLI are required. `gh` is needed only when automatic PR creation is
 enabled.
 
@@ -56,7 +72,10 @@ python3.11 -m venv ~/.project-brain/app/venv
 ~/.project-brain/app/venv/bin/pip install -e .
 project-brain init --json
 project-brain projects add /absolute/path/to/repository \
-  --project-id my-project --non-interactive --json
+  --project-id my-project --plan --json
+project-brain projects add /absolute/path/to/repository \
+  --project-id my-project --non-interactive \
+  --plan-token 'v1:<token-from-the-plan>' --json
 ```
 
 The actual repository `origin` must match the registered `remote_url`.
@@ -80,8 +99,9 @@ only while the database has never registered a project.
 Codex argv[0] is resolved to an absolute executable path before validation,
 planning, or persistence; exports therefore contain the fixed absolute path.
 For interactive `projects add/update --json`, the plan and prompt use stderr so
-stdout remains exactly one final JSON document. Use `--non-interactive` for
-automation.
+stdout remains exactly one final JSON document. Automated add/update must first
+read `plan.plan_token`, then pass that exact value with
+`--non-interactive --plan-token`; stale or missing tokens fail closed.
 
 ## Canonical enqueue
 
@@ -137,6 +157,7 @@ project-brain tasks recover <task-id> --execute --confirm-no-agent --json
 project-brain tasks recover <task-id> --execute --resume --json
 project-brain tasks recover <task-id> --execute --cancel --json
 project-brain health --json
+project-brain readiness --json
 project-brain apply --json
 project-brain cleanup --dry-run --json
 project-brain cleanup --execute --json
@@ -236,8 +257,12 @@ symlink escape.
 scripts/verify-core.sh
 ```
 
-The same command runs in CI. Tests use temporary repositories, bare remotes,
-and runtime roots; no Gmail, GitHub, Codex, or user-home credentials are needed.
+The same command runs in Linux CI. macOS CI additionally packages the frozen
+helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
+`Project Brain.app`, verifies the embedded helper, and checks Gmail legacy
+isolation. Tests use temporary repositories,
+bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
+credentials are needed.
 
 Architecture and recovery details are in
 [`docs/rfc/RFC-003-core-v3.md`](docs/rfc/RFC-003-core-v3.md) and
@@ -245,3 +270,6 @@ Architecture and recovery details are in
 Project onboarding, config transactions, migrations, and snapshot troubleshooting
 are in [`docs/project-configuration.md`](docs/project-configuration.md) and
 [`docs/rfc/RFC-005-project-onboarding-and-config-snapshots.md`](docs/rfc/RFC-005-project-onboarding-and-config-snapshots.md).
+Product Shell architecture and repository acceptance evidence are in
+[`docs/rfc/RFC-006-product-shell-v1.md`](docs/rfc/RFC-006-product-shell-v1.md)
+and [`docs/product-shell-verification.md`](docs/product-shell-verification.md).

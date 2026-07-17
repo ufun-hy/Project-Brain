@@ -1,0 +1,80 @@
+name: ProjectBrain
+options:
+  minimumXcodeGenVersion: 2.45.0
+  xcodeVersion: "15.4"
+  projectFormat: xcode15_3
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_HARDENED_RUNTIME: YES
+targets:
+  ProjectBrainKit:
+    type: framework
+    platform: macOS
+    sources:
+      - path: ProjectBrainKit
+    dependencies:
+      - sdk: Security.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectbrain.ProductBrainKit
+        GENERATE_INFOPLIST_FILE: YES
+  ProjectBrain:
+    type: application
+    platform: macOS
+    sources:
+      - path: ProjectBrain
+    dependencies:
+      - target: ProjectBrainKit
+    postBuildScripts:
+      - name: Embed self-contained Core helper
+        basedOnDependencyAnalysis: false
+        script: |
+          HELPER="${PROJECT_BRAIN_BUNDLED_HELPER:-${SRCROOT}/Resources/project-brain}"
+          DESTINATION="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/project-brain"
+          if [ ! -x "${HELPER}" ]; then
+            echo "error: Build the self-contained helper first or set PROJECT_BRAIN_BUNDLED_HELPER" >&2
+            exit 1
+          fi
+          /bin/mkdir -p "$(/usr/bin/dirname "${DESTINATION}")"
+          /usr/bin/ditto "${HELPER}" "${DESTINATION}"
+          /bin/chmod 0755 "${DESTINATION}"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectbrain.ProductBrain
+        PRODUCT_NAME: Project Brain
+        MARKETING_VERSION: 0.6.0
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Project Brain
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: Project Brain
+  ProjectBrainTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ProjectBrainTests
+    dependencies:
+      - target: ProjectBrainKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectbrain.ProductBrainTests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  ProjectBrain:
+    build:
+      targets:
+        ProjectBrain: all
+        ProjectBrainKit: all
+        ProjectBrainTests: [test]
+    test:
+      gatherCoverageData: true
+      targets:
+        - name: ProjectBrainTests
+    archive:
+      config: Release

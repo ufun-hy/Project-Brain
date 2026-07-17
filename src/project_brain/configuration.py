@@ -40,6 +40,8 @@ def safe_project(project: dict[str, Any]) -> dict[str, Any]:
         "default_branch": project["default_branch"],
         "auto_push": project["auto_push"],
         "auto_pr": project["auto_pr"],
+        "accepting_tasks": project.get("accepting_tasks", True),
+        "registered": project.get("registered", True),
         "config_revision": project.get("config_revision"),
         "config_sha256": project.get("config_sha256"),
         "config_updated_at": project.get("config_updated_at"),
