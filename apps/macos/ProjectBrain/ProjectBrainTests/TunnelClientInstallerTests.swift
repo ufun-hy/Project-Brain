@@ -3,18 +3,36 @@ import XCTest
 @testable import ProjectBrainKit
 
 private final class InstallerRunner: TunnelInstallerProcessRunning, @unchecked Sendable {
-    var result: TunnelInstallerProcessResult?
+    var versionResult: TunnelInstallerProcessResult?
+    var contractResult: TunnelInstallerProcessResult?
     var version = "0.0.10"
-    private(set) var calls: [(URL, [String], TimeInterval, Int)] = []
+    private(set) var calls: [(URL, [String], TimeInterval, Int, [String: String])] = []
 
     func run(
         executable: URL,
         arguments: [String],
         timeout: TimeInterval,
-        outputLimit: Int
+        outputLimit: Int,
+        environment: [String: String]
     ) throws -> TunnelInstallerProcessResult {
-        calls.append((executable, arguments, timeout, outputLimit))
-        return result ?? .init(
+        calls.append((executable, arguments, timeout, outputLimit, environment))
+        if arguments == ["runtimes", "list", "--json"] {
+            if let contractResult { return contractResult }
+            let home = environment["HOME"] ?? "/invalid"
+            return .init(
+                exitCode: 0,
+                stdout: Data(
+                    "{\"aliases\":[],\"admin_profile\":\"default\","
+                        .appending("\"admin_profile_path\":\"")
+                        .appending(home)
+                        .appending("/.openai-tunnel/admin.json\",\"state_root\":\"")
+                        .appending(home)
+                        .appending("/.openai-tunnel\"}").utf8
+                ),
+                stderr: Data()
+            )
+        }
+        return versionResult ?? .init(
             exitCode: 0,
             stdout: Data("\(version)\n".utf8),
             stderr: Data()
@@ -47,20 +65,28 @@ final class TunnelClientInstallerTests: XCTestCase {
         if let temporary { try? FileManager.default.removeItem(at: temporary) }
     }
 
-    func testSingleFileSelectionBoundaryAndValidationPlan() throws {
+    func testSelectionPerformsStaticPreflightWithoutExecutingCandidate() throws {
         XCTAssertThrowsError(try installer.prepareImport(selectedURLs: [])) {
             XCTAssertEqual($0 as? TunnelClientInstallerError, .invalidSelection)
         }
         XCTAssertThrowsError(try installer.prepareImport(selectedURLs: [source, source])) {
             XCTAssertEqual($0 as? TunnelClientInstallerError, .invalidSelection)
         }
-        let plan = try installer.prepareImport(selectedURLs: [source])
+        let preview = try installer.prepareImport(selectedURLs: [source])
+        XCTAssertEqual(preview.architecture, .arm64)
+        XCTAssertEqual(preview.sha256.count, 64)
+        XCTAssertGreaterThan(preview.fileSize, 0)
+        XCTAssertTrue(preview.sourceAttestation.contains("official OpenAI Platform Tunnels"))
+        XCTAssertTrue(runner.calls.isEmpty)
+    }
+
+    func testExplicitAuthorizationRunsOnlyFixedVersionCommand() throws {
+        let preview = try installer.prepareImport(selectedURLs: [source])
+        let plan = try installer.authorize(preview)
         XCTAssertEqual(plan.version, "0.0.10")
-        XCTAssertEqual(plan.architecture, .arm64)
-        XCTAssertEqual(plan.sha256.count, 64)
         XCTAssertEqual(plan.manifestSchemaVersion, 1)
         XCTAssertEqual(plan.runtimesContract, 1)
-        XCTAssertTrue(plan.sourceAttestation.contains("official OpenAI Platform Tunnels"))
+        XCTAssertEqual(runner.calls.count, 1)
         XCTAssertEqual(runner.calls.first?.1, ["--version"])
         XCTAssertEqual(runner.calls.first?.2, TunnelClientInstaller.versionTimeout)
         XCTAssertEqual(runner.calls.first?.3, TunnelClientInstaller.outputLimit)
@@ -91,7 +117,7 @@ final class TunnelClientInstallerTests: XCTestCase {
     }
 
     func testVersionTimeoutOversizedAndMaliciousOutputFailClosed() throws {
-        runner.result = .init(
+        runner.versionResult = .init(
             exitCode: -1,
             stdout: Data(),
             stderr: Data(),
@@ -101,7 +127,7 @@ final class TunnelClientInstallerTests: XCTestCase {
             XCTAssertEqual($0 as? TunnelClientInstallerError, .versionTimeout)
         }
 
-        runner.result = .init(
+        runner.versionResult = .init(
             exitCode: 0,
             stdout: Data(repeating: 65, count: TunnelClientInstaller.outputLimit),
             stderr: Data(),
@@ -111,7 +137,7 @@ final class TunnelClientInstallerTests: XCTestCase {
             XCTAssertEqual($0 as? TunnelClientInstallerError, .versionOutputExceeded)
         }
 
-        runner.result = .init(
+        runner.versionResult = .init(
             exitCode: 0,
             stdout: Data("0.0.10\nmalicious command output\n".utf8),
             stderr: Data()
@@ -123,7 +149,7 @@ final class TunnelClientInstallerTests: XCTestCase {
     }
 
     func testOfficialVersionWithBuildMetadataIsAccepted() throws {
-        runner.result = .init(
+        runner.versionResult = .init(
             exitCode: 0,
             stdout: Data("0.0.10+abcdef0 (git sha: abcdef0)\n".utf8),
             stderr: Data()
@@ -149,6 +175,15 @@ final class TunnelClientInstallerTests: XCTestCase {
             atPath: result.destination.deletingLastPathComponent()
                 .appending(path: ".tunnel-client.rollback").path
         ))
+        let contractCall = try XCTUnwrap(
+            runner.calls.first(where: { $0.1 == ["runtimes", "list", "--json"] })
+        )
+        XCTAssertNotEqual(
+            contractCall.4["HOME"],
+            FileManager.default.homeDirectoryForCurrentUser.path
+        )
+        XCTAssertTrue(contractCall.4["HOME"]?.contains(".contract-probe-") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: contractCall.4["HOME"] ?? ""))
     }
 
     func testCandidateChangeAfterPlanIsRejected() throws {
@@ -188,6 +223,44 @@ final class TunnelClientInstallerTests: XCTestCase {
         XCTAssertThrowsError(try installer.install(upgrade) { _, action in
             if action == .upgraded { throw TunnelClientInstallerError.filesystem("activation failed") }
         })
+        XCTAssertEqual(try Data(contentsOf: installer.destination), original)
+        XCTAssertEqual(try installer.validateInstalled()?.sha256, firstPlan.sha256)
+    }
+
+    func testInvalidRuntimeContractRemovesFreshInstall() throws {
+        let plan = try installer.validate(source)
+        runner.contractResult = .init(
+            exitCode: 0,
+            stdout: Data("{\"aliases\":[]}".utf8),
+            stderr: Data("candidate supplied text must not leak".utf8)
+        )
+        XCTAssertThrowsError(try installer.install(plan)) {
+            XCTAssertEqual(
+                $0 as? TunnelClientInstallerError,
+                .activationFailedFreshInstallRemoved
+            )
+            XCTAssertFalse($0.localizedDescription.contains("candidate supplied"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: installer.destination.path))
+    }
+
+    func testInvalidRuntimeContractRestoresPreviousSHAOnUpgrade() throws {
+        let firstPlan = try installer.validate(source)
+        _ = try installer.install(firstPlan)
+        let original = try Data(contentsOf: installer.destination)
+        try writeMachO(source, architecture: .arm64, marker: 8)
+        let upgrade = try installer.validate(source)
+        runner.contractResult = .init(
+            exitCode: 2,
+            stdout: Data(),
+            stderr: Data("unknown runtimes contract".utf8)
+        )
+        XCTAssertThrowsError(try installer.install(upgrade)) {
+            XCTAssertEqual(
+                $0 as? TunnelClientInstallerError,
+                .activationFailedPreviousVersionRestored
+            )
+        }
         XCTAssertEqual(try Data(contentsOf: installer.destination), original)
         XCTAssertEqual(try installer.validateInstalled()?.sha256, firstPlan.sha256)
     }

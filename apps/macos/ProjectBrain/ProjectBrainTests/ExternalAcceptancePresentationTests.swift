@@ -7,6 +7,7 @@ final class ExternalAcceptancePresentationTests: XCTestCase {
         let presentation = ExternalAcceptancePresentation.make(
             connection: readyConnection(),
             acceptance: status(current: run(status: .challengeReady)),
+            appVersion: "0.7.0",
             challengeAvailable: true
         )
         XCTAssertEqual(presentation.state, .pending)
@@ -20,6 +21,7 @@ final class ExternalAcceptancePresentationTests: XCTestCase {
         let presentation = ExternalAcceptancePresentation.make(
             connection: readyConnection(),
             acceptance: status(current: run(status: .challengeReady)),
+            appVersion: "0.7.0",
             challengeAvailable: false
         )
         XCTAssertEqual(presentation.state, .pending)
@@ -28,35 +30,78 @@ final class ExternalAcceptancePresentationTests: XCTestCase {
         XCTAssertTrue(presentation.nextAction.contains("restarted"))
     }
 
-    func testHistoricalPassRemainsVisibleWhenCurrentTunnelIsUnhealthy() {
+    func testHistoricalTransportProbeRemainsPendingWhenTunnelIsUnhealthy() {
         var connection = readyConnection()
         connection.tunnelReady = false
-        let passed = run(status: .passed, verifiedAt: "2026-07-17T02:00:00Z")
+        let probe = run(
+            status: .mcpTransportProbePassed,
+            verifiedAt: "2026-07-17T02:00:00Z"
+        )
         let presentation = ExternalAcceptancePresentation.make(
             connection: connection,
-            acceptance: status(current: nil, lastPassed: passed),
+            acceptance: status(current: nil, lastTransportProbe: probe),
+            appVersion: "0.7.0",
             challengeAvailable: false
         )
         XCTAssertEqual(presentation.state, .pending)
-        XCTAssertTrue(presentation.historicalPassed)
+        XCTAssertTrue(presentation.historicalTransportProbePassed)
+        XCTAssertFalse(presentation.applicableCurrentTransportProbe)
         XCTAssertFalse(presentation.currentConnectionHealthy)
         XCTAssertTrue(presentation.title.contains("Historical"))
     }
 
-    func testPersistedClientStateCannotRestorePassedWithoutCoreAuthority() throws {
+    func testApplicableTransportProbeNeverSetsExternalAuthority() throws {
         var connection = readyConnection()
-        let passed = run(status: .passed, verifiedAt: "2026-07-17T02:00:00Z")
-        connection.applyExternalAuthority(status(current: passed, lastPassed: passed))
-        XCTAssertEqual(connection.externalVerification, .passed)
+        let probe = run(
+            status: .mcpTransportProbePassed,
+            verifiedAt: "2026-07-17T02:00:00Z"
+        )
+        let authority = status(current: probe, lastTransportProbe: probe)
+        connection.applyExternalAuthority(authority)
+        XCTAssertEqual(connection.externalVerification, .notVerified)
+
+        let presentation = ExternalAcceptancePresentation.make(
+            connection: connection,
+            acceptance: authority,
+            appVersion: "0.7.0",
+            challengeAvailable: false
+        )
+        XCTAssertEqual(presentation.state, .pending)
+        XCTAssertTrue(presentation.applicableCurrentTransportProbe)
+        XCTAssertTrue(presentation.title.contains("ChatGPT acceptance pending"))
 
         let restored = try JSONDecoder().decode(
             ConnectionSnapshot.self,
             from: JSONEncoder().encode(connection)
         )
         XCTAssertEqual(restored.externalVerification, .notVerified)
-        var authoritative = restored
-        authoritative.applyExternalAuthority(status(current: passed, lastPassed: passed))
-        XCTAssertEqual(authoritative.externalVerification, .passed)
+
+        var failedTransport = readyConnection()
+        failedTransport.applyExternalAuthority(status(current: run(status: .failed)))
+        XCTAssertEqual(failedTransport.externalVerification, .notVerified)
+    }
+
+    func testTransportApplicabilityRequiresEntireCanonicalBindingSet() {
+        let connection = readyConnection()
+        let canonical = run(
+            status: .mcpTransportProbePassed,
+            verifiedAt: "2026-07-17T02:00:00Z"
+        )
+        XCTAssertTrue(presentation(connection, status(lastTransportProbe: canonical)).applicableCurrentTransportProbe)
+
+        let mismatches = [
+            run(status: .mcpTransportProbePassed, verifiedAt: "2026-07-17T02:00:00Z", installation: "other-install"),
+            run(status: .mcpTransportProbePassed, verifiedAt: "2026-07-17T02:00:00Z", appVersion: "0.7.1"),
+            run(status: .mcpTransportProbePassed, verifiedAt: "2026-07-17T02:00:00Z", coreVersion: "0.7.1"),
+            run(status: .mcpTransportProbePassed, verifiedAt: "2026-07-17T02:00:00Z", tunnelFingerprint: "f".padding(toLength: 64, withPad: "f", startingAt: 0)),
+            run(status: .mcpTransportProbePassed, verifiedAt: "2026-07-17T02:00:00Z", contractVersion: 1),
+        ]
+        for mismatch in mismatches {
+            let value = presentation(connection, status(lastTransportProbe: mismatch))
+            XCTAssertFalse(value.applicableCurrentTransportProbe)
+            XCTAssertEqual(value.state, .pending)
+            XCTAssertTrue(value.title.contains("current environment differs"))
+        }
     }
 
     func testDiagnosticsContainFingerprintButNoTunnelIDOrChallenge() throws {
@@ -81,6 +126,18 @@ final class ExternalAcceptancePresentationTests: XCTestCase {
         XCTAssertTrue(rendered.contains(TunnelClient.fingerprint(tunnelID)))
     }
 
+    private func presentation(
+        _ connection: ConnectionSnapshot,
+        _ acceptance: ExternalAcceptanceStatusResponse
+    ) -> ExternalAcceptancePresentation {
+        .make(
+            connection: connection,
+            acceptance: acceptance,
+            appVersion: "0.7.0",
+            challengeAvailable: false
+        )
+    }
+
     private func readyConnection() -> ConnectionSnapshot {
         ConnectionSnapshot(
             localMCPStatus: "running",
@@ -97,34 +154,45 @@ final class ExternalAcceptancePresentationTests: XCTestCase {
     }
 
     private func status(
-        current: ExternalAcceptanceRun?,
-        lastPassed: ExternalAcceptanceRun? = nil
+        current: ExternalAcceptanceRun? = nil,
+        lastTransportProbe: ExternalAcceptanceRun? = nil
     ) -> ExternalAcceptanceStatusResponse {
         ExternalAcceptanceStatusResponse(
             status: "ok",
             current: current,
-            lastPassed: lastPassed,
+            lastTransportProbe: lastTransportProbe,
+            coreVersion: "0.7.0",
+            acceptanceContractVersion: 2,
             installationFingerprint: "installation-fingerprint"
         )
     }
 
     private func run(
         status: ExternalAcceptanceRunStatus,
-        verifiedAt: String? = nil
+        verifiedAt: String? = nil,
+        installation: String = "installation-fingerprint",
+        appVersion: String = "0.7.0",
+        coreVersion: String = "0.7.0",
+        tunnelFingerprint: String? = nil,
+        contractVersion: Int = 2
     ) -> ExternalAcceptanceRun {
-        ExternalAcceptanceRun(
+        let tunnel = tunnelFingerprint ?? TunnelClient.fingerprint(
+            "tunnel_0123456789abcdef0123456789abcdef"
+        )
+        return ExternalAcceptanceRun(
             runID: "run-1",
             status: status,
-            coreVersion: "0.7.0",
-            appVersion: "0.7.0",
-            installationFingerprint: "installation-fingerprint",
-            tunnelFingerprint: "tunnel-fingerprint",
+            coreVersion: coreVersion,
+            appVersion: appVersion,
+            acceptanceContractVersion: contractVersion,
+            installationFingerprint: installation,
+            tunnelFingerprint: tunnel,
             createdAt: "2026-07-17T01:50:00Z",
             expiresAt: "2026-07-17T02:00:00Z",
             waitingAt: status == .waitingForChatGPT ? "2026-07-17T01:51:00Z" : nil,
             verifiedAt: verifiedAt,
             failureCode: nil,
-            ingress: verifiedAt == nil ? nil : "mcp_streamable_http",
+            ingress: verifiedAt == nil ? nil : "local_or_tunneled_mcp_unattributed",
             probeCount: verifiedAt == nil ? 0 : 1
         )
     }

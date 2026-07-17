@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import Security
 
 public struct TunnelCompatibilityManifest: Codable, Equatable, Sendable {
     public struct Entry: Codable, Equatable, Sendable {
@@ -99,7 +100,8 @@ public protocol TunnelInstallerProcessRunning: Sendable {
         executable: URL,
         arguments: [String],
         timeout: TimeInterval,
-        outputLimit: Int
+        outputLimit: Int,
+        environment: [String: String]
     ) throws -> TunnelInstallerProcessResult
 }
 
@@ -129,17 +131,15 @@ public struct FoundationTunnelInstallerProcessRunner: TunnelInstallerProcessRunn
         executable: URL,
         arguments: [String],
         timeout: TimeInterval,
-        outputLimit: Int
+        outputLimit: Int,
+        environment: [String: String]
     ) throws -> TunnelInstallerProcessResult {
         let process = Process()
         let output = Pipe()
         let error = Pipe()
         process.executableURL = executable
         process.arguments = arguments
-        process.environment = [
-            "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-            "PATH": TunnelClient.fixedPATH,
-        ]
+        process.environment = environment
         process.standardOutput = output
         process.standardError = error
 
@@ -184,6 +184,37 @@ public struct FoundationTunnelInstallerProcessRunner: TunnelInstallerProcessRunn
             stdoutExceededLimit: stdoutExceeded,
             stderrExceededLimit: stderrExceeded
         )
+    }
+}
+
+public struct TunnelClientImportPreview: Equatable, Sendable {
+    public let source: URL
+    public let resolvedSource: URL
+    public let architecture: TunnelBinaryArchitecture
+    public let sha256: String
+    public let fileSize: UInt64
+    public let quarantineStatus: String
+    public let signingStatus: String
+    public let sourceAttestation: String
+
+    public init(
+        source: URL,
+        resolvedSource: URL,
+        architecture: TunnelBinaryArchitecture,
+        sha256: String,
+        fileSize: UInt64,
+        quarantineStatus: String,
+        signingStatus: String,
+        sourceAttestation: String = "User must confirm this file came from the official OpenAI Platform Tunnels page."
+    ) {
+        self.source = source
+        self.resolvedSource = resolvedSource
+        self.architecture = architecture
+        self.sha256 = sha256
+        self.fileSize = fileSize
+        self.quarantineStatus = quarantineStatus
+        self.signingStatus = signingStatus
+        self.sourceAttestation = sourceAttestation
     }
 }
 
@@ -249,6 +280,11 @@ public enum TunnelClientInstallerError: LocalizedError, Equatable, Sendable {
     case versionTimeout
     case versionOutputExceeded
     case versionCheckFailed
+    case contractTimeout
+    case contractOutputExceeded
+    case contractIncompatible
+    case activationFailedFreshInstallRemoved
+    case activationFailedPreviousVersionRestored
     case candidateChanged
     case filesystem(String)
     case stopNotConfirmed
@@ -271,6 +307,16 @@ public enum TunnelClientInstallerError: LocalizedError, Equatable, Sendable {
             "Tunnel Client version output exceeded the safety limit."
         case .versionCheckFailed:
             "Tunnel Client version validation returned an invalid response."
+        case .contractTimeout:
+            "Tunnel Client runtime contract validation timed out."
+        case .contractOutputExceeded:
+            "Tunnel Client runtime contract output exceeded the safety limit."
+        case .contractIncompatible:
+            "Tunnel Client does not satisfy the reviewed read-only runtime contract."
+        case .activationFailedFreshInstallRemoved:
+            "Tunnel Client activation validation failed; the fresh managed binary was removed."
+        case .activationFailedPreviousVersionRestored:
+            "Tunnel Client activation validation failed; the previous managed version was restored."
         case .candidateChanged:
             "The selected Tunnel Client changed after validation; select it again."
         case .stopNotConfirmed:
@@ -283,6 +329,7 @@ public final class TunnelClientInstaller: @unchecked Sendable {
     public static let relativeDestination = "Project Brain/bin/tunnel-client"
     public static let versionTimeout: TimeInterval = 5
     public static let outputLimit = 8_192
+    public static let maximumCandidateSize: UInt64 = 128 * 1_024 * 1_024
 
     private let applicationSupportDirectory: URL
     private let manifest: TunnelCompatibilityManifest
@@ -313,26 +360,63 @@ public final class TunnelClientInstaller: @unchecked Sendable {
             .standardizedFileURL
     }
 
-    public func prepareImport(selectedURLs: [URL]) throws -> TunnelClientValidation {
+    public func prepareImport(selectedURLs: [URL]) throws -> TunnelClientImportPreview {
         guard selectedURLs.count == 1 else { throw TunnelClientInstallerError.invalidSelection }
-        return try validate(selectedURLs[0])
+        return try preflight(selectedURLs[0])
+    }
+
+    public func authorize(_ preview: TunnelClientImportPreview) throws -> TunnelClientValidation {
+        let latest = try preflight(preview.source)
+        guard latest == preview else { throw TunnelClientInstallerError.candidateChanged }
+        return try validateAuthorized(latest)
     }
 
     public func validateInstalled() throws -> TunnelClientValidation? {
         guard fileManager.fileExists(atPath: destination.path) else { return nil }
-        return try validate(destination)
+        return try validateAuthorized(preflight(destination))
     }
 
     public func validate(_ source: URL) throws -> TunnelClientValidation {
+        try validateAuthorized(preflight(source))
+    }
+
+    private func preflight(_ source: URL) throws -> TunnelClientImportPreview {
         let source = source.standardizedFileURL
         try validateRegularExecutable(source)
         let resolved = source.resolvingSymlinksInPath().standardizedFileURL
+        guard resolved == source else {
+            throw TunnelClientInstallerError.invalidFile(
+                "Tunnel Client must be a directly selected regular file, not a link or alias."
+            )
+        }
         try validateRegularExecutable(resolved)
+        let attributes = try fileManager.attributesOfItem(atPath: resolved.path)
+        guard let size = attributes[.size] as? NSNumber,
+              size.uint64Value > 0,
+              size.uint64Value <= Self.maximumCandidateSize else {
+            throw TunnelClientInstallerError.invalidFile(
+                "Tunnel Client file size is outside the bounded import limit."
+            )
+        }
         let architectures = try architectures(of: resolved)
         guard architectures.contains(requiredArchitecture) else {
             throw TunnelClientInstallerError.unsupportedArchitecture
         }
-        let version = try version(of: resolved)
+        return TunnelClientImportPreview(
+            source: source,
+            resolvedSource: resolved,
+            architecture: requiredArchitecture,
+            sha256: try sha256(resolved),
+            fileSize: size.uint64Value,
+            quarantineStatus: quarantineStatus(of: resolved),
+            signingStatus: signingStatus(of: resolved)
+        )
+    }
+
+    private func validateAuthorized(
+        _ preview: TunnelClientImportPreview
+    ) throws -> TunnelClientValidation {
+        let version = try version(of: preview.resolvedSource)
         guard let compatibility = manifest.supported.first(where: {
             $0.version == version
                 && $0.platform == "macos"
@@ -341,13 +425,14 @@ public final class TunnelClientInstaller: @unchecked Sendable {
             throw TunnelClientInstallerError.unsupportedVersion
         }
         return TunnelClientValidation(
-            source: source,
-            resolvedSource: resolved,
+            source: preview.source,
+            resolvedSource: preview.resolvedSource,
             version: version,
-            architecture: requiredArchitecture,
-            sha256: try sha256(resolved),
+            architecture: preview.architecture,
+            sha256: preview.sha256,
             manifestSchemaVersion: manifest.schemaVersion,
-            runtimesContract: compatibility.runtimesContract
+            runtimesContract: compatibility.runtimesContract,
+            sourceAttestation: preview.sourceAttestation
         )
     }
 
@@ -355,7 +440,7 @@ public final class TunnelClientInstaller: @unchecked Sendable {
         _ plan: TunnelClientValidation,
         onActivated: @Sendable (URL, TunnelClientInstallAction) throws -> Void = { _, _ in }
     ) throws -> TunnelClientInstallResult {
-        let latest = try validate(plan.source)
+        let latest = try validateAuthorized(preflight(plan.source))
         guard latest == plan else { throw TunnelClientInstallerError.candidateChanged }
         let destination = destination
         let bin = destination.deletingLastPathComponent()
@@ -374,12 +459,13 @@ public final class TunnelClientInstaller: @unchecked Sendable {
         let candidate = bin.appending(path: ".tunnel-client.\(UUID().uuidString).candidate")
         let rollback = bin.appending(path: ".tunnel-client.rollback")
         var candidateExists = false
+        var rollbackSHA256: String?
         do {
             try fileManager.copyItem(at: plan.resolvedSource, to: candidate)
             candidateExists = true
             try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: candidate.path)
             try syncFile(candidate)
-            let candidateValidation = try validate(candidate)
+            let candidateValidation = try validateAuthorized(preflight(candidate))
             guard candidateValidation.version == plan.version,
                   candidateValidation.architecture == plan.architecture,
                   candidateValidation.sha256 == plan.sha256 else {
@@ -388,11 +474,12 @@ public final class TunnelClientInstaller: @unchecked Sendable {
 
             let upgrading = fileManager.fileExists(atPath: destination.path)
             if upgrading {
-                let installed = try validate(destination)
+                let installed = try validateAuthorized(preflight(destination))
                 if installed.sha256 == plan.sha256 {
                     try fileManager.removeItem(at: candidate)
                     candidateExists = false
                     try syncDirectory(bin)
+                    try validateRuntimeContract(destination, bin: bin)
                     return TunnelClientInstallResult(
                         action: .current,
                         validation: installed,
@@ -402,6 +489,7 @@ public final class TunnelClientInstaller: @unchecked Sendable {
                 if fileManager.fileExists(atPath: rollback.path) {
                     try fileManager.removeItem(at: rollback)
                 }
+                rollbackSHA256 = installed.sha256
                 try fileManager.copyItem(at: destination, to: rollback)
                 try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: rollback.path)
                 try syncFile(rollback)
@@ -412,19 +500,39 @@ public final class TunnelClientInstaller: @unchecked Sendable {
             try syncDirectory(bin)
             let action: TunnelClientInstallAction = upgrading ? .upgraded : .installed
             do {
-                let installed = try validate(destination)
+                let installed = try validateAuthorized(preflight(destination))
                 guard installed.sha256 == plan.sha256 else {
                     throw TunnelClientInstallerError.candidateChanged
                 }
+                try validateRuntimeContract(destination, bin: bin)
                 try onActivated(destination, action)
             } catch {
-                if upgrading, fileManager.fileExists(atPath: rollback.path) {
+                if upgrading {
+                    guard fileManager.fileExists(atPath: rollback.path) else {
+                        throw TunnelClientInstallerError.filesystem(
+                            "Tunnel Client activation failed and the private rollback copy is unavailable."
+                        )
+                    }
                     try atomicRename(rollback, destination)
                     try syncDirectory(bin)
-                    try? onActivated(destination, .current)
+                    let restored = try validateAuthorized(preflight(destination))
+                    guard restored.sha256 == rollbackSHA256 else {
+                        throw TunnelClientInstallerError.filesystem(
+                            "Tunnel Client activation failed and rollback integrity verification failed."
+                        )
+                    }
+                    do {
+                        try onActivated(destination, .current)
+                    } catch {
+                        throw TunnelClientInstallerError.filesystem(
+                            "Tunnel Client bytes were restored, but restored activation validation failed."
+                        )
+                    }
+                    throw TunnelClientInstallerError.activationFailedPreviousVersionRestored
                 } else if fileManager.fileExists(atPath: destination.path) {
                     try fileManager.removeItem(at: destination)
                     try syncDirectory(bin)
+                    throw TunnelClientInstallerError.activationFailedFreshInstallRemoved
                 }
                 throw error
             }
@@ -434,7 +542,7 @@ public final class TunnelClientInstaller: @unchecked Sendable {
             }
             return TunnelClientInstallResult(
                 action: action,
-                validation: try validate(destination),
+                validation: try validateAuthorized(preflight(destination)),
                 destination: destination
             )
         } catch {
@@ -470,7 +578,8 @@ public final class TunnelClientInstaller: @unchecked Sendable {
             executable: executable,
             arguments: ["--version"],
             timeout: Self.versionTimeout,
-            outputLimit: Self.outputLimit
+            outputLimit: Self.outputLimit,
+            environment: defaultEnvironment
         )
         if result.timedOut { throw TunnelClientInstallerError.versionTimeout }
         if result.stdoutExceededLimit || result.stderrExceededLimit {
@@ -491,6 +600,82 @@ public final class TunnelClientInstaller: @unchecked Sendable {
             throw TunnelClientInstallerError.versionCheckFailed
         }
         return String(trimmed[versionRange])
+    }
+
+    private var defaultEnvironment: [String: String] {
+        [
+            "HOME": fileManager.homeDirectoryForCurrentUser.path,
+            "PATH": TunnelClient.fixedPATH,
+        ]
+    }
+
+    private func validateRuntimeContract(_ executable: URL, bin: URL) throws {
+        let probeHome = bin.appending(path: ".contract-probe-\(UUID().uuidString)")
+        do {
+            try fileManager.createDirectory(
+                at: probeHome,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            throw TunnelClientInstallerError.filesystem(
+                "Unable to create the isolated Tunnel Client contract-probe directory."
+            )
+        }
+        defer { try? fileManager.removeItem(at: probeHome) }
+        let result = try runner.run(
+            executable: executable,
+            arguments: ["runtimes", "list", "--json"],
+            timeout: Self.versionTimeout,
+            outputLimit: Self.outputLimit,
+            environment: ["HOME": probeHome.path, "PATH": TunnelClient.fixedPATH]
+        )
+        if result.timedOut { throw TunnelClientInstallerError.contractTimeout }
+        if result.stdoutExceededLimit || result.stderrExceededLimit {
+            throw TunnelClientInstallerError.contractOutputExceeded
+        }
+        guard result.exitCode == 0,
+              let object = try? JSONSerialization.jsonObject(with: result.stdout),
+              let payload = object as? [String: Any],
+              payload["aliases"] is [Any],
+              let adminProfile = payload["admin_profile"] as? String,
+              let adminProfilePath = payload["admin_profile_path"] as? String,
+              let stateRootValue = payload["state_root"] as? String,
+              !adminProfile.isEmpty,
+              !adminProfilePath.isEmpty,
+              !stateRootValue.isEmpty else {
+            throw TunnelClientInstallerError.contractIncompatible
+        }
+        let stateRoot = URL(fileURLWithPath: stateRootValue).standardizedFileURL.path
+        let isolatedRoot = probeHome.standardizedFileURL.path + "/"
+        guard stateRoot.hasPrefix(isolatedRoot) else {
+            throw TunnelClientInstallerError.contractIncompatible
+        }
+    }
+
+    private func quarantineStatus(of url: URL) -> String {
+        let length = url.path.withCString { path in
+            "com.apple.quarantine".withCString { name in
+                Darwin.getxattr(path, name, nil, 0, 0, 0)
+            }
+        }
+        return length >= 0 ? "present" : "not_detected"
+    }
+
+    private func signingStatus(of url: URL) -> String {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess,
+              let code else {
+            return "not_signed_or_unreadable"
+        }
+        let result = SecStaticCodeCheckValidity(
+            code,
+            SecCSFlags(rawValue: kSecCSBasicValidateOnly),
+            nil
+        )
+        return result == errSecSuccess
+            ? "valid_code_signature_identity_not_pinned"
+            : "signature_invalid"
     }
 
     private func validateRegularExecutable(_ url: URL) throws {

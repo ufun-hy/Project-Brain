@@ -18,6 +18,7 @@ from project_brain.schema import (
     MIGRATION_4,
     MIGRATION_5,
     MIGRATION_6,
+    MIGRATION_7,
     SCHEMA_VERSION,
 )
 from project_brain.store import TaskStore
@@ -181,7 +182,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(columns["accepting_tasks"]["dflt_value"], "1")
         self.assertEqual(columns["registered"]["dflt_value"], "1")
 
-    def test_version_six_migrates_to_v7_with_stable_installation_identity(self) -> None:
+    def test_version_six_migrates_through_v8_with_stable_installation_identity(self) -> None:
         TaskStore(
             self.database,
             migrations={
@@ -206,7 +207,7 @@ class MigrationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
             }
-        self.assertEqual(store.schema_version(), 7)
+        self.assertEqual(store.schema_version(), 8)
         self.assertIn("external_acceptance_runs", tables)
         store.initialize()
         with store.connect() as connection:
@@ -247,7 +248,75 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("external_acceptance_runs", tables)
         restarted = TaskStore(self.database)
         restarted.initialize()
-        self.assertEqual(restarted.schema_version(), 7)
+        self.assertEqual(restarted.schema_version(), 8)
+
+    def test_version_seven_pass_is_migrated_to_unattributed_transport_evidence(self) -> None:
+        old = TaskStore(
+            self.database,
+            migrations={
+                1: MIGRATION_1,
+                2: MIGRATION_2,
+                3: MIGRATION_3,
+                4: MIGRATION_4,
+                5: MIGRATION_5,
+                6: MIGRATION_6,
+                7: MIGRATION_7,
+            },
+            schema_version=7,
+        )
+        old.initialize()
+        with old.connect() as connection:
+            installation_id = connection.execute(
+                "SELECT installation_id FROM installation_identity WHERE singleton = 1"
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO external_acceptance_runs(
+                    run_id, challenge_sha256, status, core_version, app_version,
+                    installation_id, tunnel_fingerprint, created_at, expires_at,
+                    verified_at, ingress, probe_count
+                ) VALUES (?, ?, 'passed', ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    "acceptance-v7",
+                    "b" * 64,
+                    "0.7.0",
+                    "0.7.0",
+                    installation_id,
+                    "a" * 64,
+                    "2026-07-17T00:00:00+00:00",
+                    "2026-07-17T00:10:00+00:00",
+                    "2026-07-17T00:01:00+00:00",
+                    "mcp_streamable_http",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO external_acceptance_events(
+                    run_id, event_type, from_status, to_status, payload_json, created_at
+                ) VALUES (?, 'acceptance_probe_passed', 'waiting_for_chatgpt',
+                    'passed', '{}', ?)
+                """,
+                ("acceptance-v7", "2026-07-17T00:01:00+00:00"),
+            )
+            connection.commit()
+
+        upgraded = TaskStore(self.database)
+        upgraded.initialize()
+        with upgraded.connect() as connection:
+            run = connection.execute(
+                "SELECT * FROM external_acceptance_runs WHERE run_id = 'acceptance-v7'"
+            ).fetchone()
+            event = connection.execute(
+                "SELECT * FROM external_acceptance_events WHERE run_id = 'acceptance-v7'"
+            ).fetchone()
+        self.assertEqual(upgraded.schema_version(), 8)
+        self.assertEqual(run["status"], "mcp_transport_probe_passed")
+        self.assertEqual(run["acceptance_contract_version"], 1)
+        self.assertEqual(run["ingress"], "local_or_tunneled_mcp_unattributed")
+        self.assertEqual(event["event_type"], "mcp_transport_probe_recorded")
+        self.assertEqual(event["to_status"], "mcp_transport_probe_passed")
+        self.assertFalse(json.loads(event["payload_json"])["external_chatgpt_verified"])
 
     def test_failed_migration_rolls_back_atomically(self) -> None:
         store = TaskStore(

@@ -128,13 +128,15 @@ Current references:
 | `project_brain_tasks_get` | read | Bounded current evidence, reviews, archive metadata, and recent events |
 | `project_brain_tasks_review` | write | Atomic `approved` or `needs_changes` verdict for the exact canonical head |
 | `project_brain_tasks_recovery_preview` | read | Dry-run classifier and identity state only |
-| `project_brain_acceptance_probe` | write | Consume one waiting, hash-bound challenge; no task, file, Git, or process side effect |
+| `project_brain_acceptance_probe` | write | Consume one waiting, hash-bound transport challenge and record unattributed evidence; no external-verification, task, file, Git, or process authority |
 
 There are no tools for arbitrary files, directories, shell, Git reset/clean/
 checkout/merge, free-form Codex commands, task-directed claim bypass, recovery
 resolution, cleanup, manual acceptance mutation, or PR merge. The acceptance
-probe is the sole completion ingress and accepts only the one-time `challenge`
-string; it is not a general acceptance setter.
+probe accepts only the one-time `challenge` string. It records
+`mcp_transport_probe_passed` with `external_chatgpt_verified=false`; request
+headers, source IP, Host, Origin, and User-Agent are not trusted source evidence.
+It is not an external-acceptance setter.
 
 Create accepts only stable IDs, revision, goal, criteria, a bounded prompt, and
 optional expiry/supersession. Every schema rejects unknown fields. Any nesting
@@ -165,8 +167,8 @@ response returns only the log ID, never its absolute local path.
 1. Start the server and complete local initialize/tools/list.
 2. Confirm all nine tool schemas and read/write annotations.
 3. Generate a challenge in Product Shell and use the connector to call only
-   `project_brain_acceptance_probe`; confirm the App changes from waiting to
-   passed without a manual pass control.
+   `project_brain_acceptance_probe`; confirm the App records an unattributed MCP
+   transport probe while external ChatGPT acceptance remains Pending.
 4. Through Secure MCP Tunnel and a ChatGPT developer-mode draft app, list
    projects and create a documentation-only real task.
 5. Dispatch, poll status, inspect bounded verification evidence and the Draft
@@ -176,8 +178,9 @@ response returns only the log ID, never its absolute local path.
 7. Confirm the registered main checkout and legacy Gmail/MenuBar files were not
    changed.
 
-Steps that require a tunnel ID, runtime key, or ChatGPT workspace permissions
-cannot be replaced by local tests. Report them as externally pending when
+Steps that require a tunnel ID, runtime key, ChatGPT workspace permissions, or
+trusted control-plane attestation cannot be replaced by local tests. Report them
+as externally pending when
 those credentials are unavailable.
 
 ## Distinctions and non-goals

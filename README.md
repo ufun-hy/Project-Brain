@@ -21,9 +21,11 @@ without asking the user to run a CLI or maintain Python.
 
 The app embeds a self-contained Core helper and can import a user-downloaded,
 reviewed Tunnel Client into its private App Support directory. Both installers
-use atomic replacement and rollback. RC1 adds an eleven-step external
-acceptance wizard, one-time MCP challenges, and an optional fixed one-document
-Draft PR task. The unsigned internal RC artifact, first-run guide, and current
+use atomic replacement and rollback. RC1 build 2 adds an MCP transport-probe
+wizard with explicit external-acceptance Pending state. The optional fixed
+one-document Draft PR task remains locked because the current Tunnel contract
+does not provide trusted ChatGPT control-plane attestation. The unsigned
+internal RC artifact, first-run guide, and current
 external limits are documented in [`docs/product-shell.md`](docs/product-shell.md)
 and [`docs/product-shell-rc1-verification.md`](docs/product-shell-rc1-verification.md).
 
@@ -175,7 +177,8 @@ do not expose the local endpoint as an unauthenticated public service.
 The nine allowlisted tools cover health, projects, canonical task create,
 asynchronous queue dispatch, bounded task list/detail, exact-head review, and
 read-only recovery preview. The ninth tool is a strict, one-field, no-side-effect
-external acceptance probe. They expose no shell, arbitrary files, cleanup,
+MCP transport probe. Its source is explicitly unattributed and it cannot set
+external ChatGPT verification. The tools expose no shell, arbitrary files, cleanup,
 recovery resolution, manual acceptance setter, or merge operation. Dispatch starts a fixed
 one-shot Core worker and returns immediately; `RuntimeLock` and the global
 claim gate remain authoritative. A daemon reaper actively waits for each

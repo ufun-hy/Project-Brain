@@ -108,9 +108,9 @@ public struct ConnectionSnapshot: Codable, Equatable, Sendable {
     public mutating func applyExternalAuthority(
         _ acceptance: ExternalAcceptanceStatusResponse?
     ) {
-        if acceptance?.lastPassed != nil {
+        if acceptance?.applicableExternalChatGPTVerification != nil {
             externalVerification = .passed
-        } else if acceptance?.current?.status == .failed {
+        } else if acceptance?.externalChatGPTVerification.status == "failed" {
             externalVerification = .failed
         } else {
             externalVerification = .notVerified
@@ -146,7 +146,7 @@ public struct ConnectionSnapshot: Codable, Equatable, Sendable {
         ) ?? ((try values.decodeIfPresent(Bool.self, forKey: .legacyWorkspaceConfigured)) == true
             ? .operatorDeclared : .notDeclared)
         // UserDefaults is not authoritative for external acceptance. Core's
-        // schema-v7 status is applied after the helper snapshot loads.
+        // Core's schema-v8 authority is applied after the helper snapshot loads.
         externalVerification = .notVerified
         lastCheckedAt = try values.decodeIfPresent(String.self, forKey: .lastCheckedAt)
     }
@@ -318,7 +318,7 @@ public struct SafeConnectionDiagnostic: Codable, Equatable, Sendable {
         workspaceConfiguration = connection.workspaceConfiguration
         externalVerification = connection.externalVerification
         currentAcceptanceStatus = acceptance?.current?.status
-        lastExternalPassAt = acceptance?.lastPassed?.verifiedAt
+        lastExternalPassAt = acceptance?.applicableExternalChatGPTVerification?.verifiedAt
     }
 }
 

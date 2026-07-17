@@ -242,8 +242,15 @@ class MCPTransportTests(unittest.TestCase):
             )
             self.assertTrue(transport_ready, detail)
 
-            async def inspect_transport() -> tuple[str, set[str], str, str]:
-                async with httpx.AsyncClient(trust_env=False) as http_client:
+            async def inspect_transport() -> tuple[str, set[str], str, str, bool]:
+                async with httpx.AsyncClient(
+                    trust_env=False,
+                    headers={
+                        "X-OpenAI-Connector": "spoofed",
+                        "X-Forwarded-For": "203.0.113.1",
+                        "User-Agent": "ChatGPT-Connector-spoof",
+                    },
+                ) as http_client:
                     async with streamable_http_client(
                         f"http://127.0.0.1:{port}/mcp",
                         http_client=http_client,
@@ -262,13 +269,17 @@ class MCPTransportTests(unittest.TestCase):
                                 {tool.name for tool in tools.tools},
                                 health.structuredContent["status"],
                                 probe.structuredContent["status"],
+                                probe.structuredContent["result"]["external_chatgpt_verified"],
                             )
 
-            name, tool_names, health_status, probe_status = asyncio.run(inspect_transport())
+            name, tool_names, health_status, probe_status, external_verified = asyncio.run(
+                inspect_transport()
+            )
             self.assertEqual(name, "Project Brain")
             self.assertEqual(tool_names, EXPECTED_TOOLS)
             self.assertEqual(health_status, "ok")
-            self.assertEqual(probe_status, "passed")
+            self.assertEqual(probe_status, "ok")
+            self.assertFalse(external_verified)
         finally:
             process.terminate()
             stdout, stderr = process.communicate(timeout=10)
@@ -281,7 +292,11 @@ class MCPTransportTests(unittest.TestCase):
         reopened.initialize()
         self.assertEqual(reopened.schema_version(), SCHEMA_VERSION)
         external = ExternalAcceptanceManager(reopened).status()
-        self.assertEqual(external["last_passed"]["run_id"], created["run"]["run_id"])
+        self.assertEqual(
+            external["last_transport_probe"]["run_id"], created["run"]["run_id"]
+        )
+        self.assertEqual(external["external_chatgpt_verification"]["status"], "pending")
+        self.assertIsNone(external["applicable_external_chatgpt_verification"])
         self.assertEqual(reopened.list_tasks(), [])
         self.assertEqual(list(self.fixture.runtime.worktrees_dir.rglob("*")), [])
         self.assertTrue(RuntimeLock.is_available(self.fixture.runtime.lock_file))

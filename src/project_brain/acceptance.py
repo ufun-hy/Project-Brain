@@ -23,9 +23,15 @@ from .store import TaskStore
 
 
 ACTIVE_STATUSES = ("challenge_ready", "waiting_for_chatgpt")
-TERMINAL_STATUSES = ("passed", "failed", "expired", "superseded")
+TERMINAL_STATUSES = (
+    "mcp_transport_probe_passed",
+    "failed",
+    "expired",
+    "superseded",
+)
 DEFAULT_CHALLENGE_TTL_SECONDS = 600
 CHALLENGE_BYTES = 32
+ACCEPTANCE_CONTRACT_VERSION = 2
 VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
 FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 CHALLENGE_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,128}\Z")
@@ -118,14 +124,16 @@ class ExternalAcceptanceManager:
                 """
                 INSERT INTO external_acceptance_runs(
                     run_id, challenge_sha256, status, core_version, app_version,
-                    installation_id, tunnel_fingerprint, created_at, expires_at
-                ) VALUES (?, ?, 'challenge_ready', ?, ?, ?, ?, ?, ?)
+                    acceptance_contract_version, installation_id,
+                    tunnel_fingerprint, created_at, expires_at
+                ) VALUES (?, ?, 'challenge_ready', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     digest,
                     __version__,
                     app_version,
+                    ACCEPTANCE_CONTRACT_VERSION,
                     installation["installation_id"],
                     tunnel_fingerprint,
                     _iso(created),
@@ -215,8 +223,9 @@ class ExternalAcceptanceManager:
                 "SELECT * FROM external_acceptance_runs "
                 "ORDER BY created_at DESC, rowid DESC LIMIT 1"
             ).fetchone()
-            last_passed = connection.execute(
-                "SELECT * FROM external_acceptance_runs WHERE status = 'passed' "
+            last_probe = connection.execute(
+                "SELECT * FROM external_acceptance_runs "
+                "WHERE status = 'mcp_transport_probe_passed' "
                 "ORDER BY verified_at DESC, rowid DESC LIMIT 1"
             ).fetchone()
             installation = connection.execute(
@@ -225,7 +234,16 @@ class ExternalAcceptanceManager:
         return {
             "status": "ok",
             "current": self._safe_run(current) if current is not None else None,
-            "last_passed": self._safe_run(last_passed) if last_passed is not None else None,
+            "last_transport_probe": (
+                self._safe_run(last_probe) if last_probe is not None else None
+            ),
+            "external_chatgpt_verification": {
+                "status": "pending",
+                "reason_code": "trusted_control_plane_attestation_unavailable",
+            },
+            "applicable_external_chatgpt_verification": None,
+            "core_version": __version__,
+            "acceptance_contract_version": ACCEPTANCE_CONTRACT_VERSION,
             "installation_fingerprint": (
                 opaque_fingerprint(installation["installation_id"])
                 if installation is not None
@@ -261,7 +279,7 @@ class ExternalAcceptanceManager:
             ).fetchone()
             if row is None or not hmac.compare_digest(row["challenge_sha256"], digest):
                 raise InvalidTaskError("Acceptance challenge did not match an active run")
-            if row["status"] == "passed":
+            if row["status"] == "mcp_transport_probe_passed":
                 raise StateConflictError("Acceptance challenge was already used")
             if row["status"] == "expired":
                 raise StateConflictError("Acceptance challenge expired")
@@ -269,9 +287,24 @@ class ExternalAcceptanceManager:
                 raise StateConflictError(
                     f"Acceptance challenge is not waiting for ChatGPT: {row['status']}"
                 )
+            installation = connection.execute(
+                "SELECT installation_id FROM installation_identity WHERE singleton = 1"
+            ).fetchone()
+            if (
+                installation is None
+                or row["installation_id"] != installation["installation_id"]
+                or row["core_version"] != __version__
+                or int(row["acceptance_contract_version"])
+                != ACCEPTANCE_CONTRACT_VERSION
+            ):
+                raise StateConflictError(
+                    "Acceptance challenge does not match the current Core installation contract"
+                )
             cursor = connection.execute(
-                "UPDATE external_acceptance_runs SET status = 'passed', verified_at = ?, "
-                "ingress = 'mcp_streamable_http', probe_count = probe_count + 1 "
+                "UPDATE external_acceptance_runs "
+                "SET status = 'mcp_transport_probe_passed', verified_at = ?, "
+                "ingress = 'local_or_tunneled_mcp_unattributed', "
+                "probe_count = probe_count + 1 "
                 "WHERE run_id = ? AND status = 'waiting_for_chatgpt'",
                 (_iso(now), row["run_id"]),
             )
@@ -280,10 +313,13 @@ class ExternalAcceptanceManager:
             self._event(
                 connection,
                 run_id=row["run_id"],
-                event_type="acceptance_probe_passed",
+                event_type="mcp_transport_probe_recorded",
                 from_status="waiting_for_chatgpt",
-                to_status="passed",
-                payload={"ingress": "mcp_streamable_http"},
+                to_status="mcp_transport_probe_passed",
+                payload={
+                    "ingress": "local_or_tunneled_mcp_unattributed",
+                    "external_chatgpt_verified": False,
+                },
                 created_at=_iso(now),
             )
             updated = self._require_run(connection, row["run_id"])
@@ -296,6 +332,7 @@ class ExternalAcceptanceManager:
             "status": row["status"],
             "core_version": row["core_version"],
             "app_version": row["app_version"],
+            "acceptance_contract_version": int(row["acceptance_contract_version"]),
             "installation_fingerprint": opaque_fingerprint(row["installation_id"]),
             "tunnel_fingerprint": row["tunnel_fingerprint"],
             "created_at": row["created_at"],

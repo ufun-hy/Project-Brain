@@ -525,8 +525,10 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
     @mcp.tool(
         name="project_brain_acceptance_probe",
         description=(
-            "Consume one Product Brain external-acceptance challenge. This records only "
-            "a bounded ingress proof and performs no task, file, Git, or command action."
+            "Consume one Project Brain MCP transport challenge. This records only "
+            "unattributed local-or-tunneled transport evidence; it cannot authenticate "
+            "ChatGPT or complete external acceptance, and performs no task, file, Git, "
+            "or command action."
         ),
         annotations=ACCEPTANCE_PROBE_WRITE,
         structured_output=True,
@@ -537,10 +539,12 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
         def operation() -> dict[str, Any]:
             run = acceptance._complete_from_mcp_ingress(challenge)
             return {
-                "status": "passed",
+                "status": "ok",
                 "code": "ok",
                 "result": {
-                    "probe": "passed",
+                    "probe": "mcp_transport_probe_passed",
+                    "external_chatgpt_verified": False,
+                    "source_attribution": "unavailable",
                     "project_brain_version": __version__,
                     "verified_at": run["verified_at"],
                     "acceptance_run_id": run["run_id"],

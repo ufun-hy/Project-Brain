@@ -8,7 +8,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from project_brain.acceptance import ExternalAcceptanceManager, challenge_sha256
+from project_brain.acceptance import (
+    ACCEPTANCE_CONTRACT_VERSION,
+    ExternalAcceptanceManager,
+    challenge_sha256,
+)
 from project_brain.acceptance_tasks import (
     ACCEPTANCE_DOCUMENT_PATH,
     acceptance_task_plan,
@@ -77,6 +81,10 @@ class ExternalAcceptanceTests(unittest.TestCase):
         self.assertNotIn(challenge, self.fixture.runtime.database.read_bytes().decode(errors="ignore"))
         self.assertEqual(created["run"]["core_version"], "0.7.0")
         self.assertEqual(created["run"]["app_version"], "0.7.0")
+        self.assertEqual(
+            created["run"]["acceptance_contract_version"],
+            ACCEPTANCE_CONTRACT_VERSION,
+        )
         self.assertEqual(created["run"]["tunnel_fingerprint"], TUNNEL_FINGERPRINT)
 
     def test_mismatch_never_changes_waiting_run(self) -> None:
@@ -94,18 +102,21 @@ class ExternalAcceptanceTests(unittest.TestCase):
             self.manager._complete_from_mcp_ingress(created["challenge"])
         self.assertEqual(self.manager.status()["current"]["status"], "expired")
 
-    def test_replay_is_rejected_and_historical_pass_survives_new_current_run(self) -> None:
+    def test_replay_is_rejected_and_historical_transport_probe_survives_new_run(self) -> None:
         created = self.create()
         self.manager.mark_waiting(created["run"]["run_id"])
         passed = self.manager._complete_from_mcp_ingress(created["challenge"])
-        self.assertEqual(passed["ingress"], "mcp_streamable_http")
+        self.assertEqual(passed["status"], "mcp_transport_probe_passed")
+        self.assertEqual(passed["ingress"], "local_or_tunneled_mcp_unattributed")
         with self.assertRaisesRegex(StateConflictError, "already used"):
             self.manager._complete_from_mcp_ingress(created["challenge"])
         replacement = self.create()
         status = self.manager.status()
         self.assertEqual(status["current"]["run_id"], replacement["run"]["run_id"])
         self.assertEqual(status["current"]["status"], "challenge_ready")
-        self.assertEqual(status["last_passed"]["run_id"], passed["run_id"])
+        self.assertEqual(status["last_transport_probe"]["run_id"], passed["run_id"])
+        self.assertEqual(status["external_chatgpt_verification"]["status"], "pending")
+        self.assertIsNone(status["applicable_external_chatgpt_verification"])
 
     def test_concurrent_duplicate_ingress_has_exactly_one_winner(self) -> None:
         created = self.create()
@@ -119,12 +130,12 @@ class ExternalAcceptanceTests(unittest.TestCase):
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(lambda _: invoke(), range(2)))
-        self.assertCountEqual(results, ["passed", "rejected"])
+        self.assertCountEqual(results, ["mcp_transport_probe_passed", "rejected"])
         current = self.manager.status()["current"]
         self.assertEqual(current["probe_count"], 1)
         self.assertEqual(
             [event["event_type"] for event in self.manager.list_events(current["run_id"])].count(
-                "acceptance_probe_passed"
+                "mcp_transport_probe_recorded"
             ),
             1,
         )
@@ -140,6 +151,33 @@ class ExternalAcceptanceTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(old["status"], "superseded")
         self.assertEqual(second["run"]["status"], "challenge_ready")
+
+    def test_completion_fails_closed_when_installation_identity_changed(self) -> None:
+        created = self.create()
+        self.manager.mark_waiting(created["run"]["run_id"])
+        with sqlite3.connect(self.fixture.runtime.database) as connection:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute(
+                "UPDATE installation_identity SET installation_id = ? WHERE singleton = 1",
+                ("replacement-installation",),
+            )
+            connection.commit()
+        with self.assertRaisesRegex(StateConflictError, "installation contract"):
+            self.manager._complete_from_mcp_ingress(created["challenge"])
+        self.assertEqual(self.manager.status()["current"]["status"], "waiting_for_chatgpt")
+
+    def test_completion_fails_closed_when_acceptance_contract_changed(self) -> None:
+        created = self.create()
+        self.manager.mark_waiting(created["run"]["run_id"])
+        with self.fixture.store.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE external_acceptance_runs SET acceptance_contract_version = ? "
+                "WHERE run_id = ?",
+                (ACCEPTANCE_CONTRACT_VERSION - 1, created["run"]["run_id"]),
+            )
+        with self.assertRaisesRegex(StateConflictError, "installation contract"):
+            self.manager._complete_from_mcp_ingress(created["challenge"])
+        self.assertEqual(self.manager.status()["current"]["status"], "waiting_for_chatgpt")
 
     def test_restart_recovers_waiting_state_without_recovering_plaintext(self) -> None:
         created = self.create()
@@ -190,21 +228,12 @@ class AcceptanceTaskTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.fixture.close()
 
-    def test_plan_and_create_are_bound_to_passed_run_project_snapshot_and_fixed_file(self) -> None:
-        plan = acceptance_task_plan(self.fixture.store, "project-one")
-        task, created, applied = create_acceptance_task(
-            self.fixture.store,
-            project_id="project-one",
-            plan_token=plan["plan_token"],
-        )
-        self.assertTrue(created)
-        self.assertEqual(applied, plan)
-        self.assertEqual(task["source_type"], "product_shell_acceptance")
-        self.assertEqual(task["task_type"], "codex")
-        self.assertEqual(plan["changed_files"], [ACCEPTANCE_DOCUMENT_PATH])
-        self.assertEqual(task["payload"]["acceptance_document_path"], ACCEPTANCE_DOCUMENT_PATH)
-        self.assertNotIn("command", task["payload"])
-        self.assertNotIn("argv", task["payload"])
+    def test_unattributed_transport_probe_cannot_plan_real_project_task(self) -> None:
+        with self.assertRaisesRegex(
+            StateConflictError,
+            "Trusted ChatGPT control-plane attestation is unavailable",
+        ):
+            acceptance_task_plan(self.fixture.store, "project-one")
 
     def test_public_importer_cannot_forge_reserved_acceptance_source(self) -> None:
         with self.assertRaisesRegex(InvalidTaskError, "Reserved"):
@@ -220,85 +249,16 @@ class AcceptanceTaskTests(unittest.TestCase):
                 ).as_record()
             )
 
-    def test_fixed_verifier_accepts_exact_document_and_rejects_extra_change(self) -> None:
-        plan = acceptance_task_plan(self.fixture.store, "project-one")
-        task, _, _ = create_acceptance_task(
-            self.fixture.store,
-            project_id="project-one",
-            plan_token=plan["plan_token"],
-        )
-        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
-        target = self.repo / ACCEPTANCE_DOCUMENT_PATH
-        target.parent.mkdir(parents=True)
-        target.write_text(task["payload"]["acceptance_document_content"], encoding="utf-8")
-        git(self.repo, "add", ACCEPTANCE_DOCUMENT_PATH)
-        git(self.repo, "commit", "-m", "acceptance")
-        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
-        candidate = {**task, "base_sha": base, "head_sha": head, "commit": head}
-        result = VerificationRunner(self.fixture.store, self.fixture.runtime)._verify_acceptance_document(
-            candidate, self.repo
-        )
-        self.assertEqual(result["status"], "passed")
-
-        (self.repo / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
-        git(self.repo, "add", "unexpected.txt")
-        git(self.repo, "commit", "-m", "unexpected")
-        extra_head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
-        failed = VerificationRunner(
-            self.fixture.store, self.fixture.runtime
-        )._verify_acceptance_document(
-            {**candidate, "head_sha": extra_head, "commit": extra_head}, self.repo
-        )
-        self.assertEqual(failed["status"], "failed")
-
-    def test_fixed_task_runs_through_isolated_pipeline_and_stops_at_draft_review(self) -> None:
-        plan = acceptance_task_plan(self.fixture.store, "project-one")
-        task, _, _ = create_acceptance_task(
-            self.fixture.store,
-            project_id="project-one",
-            plan_token=plan["plan_token"],
-        )
-
-        class FixedAcceptanceCodex:
-            def execute(inner_self, *, task, worktree, snapshot, **_):
-                target = Path(worktree) / ACCEPTANCE_DOCUMENT_PATH
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(
-                    task["payload"]["acceptance_document_content"], encoding="utf-8"
-                )
-                return GitHistoryNormalizer().normalize(
-                    worktree, snapshot, message="docs: record Project Brain acceptance"
-                )
-
-        class DraftOnlyPublisher:
-            def publish(inner_self, **_):
-                return {
-                    "pushed": False,
-                    "pr_url": "https://example.test/project/pull/1",
-                }
-
-        result = TaskEngine(
-            self.fixture.store,
-            self.fixture.runtime,
-            codex=FixedAcceptanceCodex(),
-            github=DraftOnlyPublisher(),
-        ).apply_once()
-        self.assertEqual(result["status"], "awaiting_review")
-        self.assertEqual(result["task"]["task_id"], task["task_id"])
-        self.assertEqual(result["task"]["pr_url"], "https://example.test/project/pull/1")
-        self.assertEqual(result["task"]["branch"].startswith("brain/"), True)
-        self.assertEqual(result["task"]["head_sha"], result["task"]["commit"])
-        self.assertEqual(result["evidence"][0]["status"], "passed")
-        self.assertEqual(result["evidence"][0]["criterion_id"], "rc1-acceptance-document")
-        changed = git(
-            Path(result["task"]["worktree_path"]),
-            "diff-tree",
-            "--no-commit-id",
-            "--name-only",
-            "-r",
-            result["task"]["commit"],
-        ).stdout.splitlines()
-        self.assertEqual(changed, [ACCEPTANCE_DOCUMENT_PATH])
+    def test_create_is_also_locked_without_a_trusted_attestation_plan(self) -> None:
+        with self.assertRaisesRegex(
+            StateConflictError,
+            "Trusted ChatGPT control-plane attestation is unavailable",
+        ):
+            create_acceptance_task(
+                self.fixture.store,
+                project_id="project-one",
+                plan_token="forged-plan-token",
+            )
 
 
 if __name__ == "__main__":

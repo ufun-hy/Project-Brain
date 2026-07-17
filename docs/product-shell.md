@@ -126,10 +126,12 @@ activation restores and reactivates the previous helper.
 RC1 first asks the user to open the official OpenAI Platform Tunnels page and
 select the downloaded client with the native file picker. The app rejects
 links, directories, non-executables, unsupported Mach-O architectures, and
-versions absent from the bundled compatibility manifest. Version checks use
-only fixed `--version` argv with bounded output and timeout. The confirmation
-screen shows SHA-256 and explicitly says that official origin is confirmed by
-the user when no machine-verifiable upstream digest is available.
+oversized files before executing any selected bytes. The first screen performs
+only static file, Mach-O, SHA-256, quarantine, and code-signing inspection and
+states that no official signing requirement or digest is pinned. Cancel is
+zero-execution and zero-install. Only a separate execution authorization permits
+fixed `--version` argv with bounded output and timeout; versions absent from the
+bundled compatibility manifest are rejected.
 
 The managed Tunnel Client is installed at:
 
@@ -138,8 +140,11 @@ The managed Tunnel Client is installed at:
 ```
 
 It is installed with private staging, fsync, atomic replacement, and upgrade
-rollback. The app never removes quarantine attributes. Binary removal requires
-a confirmed stopped runtime and otherwise fails closed.
+rollback. Before the rollback window closes, the candidate must pass the fixed
+read-only `runtimes list --json` contract in an isolated temporary HOME. An
+invalid command or JSON contract removes a fresh install or restores the prior
+SHA on upgrade. The app never removes quarantine attributes. Binary removal
+requires a confirmed stopped runtime and otherwise fails closed.
 
 Connection Center discovers the official `tunnel-client` only from fixed system
 locations and runs the official long-lived `runtimes connect/status/stop`
@@ -157,21 +162,23 @@ stored connection state intact and presents a retryable error.
 ID, a stored Runtime API key, a successful local MCP initialize handshake, and
 a tunnel status reporting `process_running`, `healthy`, and `ready`. An
 operator can separately declare that ChatGPT workspace configuration is
-prepared, but this never becomes `externally_verified`. Only the deferred real
-ChatGPT flow can produce external success.
+prepared, but this never becomes `externally_verified`.
 
-The app creates a 256-bit, ten-minute, one-time acceptance challenge and keeps
-its plaintext only in memory. Core schema v7 persists only its SHA-256 and
+The app creates a 256-bit, ten-minute, one-time transport challenge and keeps
+its plaintext only in memory. Core schema v8 persists only its SHA-256 and
 binds the run to app/Core version, installation identity, Tunnel fingerprint,
-and timestamps. The prompt is copied into ChatGPT; only a real dispatch of
-`project_brain_acceptance_probe` through MCP can write `passed`. App restart
-restores the Core run but cannot restore challenge plaintext. Historical pass
-and current Tunnel health are displayed separately.
+acceptance contract, and timestamps. A call to
+`project_brain_acceptance_probe` writes `mcp_transport_probe_passed` with source
+`local_or_tunneled_mcp_unattributed`; a local direct client can perform the same
+call, so it never writes `external_chatgpt_verified`. App restart restores the
+Core run but cannot restore challenge plaintext. Historical transport evidence
+is compared with the current installation/app/Core/Tunnel/contract set and is
+displayed separately from current applicability. External ChatGPT acceptance
+remains Pending because trusted control-plane attestation is unavailable.
 
-After a historical pass, the user may choose an eligible registered project,
-review a plan-token-bound preview, and create the fixed acceptance document
-task. The existing isolated worktree, Codex, verification-set, push, and Draft
-PR pipeline remains authoritative; the app cannot merge.
+The fixed real-project acceptance task remains fail-closed until Core can supply
+an applicable trusted ChatGPT control-plane attestation. Historical or currently
+applicable unattributed transport probes do not unlock it. The app cannot merge.
 
 Project add/update apply operations submit the exact plan token shown in the
 UI. Core recomputes it under the runtime lock and verifies the expected current

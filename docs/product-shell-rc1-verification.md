@@ -7,13 +7,13 @@ Exact stacked base:
 
 | Requirement | Evidence | Required result |
 |---|---|---|
-| Core regression | `scripts/verify-core.sh` | all Python tests pass |
-| schema v6 → v7 | rollback, restart, idempotency, identity preservation tests | pass |
+| Core regression | `scripts/verify-core.sh` | 204 Python tests pass locally |
+| schema v6 → v8 / v7 → v8 | rollback, restart, identity preservation, and legacy-pass downgrade tests | pass |
 | acceptance challenge | hash-only persistence, expiry, mismatch, replay, concurrency, supersede, restart tests | pass |
-| MCP-only completion | strict schema plus real Streamable HTTP dispatch test | pass; not external acceptance |
-| controlled project task | plan-token binding and exact one-file verifier tests | pass |
-| Tunnel importer | file kind, symlink, architecture, version, timeout, output, atomicity, rollback, permissions tests | pass |
-| app acceptance presentation | blocking/pending/passed, auto-wait/cancel, restart, historical/current separation tests | pass |
+| MCP-only completion | spoofed headers plus real direct Streamable HTTP dispatch | transport evidence only; external remains Pending |
+| controlled project task | unattributed/historical evidence fails closed | pass |
+| Tunnel importer | static zero-execution selection, explicit authorization, version bounds, isolated runtime-contract probe, fresh removal and upgrade SHA rollback | pass |
+| app acceptance presentation | Pending authority plus installation/app/Core/Tunnel/contract applicability tests | pass |
 | diagnostic privacy | no raw Tunnel ID, challenge, credential, or absolute user path | pass |
 | frozen helper | exact 0.7.0 build and clean-environment init/status | pass |
 | real launchd lifecycle | install, healthy, stop, start, healthy, uninstall, data preservation | pass |
@@ -40,8 +40,8 @@ regression, not a real ChatGPT ingress acceptance.
 | Configure Tunnel ID/key | Pending | requires real credentials |
 | Tunnel control-plane ready | Pending | requires OpenAI control plane |
 | ChatGPT tool discovery | Pending | requires user workspace/connector |
-| Real acceptance probe ingress | Pending | requires ChatGPT → Tunnel → MCP path |
-| Real-project Draft PR closure | Pending | requires explicit project selection and user review |
+| Real ChatGPT control-plane attestation | Pending | current Tunnel contract exposes no trusted source signal |
+| Real-project Draft PR closure | Pending / locked | requires applicable trusted external attestation before user review |
 | Apple signing/notarization | Pending | requires release credentials and external services |
 
 The Draft PR must remain Draft while these items are Pending. It must never be

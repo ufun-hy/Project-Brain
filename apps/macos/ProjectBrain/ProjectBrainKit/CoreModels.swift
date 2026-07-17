@@ -306,7 +306,7 @@ public enum ExternalAcceptanceRunStatus: String, Codable, CaseIterable, Sendable
     case notStarted = "not_started"
     case challengeReady = "challenge_ready"
     case waitingForChatGPT = "waiting_for_chatgpt"
-    case passed
+    case mcpTransportProbePassed = "mcp_transport_probe_passed"
     case failed
     case expired
     case superseded
@@ -316,7 +316,7 @@ public enum ExternalAcceptanceRunStatus: String, Codable, CaseIterable, Sendable
         case .notStarted: "Not started"
         case .challengeReady: "Challenge ready"
         case .waitingForChatGPT: "Waiting for ChatGPT"
-        case .passed: "Passed"
+        case .mcpTransportProbePassed: "MCP transport probe passed"
         case .failed: "Failed"
         case .expired: "Expired"
         case .superseded: "Superseded"
@@ -333,6 +333,7 @@ public struct ExternalAcceptanceRun: Codable, Equatable, Sendable {
     public let status: ExternalAcceptanceRunStatus
     public let coreVersion: String
     public let appVersion: String
+    public let acceptanceContractVersion: Int
     public let installationFingerprint: String
     public let tunnelFingerprint: String
     public let createdAt: String
@@ -348,6 +349,7 @@ public struct ExternalAcceptanceRun: Codable, Equatable, Sendable {
         case runID = "run_id"
         case coreVersion = "core_version"
         case appVersion = "app_version"
+        case acceptanceContractVersion = "acceptance_contract_version"
         case installationFingerprint = "installation_fingerprint"
         case tunnelFingerprint = "tunnel_fingerprint"
         case createdAt = "created_at"
@@ -359,27 +361,61 @@ public struct ExternalAcceptanceRun: Codable, Equatable, Sendable {
     }
 }
 
+public struct ExternalChatGPTVerification: Codable, Equatable, Sendable {
+    public let status: String
+    public let reasonCode: String
+
+    public init(status: String, reasonCode: String) {
+        self.status = status
+        self.reasonCode = reasonCode
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case reasonCode = "reason_code"
+    }
+}
+
 public struct ExternalAcceptanceStatusResponse: Codable, Equatable, Sendable {
     public let status: String
     public let current: ExternalAcceptanceRun?
-    public let lastPassed: ExternalAcceptanceRun?
+    public let lastTransportProbe: ExternalAcceptanceRun?
+    public let externalChatGPTVerification: ExternalChatGPTVerification
+    public let applicableExternalChatGPTVerification: ExternalAcceptanceRun?
+    public let coreVersion: String
+    public let acceptanceContractVersion: Int
     public let installationFingerprint: String?
 
     public init(
         status: String,
         current: ExternalAcceptanceRun?,
-        lastPassed: ExternalAcceptanceRun?,
+        lastTransportProbe: ExternalAcceptanceRun?,
+        externalChatGPTVerification: ExternalChatGPTVerification = .init(
+            status: "pending",
+            reasonCode: "trusted_control_plane_attestation_unavailable"
+        ),
+        applicableExternalChatGPTVerification: ExternalAcceptanceRun? = nil,
+        coreVersion: String,
+        acceptanceContractVersion: Int,
         installationFingerprint: String?
     ) {
         self.status = status
         self.current = current
-        self.lastPassed = lastPassed
+        self.lastTransportProbe = lastTransportProbe
+        self.externalChatGPTVerification = externalChatGPTVerification
+        self.applicableExternalChatGPTVerification = applicableExternalChatGPTVerification
+        self.coreVersion = coreVersion
+        self.acceptanceContractVersion = acceptanceContractVersion
         self.installationFingerprint = installationFingerprint
     }
 
     enum CodingKeys: String, CodingKey {
         case status, current
-        case lastPassed = "last_passed"
+        case lastTransportProbe = "last_transport_probe"
+        case externalChatGPTVerification = "external_chatgpt_verification"
+        case applicableExternalChatGPTVerification = "applicable_external_chatgpt_verification"
+        case coreVersion = "core_version"
+        case acceptanceContractVersion = "acceptance_contract_version"
         case installationFingerprint = "installation_fingerprint"
     }
 }

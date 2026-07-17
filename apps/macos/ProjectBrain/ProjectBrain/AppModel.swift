@@ -134,18 +134,19 @@ private actor ProductShellBackend {
         try requireTunnelClient().reconnect(configuration)
     }
 
-    func validateTunnelClient(_ selectedURLs: [URL]) throws -> TunnelClientValidation {
+    func preflightTunnelClient(_ selectedURLs: [URL]) throws -> TunnelClientImportPreview {
         try requireTunnelInstaller().prepareImport(selectedURLs: selectedURLs)
+    }
+
+    func authorizeTunnelClient(_ preview: TunnelClientImportPreview) throws -> TunnelClientValidation {
+        try requireTunnelInstaller().authorize(preview)
     }
 
     func validateInstalledTunnelClient() throws -> TunnelClientValidation? {
         try requireTunnelInstaller().validateInstalled()
     }
 
-    func installTunnelClient(
-        _ plan: TunnelClientValidation,
-        runtimeToken: String?
-    ) throws -> (TunnelClientInstallResult, TunnelRuntimeStatus?) {
+    func installTunnelClient(_ plan: TunnelClientValidation) throws -> TunnelClientInstallResult {
         let installer = try requireTunnelInstaller()
         let profiles = FileManager.default.homeDirectoryForCurrentUser
             .appending(path: ".project-brain/tunnel/profiles")
@@ -154,8 +155,7 @@ private actor ProductShellBackend {
         }
         let client = try TunnelClient(executable: result.destination, profileDirectory: profiles)
         tunnelClient = client
-        let status = try? client.status(runtimeToken: runtimeToken)
-        return (result, status)
+        return result
     }
 
     func removeManagedTunnelClient(runtimeToken: String?) throws -> TunnelStopResult {
@@ -249,6 +249,7 @@ final class AppModel: ObservableObject {
     @Published var lifecyclePlan: ProjectLifecyclePlan?
     @Published var lifecycleAction: ProjectLifecycleAction?
     @Published var lifecycleProjectID: String?
+    @Published var tunnelImportPreview: TunnelClientImportPreview?
     @Published var tunnelImportPlan: TunnelClientValidation?
     @Published private(set) var installedTunnelClient: TunnelClientValidation?
     @Published private(set) var acceptanceStatus: ExternalAcceptanceStatusResponse?
@@ -302,6 +303,7 @@ final class AppModel: ObservableObject {
         .make(
             connection: connection,
             acceptance: acceptanceStatus,
+            appVersion: Self.appVersion,
             challengeAvailable: acceptanceChallenge != nil
         )
     }
@@ -484,26 +486,26 @@ final class AppModel: ObservableObject {
 
     func prepareTunnelClientImport(selectedURLs: [URL]) {
         runOperation {
-            try await self.backend.validateTunnelClient(selectedURLs)
+            try await self.backend.preflightTunnelClient(selectedURLs)
+        } onSuccess: { self.tunnelImportPreview = $0 }
+    }
+
+    func authorizeTunnelClientImport() {
+        guard let preview = tunnelImportPreview else { return }
+        tunnelImportPreview = nil
+        runOperation {
+            try await self.backend.authorizeTunnelClient(preview)
         } onSuccess: { self.tunnelImportPlan = $0 }
     }
 
     func installSelectedTunnelClient() {
         guard let plan = tunnelImportPlan else { return }
-        let token: String?
-        do {
-            token = try keychain.read(account: "secure-mcp-tunnel-token")
-        } catch {
-            present(error)
-            return
-        }
         runOperation {
-            try await self.backend.installTunnelClient(plan, runtimeToken: token)
-        } onSuccess: { result, status in
+            try await self.backend.installTunnelClient(plan)
+        } onSuccess: { result in
             self.installedTunnelClient = result.validation
             self.tunnelImportPlan = nil
             self.connection.tunnelClientAvailable = true
-            if let status { self.applyTunnelStatus(status) }
             self.connectionStore.save(self.connection)
         }
     }
@@ -639,8 +641,14 @@ final class AppModel: ObservableObject {
             self.acceptanceStatus = ExternalAcceptanceStatusResponse(
                 status: "ok",
                 current: response.run,
-                lastPassed: self.acceptanceStatus?.lastPassed,
-                installationFingerprint: response.run.installationFingerprint
+                lastTransportProbe: self.acceptanceStatus?.lastTransportProbe,
+                externalChatGPTVerification: self.acceptanceStatus?.externalChatGPTVerification
+                    ?? .init(status: "pending", reasonCode: "trusted_control_plane_attestation_unavailable"),
+                applicableExternalChatGPTVerification: self.acceptanceStatus?.applicableExternalChatGPTVerification,
+                coreVersion: response.run.coreVersion,
+                acceptanceContractVersion: response.run.acceptanceContractVersion,
+                installationFingerprint: self.acceptanceStatus?.installationFingerprint
+                    ?? response.run.installationFingerprint
             )
             self.applyExternalVerificationAuthority()
         }
@@ -657,8 +665,14 @@ final class AppModel: ObservableObject {
             self.acceptanceStatus = ExternalAcceptanceStatusResponse(
                 status: "ok",
                 current: response.run,
-                lastPassed: self.acceptanceStatus?.lastPassed,
-                installationFingerprint: response.run.installationFingerprint
+                lastTransportProbe: self.acceptanceStatus?.lastTransportProbe,
+                externalChatGPTVerification: self.acceptanceStatus?.externalChatGPTVerification
+                    ?? .init(status: "pending", reasonCode: "trusted_control_plane_attestation_unavailable"),
+                applicableExternalChatGPTVerification: self.acceptanceStatus?.applicableExternalChatGPTVerification,
+                coreVersion: response.run.coreVersion,
+                acceptanceContractVersion: response.run.acceptanceContractVersion,
+                installationFingerprint: self.acceptanceStatus?.installationFingerprint
+                    ?? response.run.installationFingerprint
             )
         }
     }
@@ -673,8 +687,14 @@ final class AppModel: ObservableObject {
             self.acceptanceStatus = ExternalAcceptanceStatusResponse(
                 status: "ok",
                 current: response.run,
-                lastPassed: self.acceptanceStatus?.lastPassed,
-                installationFingerprint: response.run.installationFingerprint
+                lastTransportProbe: self.acceptanceStatus?.lastTransportProbe,
+                externalChatGPTVerification: self.acceptanceStatus?.externalChatGPTVerification
+                    ?? .init(status: "pending", reasonCode: "trusted_control_plane_attestation_unavailable"),
+                applicableExternalChatGPTVerification: self.acceptanceStatus?.applicableExternalChatGPTVerification,
+                coreVersion: response.run.coreVersion,
+                acceptanceContractVersion: response.run.acceptanceContractVersion,
+                installationFingerprint: self.acceptanceStatus?.installationFingerprint
+                    ?? response.run.installationFingerprint
             )
             self.applyExternalVerificationAuthority()
         }

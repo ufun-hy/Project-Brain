@@ -46,10 +46,12 @@ def acceptance_task_plan(store: TaskStore, project_id: str) -> dict[str, Any]:
         raise InvalidTaskError(
             "Real-project acceptance requires auto-push and Draft PR creation for the project"
         )
-    passed = ExternalAcceptanceManager(store).status()["last_passed"]
+    acceptance = ExternalAcceptanceManager(store).status()
+    passed = acceptance["applicable_external_chatgpt_verification"]
     if passed is None:
         raise StateConflictError(
-            "A real MCP external acceptance probe must pass before creating this task"
+            "Trusted ChatGPT control-plane attestation is unavailable; "
+            "MCP transport-probe history cannot unlock a real-project task"
         )
     task_id = f"rc1-{passed['run_id']}"
     with store.connect() as connection:

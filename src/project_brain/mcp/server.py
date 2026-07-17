@@ -61,7 +61,8 @@ def create_mcp_server(
         instructions=(
             "Controlled Project Brain task adapter. It exposes no shell, arbitrary "
             "filesystem, recovery resolution, cleanup, acceptance override, or merge "
-            "tools. Its one acceptance probe only consumes a pre-generated challenge."
+            "tools. Its one challenge probe records only unattributed MCP transport "
+            "evidence; it cannot authenticate ChatGPT or Secure Tunnel origin."
         ),
         host=host,
         port=port,

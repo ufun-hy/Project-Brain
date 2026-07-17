@@ -32,6 +32,18 @@ struct ConnectionCenterView: View {
             }
         }
         .sheet(isPresented: Binding(
+            get: { model.tunnelImportPreview != nil },
+            set: { if !$0 { model.tunnelImportPreview = nil } }
+        )) {
+            if let preview = model.tunnelImportPreview {
+                TunnelExecutionAuthorization(
+                    preview: preview,
+                    cancel: { model.tunnelImportPreview = nil },
+                    authorize: { model.authorizeTunnelClientImport() }
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
             get: { model.tunnelImportPlan != nil },
             set: { if !$0 { model.tunnelImportPlan = nil } }
         )) {
@@ -125,7 +137,7 @@ struct ConnectionCenterView: View {
                         Button("Remove binary", role: .destructive) { confirmTunnelRemoval = true }
                     }
                 }
-                Text("Project Brain validates a regular non-symlink Mach-O, arm64 architecture, fixed `--version` output, compatibility manifest entry, and SHA-256. It does not remove quarantine or bypass Gatekeeper.")
+                Text("Selection performs only static checks: regular non-symlink Mach-O, bounded size, architecture, SHA-256, quarantine, and code-signing status. Project Brain executes fixed `--version` only after a separate authorization, and performs a read-only isolated runtime-contract probe before committing an install.")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -200,13 +212,13 @@ struct ConnectionCenterView: View {
                         GridRow { Text("Expires"); Text(current.expiresAt) }
                     }
                 }
-                if let passed = model.acceptanceStatus?.lastPassed {
-                    Label("Historical external verification passed at \(passed.verifiedAt ?? "unknown")", systemImage: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
-                    if !acceptance.currentConnectionHealthy {
-                        Text("Historical evidence is retained, but the current connection is not healthy.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
+                if let probe = model.acceptanceStatus?.lastTransportProbe {
+                    Label("Historical unattributed MCP transport probe recorded at \(probe.verifiedAt ?? "unknown")", systemImage: "network.badge.shield.half.filled")
+                        .foregroundStyle(acceptance.applicableCurrentTransportProbe ? .blue : .orange)
+                    Text(acceptance.applicableCurrentTransportProbe
+                        ? "The transport evidence matches the current installation/app/Core/Tunnel/contract set, but external ChatGPT acceptance remains Pending."
+                        : "The evidence is historical only and does not match the current binding set.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if let prompt = model.acceptancePrompt {
                     Text(prompt)
@@ -231,7 +243,7 @@ struct ConnectionCenterView: View {
                 Button("Declare workspace configuration prepared") {
                     model.markWorkspaceConfigured()
                 }.disabled(model.connection.workspaceConfigured)
-                Text("Only a real MCP ingress call to project_brain_acceptance_probe can write passed. This UI has no pass override, and challenge plaintext is never persisted or exported.")
+                Text("project_brain_acceptance_probe records only unattributed transport evidence: the same local MCP endpoint can consume the challenge. Without trusted ChatGPT control-plane attestation, external acceptance remains Pending. Challenge plaintext is never persisted or exported.")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -240,7 +252,7 @@ struct ConnectionCenterView: View {
     private var realProjectAcceptance: some View {
         GroupBox("Optional real-project Draft PR acceptance") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("After external verification, Project Brain can ask Codex to update only docs/project-brain-acceptance.md in an isolated task worktree, run verification, and create a Draft PR. It never merges.")
+                Text("This task stays locked until Core supplies an applicable trusted ChatGPT control-plane attestation. Unattributed local or tunneled transport probes cannot unlock it.")
                     .font(.caption).foregroundStyle(.secondary)
                 Picker("Registered project", selection: $selectedAcceptanceProjectID) {
                     Text("Select a project").tag("")
@@ -253,7 +265,7 @@ struct ConnectionCenterView: View {
                 }
                 .disabled(
                     selectedAcceptanceProjectID.isEmpty
-                        || model.acceptanceStatus?.lastPassed == nil
+                        || model.acceptanceStatus?.applicableExternalChatGPTVerification == nil
                 )
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -302,9 +314,9 @@ private struct AcceptanceSteps: View {
             step("Tunnel process / health / ready", model.connection.tunnelProcessRunning && model.connection.tunnelHealthy && model.connection.tunnelReady)
             step("Workspace operator-declared", model.connection.workspaceConfigured)
             step("One-time challenge generated", model.acceptanceStatus?.current != nil)
-            step("ChatGPT prompt copied", model.acceptanceStatus?.current?.status == .waitingForChatGPT || model.acceptanceStatus?.current?.status == .passed)
-            step("Real external MCP call received", model.acceptanceStatus?.lastPassed != nil)
-            step("Evidence timestamp recorded", model.acceptanceStatus?.lastPassed?.verifiedAt != nil)
+            step("Probe prompt copied", model.acceptanceStatus?.current?.status == .waitingForChatGPT || model.acceptanceStatus?.current?.status == .mcpTransportProbePassed)
+            step("Unattributed MCP transport probe recorded", model.acceptanceStatus?.lastTransportProbe != nil)
+            step("Trusted ChatGPT external attestation", model.acceptanceStatus?.applicableExternalChatGPTVerification != nil)
         }
     }
 
@@ -312,6 +324,43 @@ private struct AcceptanceSteps: View {
         Label(title, systemImage: passed ? "checkmark.circle.fill" : "circle")
             .foregroundStyle(passed ? .green : .secondary)
             .font(.caption)
+    }
+}
+
+private struct TunnelExecutionAuthorization: View {
+    let preview: TunnelClientImportPreview
+    let cancel: () -> Void
+    let authorize: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Authorize Tunnel Client execution").font(.title.bold())
+            Text("No selected bytes have been executed. Review the static preflight below before authorizing one fixed `--version` command.")
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                GridRow { Text("Selected file"); Text(preview.source.lastPathComponent) }
+                GridRow { Text("Architecture"); Text(preview.architecture.rawValue) }
+                GridRow { Text("Size"); Text(ByteCountFormatter.string(fromByteCount: Int64(preview.fileSize), countStyle: .file)) }
+                GridRow { Text("Quarantine"); Text(preview.quarantineStatus) }
+                GridRow { Text("Code signing"); Text(preview.signingStatus) }
+                GridRow {
+                    Text("SHA-256")
+                    Text(preview.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                }
+            }
+            Label(preview.sourceAttestation, systemImage: "person.crop.circle.badge.exclamationmark")
+                .foregroundStyle(.orange)
+            Text("A valid code signature is not an OpenAI identity proof because this build does not pin an official signing requirement or release digest.")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            HStack {
+                Button("Cancel", action: cancel)
+                Spacer()
+                Button("Authorize fixed --version", action: authorize)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(28)
+        .frame(width: 720, height: 520)
     }
 }
 
