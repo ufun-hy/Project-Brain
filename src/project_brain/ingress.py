@@ -11,6 +11,9 @@ from .models import CanonicalTask
 from .store import TaskStore
 
 
+RESERVED_SOURCE_TYPES = {"product_shell_acceptance"}
+
+
 class TaskImporter:
     """Validate canonical task envelopes before persistence.
 
@@ -46,6 +49,10 @@ class TaskImporter:
         except TypeError as exc:
             raise InvalidTaskError(f"Invalid canonical task envelope: {exc}") from exc
         task.validate()
+        if task.source_type in RESERVED_SOURCE_TYPES:
+            raise InvalidTaskError(
+                f"Reserved canonical task source type: {task.source_type}"
+            )
         # Verification IDs and the matching execution profile are validated and
         # bound inside the store's single task-creation transaction.
         return self.store.insert_task(task)

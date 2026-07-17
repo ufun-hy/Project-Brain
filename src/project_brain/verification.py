@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from .models import utc_now
 from .runtime import RuntimePaths
 from .security import redact_text
 from .store import TaskStore
+from .acceptance_tasks import ACCEPTANCE_DOCUMENT_PATH, ACCEPTANCE_SOURCE_TYPE
+from .commands import git
 
 
 class VerificationRunner:
@@ -99,6 +102,13 @@ class VerificationRunner:
             )
 
         results: list[dict[str, Any]] = []
+        if task.get("source_type") == ACCEPTANCE_SOURCE_TYPE:
+            result = self._verify_acceptance_document(task, Path(worktree).resolve())
+            result["verification_set_id"] = verification_set["verification_set_id"]
+            self.store.record_verification(
+                task["task_id"], verification_set["verification_set_id"], result
+            )
+            results.append(result)
         for index, spec in enumerate(specs, start=1):
             result = self._run_one(
                 task["task_id"],
@@ -113,6 +123,70 @@ class VerificationRunner:
             )
             results.append(result)
         return results
+
+    def _verify_acceptance_document(
+        self,
+        task: dict[str, Any],
+        worktree: Path,
+    ) -> dict[str, Any]:
+        worktree = worktree.resolve()
+        created_at = utc_now()
+        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+        expected_path = payload.get("acceptance_document_path")
+        expected_content = payload.get("acceptance_document_content")
+        base = task.get("base_sha")
+        head = task.get("commit") or task.get("head_sha")
+        passed = True
+        detail = "Controlled acceptance document and changed-file scope match the bound run."
+        if expected_path != ACCEPTANCE_DOCUMENT_PATH or not isinstance(expected_content, str):
+            passed = False
+            detail = "Acceptance task payload is not the fixed RC1 document contract."
+        elif not all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40,64}", value)
+            for value in (base, head)
+        ):
+            passed = False
+            detail = "Acceptance task canonical Git bounds are invalid."
+        else:
+            changed = [
+                item
+                for item in git(
+                    worktree,
+                    "diff",
+                    "--name-only",
+                    "--no-renames",
+                    f"{base}..{head}",
+                    "--",
+                ).stdout.splitlines()
+                if item
+            ]
+            target = worktree / ACCEPTANCE_DOCUMENT_PATH
+            if changed != [ACCEPTANCE_DOCUMENT_PATH]:
+                passed = False
+                detail = "Acceptance task changed files outside the one allowed document."
+            elif target.is_symlink() or not target.is_file():
+                passed = False
+                detail = "Controlled acceptance document is missing or is a symbolic link."
+            elif worktree not in target.resolve().parents:
+                passed = False
+                detail = "Controlled acceptance document escapes the task worktree."
+            elif target.read_text(encoding="utf-8") != expected_content:
+                passed = False
+                detail = "Controlled acceptance document content does not match the bound run."
+        return {
+            "criterion_id": "rc1-acceptance-document",
+            "criterion_text": (
+                "Only docs/project-brain-acceptance.md changes and exactly records "
+                "the bound external acceptance run"
+            ),
+            "status": "passed" if passed else "failed",
+            "evidence_type": "project_brain_fixed_acceptance_check",
+            "evidence_summary": detail,
+            "command": None,
+            "exit_code": None,
+            "artifact_path": None,
+            "created_at": created_at,
+        }
 
     def _run_one(
         self,

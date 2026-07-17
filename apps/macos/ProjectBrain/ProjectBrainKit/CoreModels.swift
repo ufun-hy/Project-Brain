@@ -302,6 +302,135 @@ public struct RuntimeInitResponse: Codable, Equatable, Sendable {
     }
 }
 
+public enum ExternalAcceptanceRunStatus: String, Codable, CaseIterable, Sendable {
+    case notStarted = "not_started"
+    case challengeReady = "challenge_ready"
+    case waitingForChatGPT = "waiting_for_chatgpt"
+    case passed
+    case failed
+    case expired
+    case superseded
+
+    public var title: String {
+        switch self {
+        case .notStarted: "Not started"
+        case .challengeReady: "Challenge ready"
+        case .waitingForChatGPT: "Waiting for ChatGPT"
+        case .passed: "Passed"
+        case .failed: "Failed"
+        case .expired: "Expired"
+        case .superseded: "Superseded"
+        }
+    }
+
+    public var shouldAutoRefresh: Bool {
+        self == .challengeReady || self == .waitingForChatGPT
+    }
+}
+
+public struct ExternalAcceptanceRun: Codable, Equatable, Sendable {
+    public let runID: String
+    public let status: ExternalAcceptanceRunStatus
+    public let coreVersion: String
+    public let appVersion: String
+    public let installationFingerprint: String
+    public let tunnelFingerprint: String
+    public let createdAt: String
+    public let expiresAt: String
+    public let waitingAt: String?
+    public let verifiedAt: String?
+    public let failureCode: String?
+    public let ingress: String?
+    public let probeCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case status, ingress
+        case runID = "run_id"
+        case coreVersion = "core_version"
+        case appVersion = "app_version"
+        case installationFingerprint = "installation_fingerprint"
+        case tunnelFingerprint = "tunnel_fingerprint"
+        case createdAt = "created_at"
+        case expiresAt = "expires_at"
+        case waitingAt = "waiting_at"
+        case verifiedAt = "verified_at"
+        case failureCode = "failure_code"
+        case probeCount = "probe_count"
+    }
+}
+
+public struct ExternalAcceptanceStatusResponse: Codable, Equatable, Sendable {
+    public let status: String
+    public let current: ExternalAcceptanceRun?
+    public let lastPassed: ExternalAcceptanceRun?
+    public let installationFingerprint: String?
+
+    public init(
+        status: String,
+        current: ExternalAcceptanceRun?,
+        lastPassed: ExternalAcceptanceRun?,
+        installationFingerprint: String?
+    ) {
+        self.status = status
+        self.current = current
+        self.lastPassed = lastPassed
+        self.installationFingerprint = installationFingerprint
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status, current
+        case lastPassed = "last_passed"
+        case installationFingerprint = "installation_fingerprint"
+    }
+}
+
+public struct ExternalAcceptanceCreateResponse: Codable, Equatable, Sendable {
+    public let status: String
+    public let challenge: String
+    public let run: ExternalAcceptanceRun
+}
+
+public struct ExternalAcceptanceMutationResponse: Codable, Equatable, Sendable {
+    public let status: String
+    public let run: ExternalAcceptanceRun
+}
+
+public struct AcceptanceTaskPlanResponse: Codable, Equatable, Sendable {
+    public let status: String
+    public let planToken: String
+    public let projectID: String
+    public let projectName: String
+    public let projectConfigRevision: Int
+    public let projectConfigSHA256: String
+    public let acceptanceRunID: String
+    public let acceptanceVerifiedAt: String
+    public let projectBrainVersion: String
+    public let taskID: String
+    public let revision: Int
+    public let changedFiles: [String]
+    public let effect: String
+
+    enum CodingKeys: String, CodingKey {
+        case status, revision, effect
+        case planToken = "plan_token"
+        case projectID = "project_id"
+        case projectName = "project_name"
+        case projectConfigRevision = "project_config_revision"
+        case projectConfigSHA256 = "project_config_sha256"
+        case acceptanceRunID = "acceptance_run_id"
+        case acceptanceVerifiedAt = "acceptance_verified_at"
+        case projectBrainVersion = "project_brain_version"
+        case taskID = "task_id"
+        case changedFiles = "changed_files"
+    }
+}
+
+public struct AcceptanceTaskCreateResponse: Codable, Equatable, Sendable {
+    public let status: String
+    public let plan: AcceptanceTaskPlanResponse
+    public let task: TaskSummary
+}
+
 public struct VerificationEvidence: Codable, Identifiable, Equatable, Sendable {
     public let verificationID: Int?
     public let criterionID: String?
@@ -422,6 +551,7 @@ public struct TaskDetail: Codable, Equatable, Sendable {
     public let nextAction: String?
     public let acceptanceCriteria: [JSONValue]
     public let verification: [VerificationEvidence]
+    public let verificationSet: VerificationSetSummary?
     public let reviews: [ReviewSummary]
     public let events: [TaskEvent]
 
@@ -446,7 +576,27 @@ public struct TaskDetail: Codable, Equatable, Sendable {
         case lastError = "last_error"
         case nextAction = "next_action"
         case acceptanceCriteria = "acceptance_criteria"
-        case verification, reviews, events
+        case verification
+        case verificationSet = "verification_set"
+        case reviews, events
+    }
+}
+
+public struct VerificationSetSummary: Codable, Equatable, Sendable {
+    public let verificationSetID: Int
+    public let canonicalHeadSHA: String
+    public let sourceAttemptNumber: Int
+    public let status: String
+    public let createdAt: String
+    public let completedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case verificationSetID = "verification_set_id"
+        case canonicalHeadSHA = "canonical_head_sha"
+        case sourceAttemptNumber = "source_attempt_number"
+        case createdAt = "created_at"
+        case completedAt = "completed_at"
     }
 }
 

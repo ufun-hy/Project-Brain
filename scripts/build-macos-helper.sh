@@ -18,7 +18,7 @@ HELPER="$DIST_ROOT/project-brain"
 test -x "$HELPER"
 VERSION="$($HELPER --version)"
 case "$VERSION" in
-  "project-brain 0.6.0") ;;
+  "project-brain 0.7.0") ;;
   *)
     echo "unexpected helper version: $VERSION" >&2
     exit 1

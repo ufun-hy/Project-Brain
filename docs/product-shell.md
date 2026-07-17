@@ -15,8 +15,13 @@ After onboarding, the app provides:
 - project add/update plan and confirmation, intake pause/resume, and
   data-preserving soft removal;
 - fixed Worker/MCP install, start, stop, restart, status, and uninstall actions;
-- a controlled official `tunnel-client` adapter for tunnel configuration,
-  connect/status/stop/reconnect, and local/runtime readiness;
+- a controlled official `tunnel-client` adapter for zero-CLI
+  import/install/replace/revalidate/remove, connect/status/stop/reconnect, and
+  local/runtime readiness;
+- an eleven-step external acceptance wizard backed by one-time Core challenges
+  and a strict MCP ingress probe;
+- an optional fixed, previewed real-project task that can change only
+  `docs/project-brain-acceptance.md` and can publish only a Draft PR;
 - automatic foreground/background task observation with selected-detail refresh
   and bounded failure/offline backoff;
 - local health, service, task-recovery, and external-readiness diagnostics;
@@ -49,8 +54,9 @@ xcodebuild \
 
 PyInstaller produces an architecture-specific `onefile` executable. The Xcode
 post-build phase copies it into `Project Brain.app/Contents/Resources/` and
-checks the executable bit. CI publishes the unsigned app as a short-lived build
-artifact; signed, notarized, universal distribution is a separate release task.
+checks the executable bit. CI publishes an unsigned arm64 internal RC1 DMG and
+ZIP, build manifest, and SHA-256 values as a seven-day artifact. Signed,
+notarized, universal distribution is a separate release task.
 
 ## First run
 
@@ -117,6 +123,24 @@ activation restores and reactivates the previous helper.
 
 ## Connection acceptance
 
+RC1 first asks the user to open the official OpenAI Platform Tunnels page and
+select the downloaded client with the native file picker. The app rejects
+links, directories, non-executables, unsupported Mach-O architectures, and
+versions absent from the bundled compatibility manifest. Version checks use
+only fixed `--version` argv with bounded output and timeout. The confirmation
+screen shows SHA-256 and explicitly says that official origin is confirmed by
+the user when no machine-verifiable upstream digest is available.
+
+The managed Tunnel Client is installed at:
+
+```text
+~/Library/Application Support/Project Brain/bin/tunnel-client
+```
+
+It is installed with private staging, fsync, atomic replacement, and upgrade
+rollback. The app never removes quarantine attributes. Binary removal requires
+a confirmed stopped runtime and otherwise fails closed.
+
 Connection Center discovers the official `tunnel-client` only from fixed system
 locations and runs the official long-lived `runtimes connect/status/stop`
 workflow with fixed arguments. The target is always
@@ -135,6 +159,19 @@ a tunnel status reporting `process_running`, `healthy`, and `ready`. An
 operator can separately declare that ChatGPT workspace configuration is
 prepared, but this never becomes `externally_verified`. Only the deferred real
 ChatGPT flow can produce external success.
+
+The app creates a 256-bit, ten-minute, one-time acceptance challenge and keeps
+its plaintext only in memory. Core schema v7 persists only its SHA-256 and
+binds the run to app/Core version, installation identity, Tunnel fingerprint,
+and timestamps. The prompt is copied into ChatGPT; only a real dispatch of
+`project_brain_acceptance_probe` through MCP can write `passed`. App restart
+restores the Core run but cannot restore challenge plaintext. Historical pass
+and current Tunnel health are displayed separately.
+
+After a historical pass, the user may choose an eligible registered project,
+review a plan-token-bound preview, and create the fixed acceptance document
+task. The existing isolated worktree, Codex, verification-set, push, and Draft
+PR pipeline remains authoritative; the app cannot merge.
 
 Project add/update apply operations submit the exact plan token shown in the
 UI. Core recomputes it under the runtime lock and verifies the expected current
@@ -161,4 +198,5 @@ These remain pending and cannot be replaced by local mocks:
   execute the real acceptance flow; local MCP health is not external success.
 
 Technical decisions and threat boundaries are in
-[`rfc/RFC-006-product-shell-v1.md`](rfc/RFC-006-product-shell-v1.md).
+[`rfc/RFC-006-product-shell-v1.md`](rfc/RFC-006-product-shell-v1.md) and
+[`rfc/RFC-007-zero-cli-rc1.md`](rfc/RFC-007-zero-cli-rc1.md).

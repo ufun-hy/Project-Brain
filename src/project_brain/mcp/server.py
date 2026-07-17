@@ -60,7 +60,8 @@ def create_mcp_server(
         "Project Brain",
         instructions=(
             "Controlled Project Brain task adapter. It exposes no shell, arbitrary "
-            "filesystem, recovery resolution, cleanup, acceptance, or merge tools."
+            "filesystem, recovery resolution, cleanup, acceptance override, or merge "
+            "tools. Its one acceptance probe only consumes a pre-generated challenge."
         ),
         host=host,
         port=port,

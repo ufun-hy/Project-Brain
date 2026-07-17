@@ -17,6 +17,7 @@ from project_brain.schema import (
     MIGRATION_3,
     MIGRATION_4,
     MIGRATION_5,
+    MIGRATION_6,
     SCHEMA_VERSION,
 )
 from project_brain.store import TaskStore
@@ -179,6 +180,74 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("registered", columns)
         self.assertEqual(columns["accepting_tasks"]["dflt_value"], "1")
         self.assertEqual(columns["registered"]["dflt_value"], "1")
+
+    def test_version_six_migrates_to_v7_with_stable_installation_identity(self) -> None:
+        TaskStore(
+            self.database,
+            migrations={
+                1: MIGRATION_1,
+                2: MIGRATION_2,
+                3: MIGRATION_3,
+                4: MIGRATION_4,
+                5: MIGRATION_5,
+                6: MIGRATION_6,
+            },
+            schema_version=6,
+        ).initialize()
+        store = TaskStore(self.database)
+        store.initialize()
+        with store.connect() as connection:
+            identity = connection.execute(
+                "SELECT installation_id FROM installation_identity WHERE singleton = 1"
+            ).fetchone()[0]
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        self.assertEqual(store.schema_version(), 7)
+        self.assertIn("external_acceptance_runs", tables)
+        store.initialize()
+        with store.connect() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT installation_id FROM installation_identity WHERE singleton = 1"
+                ).fetchone()[0],
+                identity,
+            )
+
+    def test_v7_data_hook_failure_rolls_back_and_restart_succeeds(self) -> None:
+        TaskStore(
+            self.database,
+            migrations={
+                1: MIGRATION_1,
+                2: MIGRATION_2,
+                3: MIGRATION_3,
+                4: MIGRATION_4,
+                5: MIGRATION_5,
+                6: MIGRATION_6,
+            },
+            schema_version=6,
+        ).initialize()
+
+        def fail(_connection):
+            raise RuntimeError("identity creation failed")
+
+        with self.assertRaises(RuntimeError):
+            TaskStore(self.database, data_migrations={7: fail}).initialize()
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        self.assertNotIn("external_acceptance_runs", tables)
+        restarted = TaskStore(self.database)
+        restarted.initialize()
+        self.assertEqual(restarted.schema_version(), 7)
 
     def test_failed_migration_rolls_back_atomically(self) -> None:
         store = TaskStore(

@@ -1,73 +1,71 @@
 # Current State
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 ## Current stage
 
-PR #13 (controlled MCP Adapter) and PR #14 (project onboarding/config
-snapshots) are merged into `main`. Product Shell v1 is implemented on the
-independent `codex/project-brain-product-shell-v1` branch from base
-`7dcf1f8c59937d2195ae75404ab7b4e4801c5c31`. It is intended for a new Draft PR
-and must not be marked Ready or merged during repository acceptance.
+Product Shell RC1 is implemented on the independent
+`codex/project-brain-product-shell-rc1` branch stacked from exact Product Shell
+v1 head `1475915a8c43681270c829ee96b4c4104659aa7a`. The delivery target is a new
+Draft PR. It must not be marked Ready or merged while external acceptance is
+pending.
 
-## Implemented Product Shell
+## Implemented RC1
 
-- Native macOS 14 SwiftUI menu bar app and management window under
-  `apps/macos/ProjectBrain/`.
-- Seven-step persisted onboarding: privacy, helper/runtime, project selection,
-  plan confirmation, Worker/MCP install, health, and external-pending handoff.
-- Typed fixed-argv Core adapter, durable task/evidence presentation, project
-  lifecycle/config management with transaction-bound plan tokens, launchd
-  service control, a controlled official Tunnel runtime adapter, automatic
-  state observation, unified product readiness, and redacted diagnostics.
-- PyInstaller onefile Core helper with exact version validation and atomic
-  install/upgrade/rollback. Failed service activation restores and reactivates
-  the previously runnable helper.
-- Schema v6 project intake pause/resume and history-preserving soft removal.
-- Linux Python, macOS helper/Swift/app, fixture lifecycle, and Gmail isolation
-  CI gates.
+- Project Brain 0.7.0 and atomic schema v7 migration with stable installation
+  identity, one-time external acceptance runs, and append-only events.
+- A strict `project_brain_acceptance_probe` MCP tool. Core has no pass CLI and
+  Swift has no pass command; only MCP ingress can complete a waiting challenge.
+- 256-bit, ten-minute, hash-only, one-use challenges with mismatch, replay,
+  concurrent-consumption, expiry, supersede, and restart recovery gates.
+- A fixed real-project acceptance task bound to a historical passed run and
+  immutable project snapshot. It may change only
+  `docs/project-brain-acceptance.md`, uses the existing isolated worktree and
+  verification-set pipeline, and stops at Draft PR review.
+- Native Tunnel Client import with strict file/Mach-O/version validation,
+  bundled schema-v1 compatibility manifest for 0.0.10 arm64, SHA-256 display,
+  bounded fixed-argv version check, atomic install, rollback, revalidation, and
+  fail-closed removal after confirmed stop.
+- Eleven-step Connection Center acceptance guidance with one next action,
+  automatic waiting refresh, memory-only prompt, historical/current health
+  separation, and optional project-task preview.
+- Redacted diagnostics with Tunnel fingerprint, not raw ID, and no challenge or
+  credentials.
+- CI Release DMG/ZIP, manifest, artifact hashes, unsigned/internal-RC labels,
+  helper/resource checks, real launchd, SwiftPM/Xcode, and Gmail isolation.
 
 ## Preserved guarantees
 
-- SQLite remains authoritative; task execution snapshots, canonical-head
-  verification sets, review lifecycle, recovery, forensics, and worktree safety
-  are unchanged.
-- UI exposes no arbitrary shell, argv, cwd, environment, SQL, merge, acceptance,
-  runtime deletion, or blind cleanup controls.
-- Worker and MCP use fixed launchd labels and absolute helper argv. MCP remains
-  loopback-only.
-- Stop/uninstall address launchd jobs by exact `gui/<uid>/<label>` targets;
-  partial activation is rolled back and exercised by a real macOS CI lifecycle.
-- Onboarding Ready requires GitHub auth, all project checks, Worker/MCP state,
-  and a real MCP initialize handshake.
-- Tunnel `ready_to_test` is derived from local transport plus official runtime
-  `process_running`/`healthy`/`ready`; operator declaration is not external
-  verification.
-- Credentials enter macOS Keychain, not SQLite, plist, logs, tasks, diagnostics,
-  or PR data.
-- Tunnel configuration removal is fail-closed: Keychain credentials are removed
-  only after a confirmed stop or explicit already-stopped response.
-- Service uninstall preserves the runtime, project repositories, registration,
-  and task history.
-- Gmail legacy remains frozen and excluded from Product Shell.
+- SQLite remains authoritative for task execution snapshots, canonical-head
+  verification sets, review, recovery, forensics, and publication retry.
+- All runtime subprocesses use absolute executable paths and typed fixed argv;
+  no user command, shell, cwd, environment, SQL, or URL reaches execution.
+- Runtime API keys remain Keychain-only. Tunnel Client is not committed or
+  bundled, and the app never bypasses quarantine or Gatekeeper.
+- Default checkouts and human changes are never reset or cleaned. Managed
+  worktree cleanup retains existing forensic and ownership gates.
+- No UI path accepts, merges, or manually marks external verification passed.
+- Gmail legacy remains frozen and outside Product Shell.
 
 ## Verification status
 
-Local Python/Core/MCP and fixture integration tests pass (186 tests). The SwiftUI executable
-and ProjectBrainKit compile locally. The host does not contain full Xcode, so
-local XCTest execution is not claimed; all 27 XCTest cases and the
-`Project Brain.app` build pass in the Draft PR macOS GitHub Actions job. Exact
-counts, SHAs, URLs, and isolation evidence are recorded at delivery.
+The full local Python/Core/MCP suite passes with 200 tests, including a real
+Streamable HTTP tool dispatch. `ProjectBrainKit` and `ProjectBrainApp` compile
+with local SwiftPM. This host has only Apple Command Line Tools and no full
+Xcode/XCTest module, so SwiftPM XCTest, committed Xcode project tests, Release
+app/DMG build, artifact upload, and launchd results must be taken from the Draft
+PR macOS Actions run. A CI probe remains simulation evidence, not external
+ChatGPT acceptance.
 
 ## External acceptance
 
-Secure MCP Tunnel, ChatGPT developer-mode, and real-project Product Shell
-acceptance remain pending. Local tests and local MCP health do not replace them.
+Secure MCP Tunnel, real credentials, ChatGPT connector discovery, real MCP
+ingress, real-project Draft PR closure, Apple signing, and notarization remain
+Pending until the user performs them. No local or CI result closes these gates.
 
 ## Read next
 
 - `docs/product-shell.md`
-- `docs/product-shell-verification.md`
-- `docs/rfc/RFC-006-product-shell-v1.md`
-- `docs/project-configuration.md`
+- `docs/product-shell-rc1-verification.md`
+- `docs/rfc/RFC-007-zero-cli-rc1.md`
 - `docs/mcp-adapter.md`

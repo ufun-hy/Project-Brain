@@ -223,4 +223,31 @@ public final class CoreClient: @unchecked Sendable {
     ) throws -> ProjectLifecycleAppliedResponse {
         try execute(.projectLifecycle(identifier, action, execute: true))
     }
+    public func acceptanceStatus() throws -> ExternalAcceptanceStatusResponse {
+        try execute(.acceptanceStatus)
+    }
+    public func createAcceptanceChallenge(
+        appVersion: String,
+        tunnelFingerprint: String
+    ) throws -> ExternalAcceptanceCreateResponse {
+        try execute(.acceptanceCreate(
+            appVersion: appVersion,
+            tunnelFingerprint: tunnelFingerprint
+        ))
+    }
+    public func markAcceptanceWaiting(_ runID: String) throws -> ExternalAcceptanceMutationResponse {
+        try execute(.acceptanceWaiting(runID))
+    }
+    public func resetAcceptance(_ runID: String) throws -> ExternalAcceptanceMutationResponse {
+        try execute(.acceptanceReset(runID))
+    }
+    public func planAcceptanceTask(_ projectID: String) throws -> AcceptanceTaskPlanResponse {
+        try execute(.acceptanceTaskPlan(projectID))
+    }
+    public func createAcceptanceTask(
+        _ projectID: String,
+        planToken: String
+    ) throws -> AcceptanceTaskCreateResponse {
+        try execute(.acceptanceTaskCreate(projectID, planToken: planToken))
+    }
 }

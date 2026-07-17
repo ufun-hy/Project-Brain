@@ -35,6 +35,8 @@ private struct ProductSnapshot: Sendable {
     let services: ServiceStatusResponse
     let health: HealthResponse
     let selectedTask: TaskDetail?
+    let acceptance: ExternalAcceptanceStatusResponse
+    let tunnelInstallation: TunnelClientValidation?
 
     var serviceOnline: Bool {
         let states = Dictionary(uniqueKeysWithValues: services.services.map { ($0.name, $0.state) })
@@ -45,11 +47,13 @@ private struct ProductSnapshot: Sendable {
 
 private actor ProductShellBackend {
     private let installer: HelperInstaller
+    private let tunnelInstaller: TunnelClientInstaller?
     private var client: CoreClient?
     private var tunnelClient: TunnelClient?
 
-    init(installer: HelperInstaller) {
+    init(installer: HelperInstaller, tunnelInstaller: TunnelClientInstaller?) {
         self.installer = installer
+        self.tunnelInstaller = tunnelInstaller
         self.tunnelClient = Self.makeTunnelClient()
     }
 
@@ -130,6 +134,66 @@ private actor ProductShellBackend {
         try requireTunnelClient().reconnect(configuration)
     }
 
+    func validateTunnelClient(_ selectedURLs: [URL]) throws -> TunnelClientValidation {
+        try requireTunnelInstaller().prepareImport(selectedURLs: selectedURLs)
+    }
+
+    func validateInstalledTunnelClient() throws -> TunnelClientValidation? {
+        try requireTunnelInstaller().validateInstalled()
+    }
+
+    func installTunnelClient(
+        _ plan: TunnelClientValidation,
+        runtimeToken: String?
+    ) throws -> (TunnelClientInstallResult, TunnelRuntimeStatus?) {
+        let installer = try requireTunnelInstaller()
+        let profiles = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: ".project-brain/tunnel/profiles")
+        let result = try installer.install(plan) { destination, _ in
+            _ = try TunnelClient(executable: destination, profileDirectory: profiles)
+        }
+        let client = try TunnelClient(executable: result.destination, profileDirectory: profiles)
+        tunnelClient = client
+        let status = try? client.status(runtimeToken: runtimeToken)
+        return (result, status)
+    }
+
+    func removeManagedTunnelClient(runtimeToken: String?) throws -> TunnelStopResult {
+        let stopped = try requireTunnelClient().stop(runtimeToken: runtimeToken)
+        try requireTunnelInstaller().removeManagedBinary(confirmedStop: stopped)
+        tunnelClient = nil
+        return stopped
+    }
+
+    func createAcceptanceChallenge(
+        appVersion: String,
+        tunnelFingerprint: String
+    ) throws -> ExternalAcceptanceCreateResponse {
+        try requireClient().createAcceptanceChallenge(
+            appVersion: appVersion,
+            tunnelFingerprint: tunnelFingerprint
+        )
+    }
+
+    func markAcceptanceWaiting(_ runID: String) throws -> ExternalAcceptanceMutationResponse {
+        try requireClient().markAcceptanceWaiting(runID)
+    }
+
+    func resetAcceptance(_ runID: String) throws -> ExternalAcceptanceMutationResponse {
+        try requireClient().resetAcceptance(runID)
+    }
+
+    func planAcceptanceTask(_ projectID: String) throws -> AcceptanceTaskPlanResponse {
+        try requireClient().planAcceptanceTask(projectID)
+    }
+
+    func createAcceptanceTask(
+        _ projectID: String,
+        planToken: String
+    ) throws -> AcceptanceTaskCreateResponse {
+        try requireClient().createAcceptanceTask(projectID, planToken: planToken)
+    }
+
     private func requireClient() throws -> CoreClient {
         guard let client else {
             throw CoreClientError.invalidInstallation("The managed Core helper is not ready.")
@@ -143,13 +207,20 @@ private actor ProductShellBackend {
         return tunnelClient
     }
 
+    private func requireTunnelInstaller() throws -> TunnelClientInstaller {
+        guard let tunnelInstaller else { throw TunnelClientInstallerError.invalidManifest }
+        return tunnelInstaller
+    }
+
     private func loadSnapshot(client: CoreClient, selectedTaskID: String?) throws -> ProductSnapshot {
         ProductSnapshot(
             tasks: try client.tasks(),
             projects: try client.projects(),
             services: try client.serviceStatus(),
             health: try client.readiness(),
-            selectedTask: try selectedTaskID.map(client.task)
+            selectedTask: try selectedTaskID.map(client.task),
+            acceptance: try client.acceptanceStatus(),
+            tunnelInstallation: try? tunnelInstaller?.validateInstalled()
         )
     }
 
@@ -178,6 +249,11 @@ final class AppModel: ObservableObject {
     @Published var lifecyclePlan: ProjectLifecyclePlan?
     @Published var lifecycleAction: ProjectLifecycleAction?
     @Published var lifecycleProjectID: String?
+    @Published var tunnelImportPlan: TunnelClientValidation?
+    @Published private(set) var installedTunnelClient: TunnelClientValidation?
+    @Published private(set) var acceptanceStatus: ExternalAcceptanceStatusResponse?
+    @Published private(set) var acceptanceChallenge: String?
+    @Published var acceptanceTaskPlan: AcceptanceTaskPlanResponse?
     @Published private(set) var isBusy = false
     @Published var issue: UserFacingIssue?
 
@@ -188,14 +264,20 @@ final class AppModel: ObservableObject {
     private let observation: StateObservationLoop<ProductSnapshot>
     private var didBootstrap = false
     private var tunnelStatusTask: Task<Void, Never>?
+    private var acceptanceChallengeRunID: String?
 
     init(
         installer: HelperInstaller = HelperInstaller(),
+        tunnelInstaller: TunnelClientInstaller? = nil,
         onboardingStore: OnboardingStore = OnboardingStore(),
         connectionStore: ConnectionStore = ConnectionStore(),
         keychain: KeychainStore = KeychainStore()
     ) {
-        self.backend = ProductShellBackend(installer: installer)
+        let managedTunnelInstaller = tunnelInstaller ?? Self.makeTunnelInstaller()
+        self.backend = ProductShellBackend(
+            installer: installer,
+            tunnelInstaller: managedTunnelInstaller
+        )
         self.onboardingStore = onboardingStore
         self.connectionStore = connectionStore
         self.keychain = keychain
@@ -205,6 +287,7 @@ final class AppModel: ObservableObject {
         self.connection.runtimeTokenConfigured =
             (try? keychain.read(account: "secure-mcp-tunnel-token")) != nil
         self.connection.tunnelClientAvailable = TunnelClient.discover() != nil
+        self.installedTunnelClient = try? managedTunnelInstaller?.validateInstalled()
     }
 
     var menuSnapshot: MenuBarSnapshot {
@@ -213,6 +296,21 @@ final class AppModel: ObservableObject {
 
     var tunnelTokenConfigured: Bool {
         (try? keychain.read(account: "secure-mcp-tunnel-token")) != nil
+    }
+
+    var acceptancePresentation: ExternalAcceptancePresentation {
+        .make(
+            connection: connection,
+            acceptance: acceptanceStatus,
+            challengeAvailable: acceptanceChallenge != nil
+        )
+    }
+
+    var acceptancePrompt: String? {
+        acceptanceChallenge.map {
+            "Please use the Project Brain Connector to call "
+                + "project_brain_acceptance_probe with challenge: \($0)"
+        }
     }
 
     func bootstrap() {
@@ -384,6 +482,62 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func prepareTunnelClientImport(selectedURLs: [URL]) {
+        runOperation {
+            try await self.backend.validateTunnelClient(selectedURLs)
+        } onSuccess: { self.tunnelImportPlan = $0 }
+    }
+
+    func installSelectedTunnelClient() {
+        guard let plan = tunnelImportPlan else { return }
+        let token: String?
+        do {
+            token = try keychain.read(account: "secure-mcp-tunnel-token")
+        } catch {
+            present(error)
+            return
+        }
+        runOperation {
+            try await self.backend.installTunnelClient(plan, runtimeToken: token)
+        } onSuccess: { result, status in
+            self.installedTunnelClient = result.validation
+            self.tunnelImportPlan = nil
+            self.connection.tunnelClientAvailable = true
+            if let status { self.applyTunnelStatus(status) }
+            self.connectionStore.save(self.connection)
+        }
+    }
+
+    func validateInstalledTunnelClient() {
+        runOperation {
+            try await self.backend.validateInstalledTunnelClient()
+        } onSuccess: { self.installedTunnelClient = $0 }
+    }
+
+    func revealInstalledTunnelClient() {
+        guard let installedTunnelClient else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([installedTunnelClient.source])
+    }
+
+    func removeInstalledTunnelClient() {
+        guard installedTunnelClient != nil, !isBusy else { return }
+        let token: String?
+        do {
+            token = try keychain.read(account: "secure-mcp-tunnel-token")
+        } catch {
+            present(error)
+            return
+        }
+        runOperation {
+            try await self.backend.removeManagedTunnelClient(runtimeToken: token)
+        } onSuccess: { stopped in
+            self.applyTunnelStatus(stopped.status)
+            self.installedTunnelClient = nil
+            self.connection.tunnelClientAvailable = TunnelClient.discover() != nil
+            self.connectionStore.save(self.connection)
+        }
+    }
+
     func saveAndStartTunnel(tunnelID: String, token: String) {
         let configuration = TunnelConfiguration(tunnelID: tunnelID, runtimeToken: token)
         guard TunnelClient.isValidTunnelID(tunnelID) else {
@@ -466,6 +620,88 @@ final class AppModel: ObservableObject {
         connectionStore.save(connection)
     }
 
+    func generateAcceptanceChallenge() {
+        guard acceptancePresentation.canGenerateChallenge,
+              TunnelClient.isValidTunnelID(connection.tunnelID) else {
+            present(TunnelClientError.invalidTunnelID)
+            return
+        }
+        let appVersion = Self.appVersion
+        let fingerprint = TunnelClient.fingerprint(connection.tunnelID)
+        runOperation {
+            try await self.backend.createAcceptanceChallenge(
+                appVersion: appVersion,
+                tunnelFingerprint: fingerprint
+            )
+        } onSuccess: { response in
+            self.acceptanceChallenge = response.challenge
+            self.acceptanceChallengeRunID = response.run.runID
+            self.acceptanceStatus = ExternalAcceptanceStatusResponse(
+                status: "ok",
+                current: response.run,
+                lastPassed: self.acceptanceStatus?.lastPassed,
+                installationFingerprint: response.run.installationFingerprint
+            )
+            self.applyExternalVerificationAuthority()
+        }
+    }
+
+    func copyAcceptancePromptAndWait() {
+        guard let prompt = acceptancePrompt,
+              let runID = acceptanceChallengeRunID else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(prompt, forType: .string)
+        runOperation {
+            try await self.backend.markAcceptanceWaiting(runID)
+        } onSuccess: { response in
+            self.acceptanceStatus = ExternalAcceptanceStatusResponse(
+                status: "ok",
+                current: response.run,
+                lastPassed: self.acceptanceStatus?.lastPassed,
+                installationFingerprint: response.run.installationFingerprint
+            )
+        }
+    }
+
+    func resetAcceptance() {
+        guard let runID = acceptanceStatus?.current?.runID else { return }
+        runOperation {
+            try await self.backend.resetAcceptance(runID)
+        } onSuccess: { response in
+            self.acceptanceChallenge = nil
+            self.acceptanceChallengeRunID = nil
+            self.acceptanceStatus = ExternalAcceptanceStatusResponse(
+                status: "ok",
+                current: response.run,
+                lastPassed: self.acceptanceStatus?.lastPassed,
+                installationFingerprint: response.run.installationFingerprint
+            )
+            self.applyExternalVerificationAuthority()
+        }
+    }
+
+    func planRealProjectAcceptance(projectID: String) {
+        runOperation {
+            try await self.backend.planAcceptanceTask(projectID)
+        } onSuccess: { self.acceptanceTaskPlan = $0 }
+    }
+
+    func createRealProjectAcceptanceTask() {
+        guard let plan = acceptanceTaskPlan else { return }
+        runOperation {
+            try await self.backend.createAcceptanceTask(
+                plan.projectID,
+                planToken: plan.planToken
+            )
+        } onSuccess: { response in
+            self.acceptanceTaskPlan = nil
+            if !self.tasks.contains(where: { $0.taskID == response.task.taskID }) {
+                self.tasks.insert(response.task, at: 0)
+            }
+            self.selectedSection = .tasks
+        }
+    }
+
     func restartOnboarding() {
         Task { await observation.cancel() }
         onboarding = OnboardingProgress()
@@ -486,14 +722,15 @@ final class AppModel: ObservableObject {
         do {
             let report = DiagnosticReport(
                 generatedAt: ISO8601DateFormatter().string(from: Date()),
-                appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
-                    as? String ?? "0.6.0",
+                appVersion: Self.appVersion,
                 aggregateStatus: menuSnapshot.status,
                 taskCounts: menuSnapshot.counts,
                 services: services?.services ?? [],
                 checks: health?.checks ?? [],
                 projects: projects,
-                connection: connection
+                connection: connection,
+                tunnelClient: installedTunnelClient,
+                acceptance: acceptanceStatus
             )
             let data = try report.encoded()
             try data.write(to: url, options: [.atomic, .completeFileProtection])
@@ -511,6 +748,8 @@ final class AppModel: ObservableObject {
         projects = snapshot.projects
         services = snapshot.services
         health = snapshot.health
+        acceptanceStatus = snapshot.acceptance
+        installedTunnelClient = snapshot.tunnelInstallation
         if snapshot.selectedTask != nil { selectedTask = snapshot.selectedTask }
         connection.localMCPStatus = snapshot.services.services
             .first(where: { $0.name == "mcp" })?.state ?? "unknown"
@@ -518,6 +757,14 @@ final class AppModel: ObservableObject {
             .first(where: { $0.name == "mcp_transport" })?.passed == true
         connection.tunnelClientAvailable = TunnelClient.discover() != nil
         connection.lastCheckedAt = ISO8601DateFormatter().string(from: Date())
+        let challengeIsActive = snapshot.acceptance.current.map {
+            [ExternalAcceptanceRunStatus.challengeReady, .waitingForChatGPT].contains($0.status)
+        } ?? false
+        if acceptanceChallengeRunID != snapshot.acceptance.current?.runID || !challengeIsActive {
+            acceptanceChallenge = nil
+            acceptanceChallengeRunID = nil
+        }
+        applyExternalVerificationAuthority()
         connectionStore.save(connection)
         refreshTunnelStatus(silent: true)
     }
@@ -575,6 +822,10 @@ final class AppModel: ObservableObject {
         connectionStore.save(connection)
     }
 
+    private func applyExternalVerificationAuthority() {
+        connection.applyExternalAuthority(acceptanceStatus)
+    }
+
     private func tunnelConfiguration() throws -> TunnelConfiguration {
         guard let token = try keychain.read(account: "secure-mcp-tunnel-token") else {
             throw TunnelClientError.missingToken
@@ -586,6 +837,26 @@ final class AppModel: ObservableObject {
     }
 
     private func persistOnboarding() { onboardingStore.save(onboarding) }
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "0.7.0"
+    }
+
+    private static func makeTunnelInstaller() -> TunnelClientInstaller? {
+        #if SWIFT_PACKAGE
+        let bundle = Bundle.module
+        #else
+        let bundle = Bundle.main
+        #endif
+        guard let url = bundle.url(
+            forResource: "tunnel-client-compatibility",
+            withExtension: "json"
+        ), let manifest = try? TunnelCompatibilityManifest.load(from: url) else {
+            return nil
+        }
+        return try? TunnelClientInstaller(manifest: manifest)
+    }
 
     private func runOperation<Value: Sendable>(
         _ operation: @escaping () async throws -> Value,

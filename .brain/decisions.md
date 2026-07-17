@@ -130,3 +130,25 @@ revision, recovery, verification, publication, release, cleanup, and forensics
 use the stored snapshot and fail closed if it is missing or changed. Display
 name changes do not create an execution revision. MCP remains read/control only
 and gains no configuration mutation tool.
+
+## D-019: Make external acceptance an MCP-ingress authority
+
+External acceptance is a durable Core schema-v7 state machine, not a UI flag or
+operator declaration. One-time challenge plaintext is returned once and never
+persisted; only its SHA-256 is stored. A run binds app/Core versions,
+installation identity, Tunnel fingerprint, and expiry. Only the registered,
+strict, no-side-effect MCP probe can consume a waiting challenge and write
+`passed`; Core CLI and Swift expose no pass command. Historical pass remains
+independent from current Tunnel health. Fixture and CI probes never represent
+real ChatGPT external acceptance.
+
+## D-020: Import reviewed Tunnel binaries; never silently download them
+
+Product Shell opens the official Platform entry point but does not fetch or
+execute arbitrary URLs. The user selects one regular executable. A static
+bundled manifest allowlists reviewed version/platform/architecture/runtime-
+contract combinations, beginning with Tunnel Client 0.0.10 arm64. The app uses
+fixed `--version`, bounded output/time, Mach-O and SHA-256 validation, private
+same-directory staging, fsync, atomic replacement, rollback, and fail-closed
+removal after confirmed stop. User confirmation of official origin is shown as
+such and is never mislabeled as cryptographic supply-chain verification.

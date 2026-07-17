@@ -9,6 +9,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
+from project_brain.acceptance import ExternalAcceptanceManager
+from project_brain import __version__
 from project_brain.errors import (
     AlreadyRunningError,
     InvalidTaskError,
@@ -48,6 +50,14 @@ PromptText = Annotated[str, StringConstraints(min_length=1, max_length=20_000)]
 TimestampText = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 ShaText = Annotated[str, StringConstraints(min_length=7, max_length=128)]
 ReasonText = Annotated[str, StringConstraints(min_length=1, max_length=500)]
+AcceptanceChallenge = Annotated[
+    str,
+    StringConstraints(
+        min_length=32,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]{32,128}$",
+    ),
+]
 Limit = Annotated[int, Field(ge=1, le=100)]
 
 FORBIDDEN_CONTROL_FIELDS = {
@@ -380,10 +390,18 @@ DISPATCH_WRITE = ToolAnnotations(
     idempotentHint=False,
     openWorldHint=True,
 )
+ACCEPTANCE_PROBE_WRITE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=False,
+)
 
 
 def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
     """Register the stable Project Brain MCP surface."""
+
+    acceptance = ExternalAcceptanceManager(service.store)
 
     @mcp.tool(
         name="project_brain_system_health",
@@ -503,6 +521,33 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
     )
     def project_brain_tasks_recovery_preview(task_id: StableId) -> dict[str, Any]:
         return service.tasks_recovery_preview(task_id=task_id)
+
+    @mcp.tool(
+        name="project_brain_acceptance_probe",
+        description=(
+            "Consume one Product Brain external-acceptance challenge. This records only "
+            "a bounded ingress proof and performs no task, file, Git, or command action."
+        ),
+        annotations=ACCEPTANCE_PROBE_WRITE,
+        structured_output=True,
+    )
+    def project_brain_acceptance_probe(
+        challenge: AcceptanceChallenge,
+    ) -> dict[str, Any]:
+        def operation() -> dict[str, Any]:
+            run = acceptance._complete_from_mcp_ingress(challenge)
+            return {
+                "status": "passed",
+                "code": "ok",
+                "result": {
+                    "probe": "passed",
+                    "project_brain_version": __version__,
+                    "verified_at": run["verified_at"],
+                    "acceptance_run_id": run["run_id"],
+                },
+            }
+
+        return _guard(operation)  # type: ignore[return-value]
 
     # The verified and exactly pinned mcp==1.28.1 release builds function
     # argument models with Pydantic's extra="ignore" default. Its public tool

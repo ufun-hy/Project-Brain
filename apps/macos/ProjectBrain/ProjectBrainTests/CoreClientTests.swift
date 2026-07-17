@@ -84,12 +84,37 @@ final class CoreClientTests: XCTestCase {
             .initialize, .status, .tasks, .task("task-1"), .projects, .health, .readiness,
             .serviceStatus, .service(.restart),
             .projectLifecycle("project-1", .pause, execute: false),
+            .acceptanceStatus,
+            .acceptanceCreate(appVersion: "0.7.0", tunnelFingerprint: "fingerprint"),
+            .acceptanceWaiting("run-1"), .acceptanceReset("run-1"),
+            .acceptanceTaskPlan("project-1"),
+            .acceptanceTaskCreate("project-1", planToken: "v1:token"),
         ]
         for command in commands {
             let arguments = command.arguments(runtimeRoot: runtime)
             XCTAssertFalse(arguments.contains("-c"))
             XCTAssertFalse(arguments.contains("--cwd"))
             XCTAssertFalse(arguments.contains("--env"))
+            XCTAssertFalse(arguments.contains("pass"))
         }
+    }
+
+    func testAcceptanceCommandsUseOnlyFixedCoreArgumentsAndExposeNoPassCommand() {
+        let runtime = URL(filePath: "/Users/example/.project-brain")
+        XCTAssertEqual(
+            CoreCommand.acceptanceCreate(
+                appVersion: "0.7.0",
+                tunnelFingerprint: "sha256-fingerprint"
+            ).arguments(runtimeRoot: runtime),
+            [
+                "--runtime-root", "/Users/example/.project-brain",
+                "acceptance", "create", "--app-version", "0.7.0",
+                "--tunnel-fingerprint", "sha256-fingerprint", "--json",
+            ]
+        )
+        XCTAssertEqual(
+            CoreCommand.acceptanceWaiting("run-1").arguments(runtimeRoot: runtime).suffix(4),
+            ["acceptance", "waiting", "run-1", "--json"]
+        )
     }
 }

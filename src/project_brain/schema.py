@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -296,6 +296,52 @@ ALTER TABLE projects ADD COLUMN accepting_tasks INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE projects ADD COLUMN registered INTEGER NOT NULL DEFAULT 1;
 """
 
+MIGRATION_7 = """
+CREATE TABLE installation_identity (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    installation_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE external_acceptance_runs (
+    run_id TEXT PRIMARY KEY,
+    challenge_sha256 TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK(status IN (
+        'not_started', 'challenge_ready', 'waiting_for_chatgpt', 'passed',
+        'failed', 'expired', 'superseded'
+    )),
+    core_version TEXT NOT NULL,
+    app_version TEXT NOT NULL,
+    installation_id TEXT NOT NULL REFERENCES installation_identity(installation_id),
+    tunnel_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    waiting_at TEXT,
+    verified_at TEXT,
+    failure_code TEXT,
+    ingress TEXT,
+    probe_count INTEGER NOT NULL DEFAULT 0 CHECK(probe_count >= 0)
+);
+
+CREATE INDEX external_acceptance_status_created_idx
+    ON external_acceptance_runs(status, created_at);
+CREATE INDEX external_acceptance_verified_idx
+    ON external_acceptance_runs(verified_at);
+
+CREATE TABLE external_acceptance_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT REFERENCES external_acceptance_runs(run_id),
+    event_type TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX external_acceptance_events_run_idx
+    ON external_acceptance_events(run_id, event_id);
+"""
+
 MIGRATIONS = {
     1: MIGRATION_1,
     2: MIGRATION_2,
@@ -303,4 +349,5 @@ MIGRATIONS = {
     4: MIGRATION_4,
     5: MIGRATION_5,
     6: MIGRATION_6,
+    7: MIGRATION_7,
 }
