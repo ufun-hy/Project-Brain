@@ -12,7 +12,7 @@ pending.
 
 ## Implemented RC1
 
-- Project Brain 0.7.0 build 2 and atomic schema v8 migration with stable
+- Project Brain 0.7.0 build 3 and atomic schema v8 migration with stable
   installation identity, one-time transport-probe runs, append-only events, and
   safe downgrade of legacy v7 `passed` rows to unattributed evidence.
 - A strict `project_brain_acceptance_probe` MCP tool. Core has no pass CLI and

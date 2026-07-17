@@ -30,6 +30,18 @@ final class ExternalAcceptancePresentationTests: XCTestCase {
         XCTAssertTrue(presentation.nextAction.contains("restarted"))
     }
 
+    func testFailedTransportProbeTitleRendersStatusInsteadOfSourceExpression() {
+        assertTerminalTitle(status: .failed, expected: "Transport probe failed")
+    }
+
+    func testExpiredTransportProbeTitleRendersStatusInsteadOfSourceExpression() {
+        assertTerminalTitle(status: .expired, expected: "Transport probe expired")
+    }
+
+    func testSupersededTransportProbeTitleRendersStatusInsteadOfSourceExpression() {
+        assertTerminalTitle(status: .superseded, expected: "Transport probe superseded")
+    }
+
     func testHistoricalTransportProbeRemainsPendingWhenTunnelIsUnhealthy() {
         var connection = readyConnection()
         connection.tunnelReady = false
@@ -136,6 +148,21 @@ final class ExternalAcceptancePresentationTests: XCTestCase {
             appVersion: "0.7.0",
             challengeAvailable: false
         )
+    }
+
+    private func assertTerminalTitle(
+        status runStatus: ExternalAcceptanceRunStatus,
+        expected: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let value = presentation(
+            readyConnection(),
+            status(current: run(status: runStatus))
+        )
+        XCTAssertEqual(value.title, expected, file: file, line: line)
+        XCTAssertFalse(value.title.contains("current.status"), file: file, line: line)
+        XCTAssertFalse(value.title.contains("("), file: file, line: line)
     }
 
     private func readyConnection() -> ConnectionSnapshot {

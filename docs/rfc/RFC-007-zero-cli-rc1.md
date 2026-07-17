@@ -1,7 +1,7 @@
 # RFC-007: Zero-CLI Product Shell RC1
 
 Status: Repository implementation complete; external acceptance pending
-Target: Project Brain 0.7.0 build 2
+Target: Project Brain 0.7.0 build 3
 Platform: macOS 14+, Apple Silicon arm64
 
 ## Decision

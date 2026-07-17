@@ -26,7 +26,7 @@ def verify(directory: Path) -> None:
     assert manifest["signing_status"] == "unsigned_internal_rc"
     assert manifest["notarization_status"] == "not_notarized"
     assert manifest["external_acceptance"] == "pending_user_credentials_and_actions"
-    assert manifest["app"] == {"build": "2", "version": "0.7.0"}
+    assert manifest["app"] == {"build": "3", "version": "0.7.0"}
     assert manifest["core_helper"]["version"] == "0.7.0"
     assert manifest["tunnel_compatibility_manifest_version"] == 1
     assert manifest["supported_tunnel_client_versions"] == ["0.0.10"]

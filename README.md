@@ -21,7 +21,7 @@ without asking the user to run a CLI or maintain Python.
 
 The app embeds a self-contained Core helper and can import a user-downloaded,
 reviewed Tunnel Client into its private App Support directory. Both installers
-use atomic replacement and rollback. RC1 build 2 adds an MCP transport-probe
+use atomic replacement and rollback. RC1 build 3 adds an MCP transport-probe
 wizard with explicit external-acceptance Pending state. The optional fixed
 one-document Draft PR task remains locked because the current Tunnel contract
 does not provide trusted ChatGPT control-plane attestation. The unsigned

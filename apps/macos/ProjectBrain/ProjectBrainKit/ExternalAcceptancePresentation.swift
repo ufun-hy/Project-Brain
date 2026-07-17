@@ -170,7 +170,7 @@ public struct ExternalAcceptancePresentation: Equatable, Sendable {
         case .failed, .expired, .superseded:
             return value(
                 .pending,
-                "Transport probe (current.status.title.lowercased())",
+                "Transport probe \(current.status.title.lowercased())",
                 "Generate a new one-time challenge when ready.",
                 canGenerate: true,
                 historicalProbe: false,
