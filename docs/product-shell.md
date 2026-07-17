@@ -124,6 +124,11 @@ workflow with fixed arguments. The target is always
 hex characters. The Runtime API key is stored in Keychain and passed only as
 `CONTROL_PLANE_API_KEY`, never as argv or profile content.
 
+Removing a tunnel configuration is fail-closed. The app removes the Keychain
+credential only after `tunnel-client` confirms that the runtime stopped or was
+already stopped. A failed or malformed stop response leaves the credential and
+stored connection state intact and presents a retryable error.
+
 `ready_to_test` is derived, not manually assigned. It requires a valid tunnel
 ID, a stored Runtime API key, a successful local MCP initialize handshake, and
 a tunnel status reporting `process_running`, `healthy`, and `ready`. An

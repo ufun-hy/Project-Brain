@@ -125,6 +125,16 @@ public struct TunnelRuntimeStatus: Equatable, Sendable {
     }
 }
 
+public struct TunnelStopResult: Equatable, Sendable {
+    public let status: TunnelRuntimeStatus
+    public let alreadyStopped: Bool
+
+    public init(status: TunnelRuntimeStatus, alreadyStopped: Bool) {
+        self.status = status
+        self.alreadyStopped = alreadyStopped
+    }
+}
+
 private struct TunnelPayload: Decodable {
     struct Tunnel: Decodable { let id: String? }
 
@@ -147,6 +157,18 @@ private struct TunnelPayload: Decodable {
         case uiURL = "ui_url"
         case error
         case remoteError = "remote_error"
+    }
+}
+
+private struct TunnelStopPayload: Decodable {
+    let stopped: Bool?
+    let alreadyStopped: Bool?
+    let stopError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case stopped
+        case alreadyStopped = "already_stopped"
+        case stopError = "stop_error"
     }
 }
 
@@ -227,13 +249,27 @@ public final class TunnelClient: @unchecked Sendable {
         throw TunnelClientError.invalidResponse
     }
 
-    public func stop(runtimeToken: String?) throws -> TunnelRuntimeStatus {
+    public func stop(runtimeToken: String?) throws -> TunnelStopResult {
         let result = try run(
             ["runtimes", "stop", Self.alias, "--json"],
             token: runtimeToken
         )
         guard result.exitCode == 0 else { throw processError(result) }
-        return TunnelRuntimeStatus(runtimeState: "stopped")
+        guard !result.stdout.isEmpty,
+              let payload = try? decoder.decode(TunnelStopPayload.self, from: result.stdout),
+              let stopped = payload.stopped else {
+            throw TunnelClientError.invalidResponse
+        }
+        guard stopped else {
+            let detail = SecretRedactor.redact(
+                payload.stopError ?? "tunnel-client did not confirm that the runtime stopped."
+            )
+            throw TunnelClientError.process(detail)
+        }
+        return TunnelStopResult(
+            status: TunnelRuntimeStatus(runtimeState: "stopped"),
+            alreadyStopped: payload.alreadyStopped ?? false
+        )
     }
 
     public func reconnect(_ configuration: TunnelConfiguration) throws -> TunnelRuntimeStatus {

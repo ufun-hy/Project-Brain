@@ -122,7 +122,7 @@ private actor ProductShellBackend {
         try requireTunnelClient().status(runtimeToken: runtimeToken)
     }
 
-    func stopTunnel(runtimeToken: String?) throws -> TunnelRuntimeStatus {
+    func stopTunnel(runtimeToken: String?) throws -> TunnelStopResult {
         try requireTunnelClient().stop(runtimeToken: runtimeToken)
     }
 
@@ -421,7 +421,7 @@ final class AppModel: ObservableObject {
         let token = try? keychain.read(account: "secure-mcp-tunnel-token")
         runOperation {
             try await self.backend.stopTunnel(runtimeToken: token ?? nil)
-        } onSuccess: { self.applyTunnelStatus($0) }
+        } onSuccess: { self.applyTunnelStatus($0.status) }
     }
 
     func reconnectTunnel() {
@@ -436,10 +436,20 @@ final class AppModel: ObservableObject {
     func checkTunnelStatus() { refreshTunnelStatus(silent: false) }
 
     func removeTunnelConfiguration() {
-        let token = try? keychain.read(account: "secure-mcp-tunnel-token")
+        guard !isBusy else { return }
+        let token: String?
+        do {
+            token = try keychain.read(account: "secure-mcp-tunnel-token")
+        } catch {
+            present(error)
+            return
+        }
+        isBusy = true
         Task {
-            _ = try? await backend.stopTunnel(runtimeToken: token ?? nil)
+            defer { isBusy = false }
             do {
+                let result = try await backend.stopTunnel(runtimeToken: token)
+                applyTunnelStatus(result.status)
                 try keychain.remove(account: "secure-mcp-tunnel-token")
                 connection.runtimeTokenConfigured = false
                 connection.tunnelProcessRunning = false

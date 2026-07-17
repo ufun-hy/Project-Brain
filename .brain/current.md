@@ -45,6 +45,8 @@ and must not be marked Ready or merged during repository acceptance.
   verification.
 - Credentials enter macOS Keychain, not SQLite, plist, logs, tasks, diagnostics,
   or PR data.
+- Tunnel configuration removal is fail-closed: Keychain credentials are removed
+  only after a confirmed stop or explicit already-stopped response.
 - Service uninstall preserves the runtime, project repositories, registration,
   and task history.
 - Gmail legacy remains frozen and excluded from Product Shell.
@@ -53,7 +55,7 @@ and must not be marked Ready or merged during repository acceptance.
 
 Local Python/Core/MCP and fixture integration tests pass (186 tests). The SwiftUI executable
 and ProjectBrainKit compile locally. The host does not contain full Xcode, so
-the 25 XCTest cases and `Project Brain.app` build acceptance remain pending until the Draft
+the 27 XCTest cases and `Project Brain.app` build acceptance remain pending until the Draft
 PR macOS GitHub Actions job is green. Exact counts, SHAs, URLs, and isolation
 evidence are recorded at delivery.
 

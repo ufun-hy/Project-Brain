@@ -109,4 +109,39 @@ final class TunnelClientTests: XCTestCase {
             ["runtimes", "connect"],
         ])
     }
+
+    func testStopAcceptsExplicitAlreadyStoppedConfirmation() throws {
+        let runner = CapturingTunnelRunner(results: [
+            .init(
+                exitCode: 0,
+                stdout: Data(#"{"stopped":true,"already_stopped":true}"#.utf8),
+                stderr: Data()
+            ),
+        ])
+
+        let result = try client(runner).stop(runtimeToken: token)
+
+        XCTAssertTrue(result.alreadyStopped)
+        XCTAssertEqual(result.status.runtimeState, "stopped")
+        XCTAssertFalse(result.status.processRunning)
+    }
+
+    func testStopRejectsUnconfirmedStopEvenWhenProcessExitsSuccessfully() throws {
+        let runner = CapturingTunnelRunner(results: [
+            .init(
+                exitCode: 0,
+                stdout: Data(
+                    #"{"stopped":false,"already_stopped":false,"stop_error":"runtime still active"}"#.utf8
+                ),
+                stderr: Data()
+            ),
+        ])
+
+        XCTAssertThrowsError(try client(runner).stop(runtimeToken: token)) { error in
+            XCTAssertEqual(
+                error as? TunnelClientError,
+                .process("runtime still active")
+            )
+        }
+    }
 }
