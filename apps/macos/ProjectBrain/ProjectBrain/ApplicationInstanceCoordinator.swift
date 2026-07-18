@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import ProjectBrainKit
 
@@ -10,14 +11,17 @@ final class ApplicationInstanceCoordinator: NSObject, NSApplicationDelegate {
         do {
             guard let lock = try UserProcessLock.acquire(at: Self.lockURL()) else {
                 activateExistingInstance()
-                DispatchQueue.main.async { NSApp.terminate(nil) }
-                return
+                // Termination requested during will-finish-launching is not
+                // reliable for a second SwiftUI app copy. No window or runtime
+                // operation has started here, so exit the duplicate process
+                // immediately after asking macOS to activate the owner.
+                Darwin._exit(EXIT_SUCCESS)
             }
             processLock = lock
             ownsInstance = true
         } catch {
             // Fail closed when user-level instance ownership cannot be proven.
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+            Darwin._exit(EXIT_FAILURE)
         }
     }
 

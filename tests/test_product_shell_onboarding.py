@@ -93,6 +93,7 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn('Window("Project Brain", id: "management")', app)
         self.assertNotIn('WindowGroup("Project Brain", id: "management")', app)
         self.assertIn("UserProcessLock.acquire", coordinator)
+        self.assertIn("Darwin._exit(EXIT_SUCCESS)", coordinator)
         self.assertIn('INSTALLED_APP="/Applications/Project Brain.app"', instance_verifier)
         self.assertIn("management_window_count", instance_verifier)
 
