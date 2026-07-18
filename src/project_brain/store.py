@@ -179,11 +179,21 @@ class TaskStore:
         with self.transaction(immediate=True) as connection:
             for record in prepared:
                 name_owner = connection.execute(
-                    "SELECT project_id FROM projects WHERE name = ? AND project_id != ?",
+                    "SELECT project_id FROM projects "
+                    "WHERE lower(name) = lower(?) AND project_id != ? AND registered = 1",
                     (record["name"], record["project_id"]),
                 ).fetchone()
                 if name_owner is not None:
                     raise InvalidTaskError(f"Project name is already registered: {record['name']}")
+                path_owner = connection.execute(
+                    "SELECT project_id FROM projects "
+                    "WHERE repo_path = ? AND project_id != ? AND registered = 1",
+                    (record["repo_path"], record["project_id"]),
+                ).fetchone()
+                if path_owner is not None:
+                    raise InvalidTaskError(
+                        "Repository path is already registered to another project"
+                    )
                 existing = connection.execute(
                     "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
                 ).fetchone()

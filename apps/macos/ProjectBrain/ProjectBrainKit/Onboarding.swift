@@ -1,5 +1,51 @@
 import Foundation
 
+public enum ApplicationInstallationLocation: String, Equatable, Sendable {
+    case applications
+    case diskImage
+    case other
+}
+
+public struct ApplicationInstallationStatus: Equatable, Sendable {
+    public static let requiredBundleURL = URL(filePath: "/Applications/Project Brain.app")
+
+    public let bundleURL: URL
+    public let location: ApplicationInstallationLocation
+
+    public init(bundleURL: URL) {
+        let canonical = bundleURL.standardizedFileURL
+        self.bundleURL = canonical
+        if canonical.path == Self.requiredBundleURL.standardizedFileURL.path {
+            self.location = .applications
+        } else if canonical.path == "/Volumes" || canonical.path.hasPrefix("/Volumes/") {
+            self.location = .diskImage
+        } else {
+            self.location = .other
+        }
+    }
+
+    public var isInstalled: Bool { location == .applications }
+
+    public var title: String {
+        switch location {
+        case .applications: "Installed in Applications"
+        case .diskImage: "Project Brain is not installed"
+        case .other: "Project Brain is running outside Applications"
+        }
+    }
+
+    public var guidance: String {
+        switch location {
+        case .applications:
+            "Project Brain is running from /Applications/Project Brain.app."
+        case .diskImage:
+            "Quit the app, drag Project Brain.app from the DMG into /Applications, eject the DMG, then open /Applications/Project Brain.app."
+        case .other:
+            "Move Project Brain.app to /Applications, then open /Applications/Project Brain.app before formal acceptance."
+        }
+    }
+}
+
 public enum OnboardingStage: String, Codable, CaseIterable, Sendable {
     case welcome
     case runtime

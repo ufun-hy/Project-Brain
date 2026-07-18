@@ -189,6 +189,8 @@ public struct ProjectPlan: Codable, Equatable, Sendable {
     public let nextRevision: Int?
     public let currentSHA256: String?
     public let nextSHA256: String?
+    public let currentName: String?
+    public let nextName: String?
     public let changedFields: [String]
     public let nonterminalTaskCount: Int
     public let taskSnapshotEffect: String
@@ -201,9 +203,33 @@ public struct ProjectPlan: Codable, Equatable, Sendable {
         case nextRevision = "next_revision"
         case currentSHA256 = "current_sha256"
         case nextSHA256 = "next_sha256"
+        case currentName = "current_name"
+        case nextName = "next_name"
         case changedFields = "changed_fields"
         case nonterminalTaskCount = "nonterminal_task_count"
         case taskSnapshotEffect = "task_snapshot_effect"
+    }
+}
+
+public enum ProjectConflictRecovery: String, Codable, Equatable, Sendable {
+    case useExistingProject = "use_existing_project"
+    case chooseDifferentRepository = "choose_different_repository"
+    case editProjectName = "edit_project_name"
+}
+
+public struct ProjectConflict: Codable, Equatable, Sendable {
+    public let kind: String
+    public let existingProjectID: String
+    public let existingProjectName: String
+    public let repositoryLabel: String
+    public let recoveryOptions: [ProjectConflictRecovery]
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case existingProjectID = "existing_project_id"
+        case existingProjectName = "existing_project_name"
+        case repositoryLabel = "repository_label"
+        case recoveryOptions = "recovery_options"
     }
 }
 

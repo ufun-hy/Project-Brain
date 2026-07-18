@@ -65,6 +65,16 @@ class StateConflictError(ProjectBrainError):
     category = "state_conflict"
 
 
+class ProjectConflictError(ProjectBrainError):
+    """A plan-time project identity conflict with bounded recovery metadata."""
+
+    category = "project_conflict"
+
+    def __init__(self, message: str, *, conflict: dict[str, object]) -> None:
+        super().__init__(message)
+        self.conflict = conflict
+
+
 class MigrationError(ProjectBrainError):
     category = "migration"
 

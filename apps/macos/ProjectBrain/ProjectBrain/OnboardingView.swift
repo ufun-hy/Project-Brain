@@ -19,6 +19,15 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Label(model.onboarding.stage.title, systemImage: stageSymbol)
                     .font(.largeTitle.bold())
+                if !model.installationStatus.isInstalled {
+                    InstallationNotice(
+                        status: model.installationStatus,
+                        reveal: model.revealApplicationBundle
+                    )
+                }
+                if let issue = model.issue {
+                    OnboardingIssueNotice(issue: issue, model: model)
+                }
                 stageContent
                 Spacer()
                 HStack {
@@ -30,7 +39,7 @@ struct OnboardingView: View {
             }
             .padding(36)
         }
-        .frame(width: 700, height: 520)
+        .frame(width: 760, height: 650)
     }
 
     @ViewBuilder private var stageContent: some View {
@@ -48,6 +57,9 @@ struct OnboardingView: View {
             Text("Choose the first Git repository Project Brain may manage. The repository, origin, default branch, Codex executable, and managed worktree boundary are validated before any configuration is written.")
             if let selected = model.onboarding.selectedRepository {
                 Label(URL(filePath: selected).lastPathComponent, systemImage: "folder.fill")
+                TextField("Project name", text: $model.onboardingProjectName)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("onboarding-project-name")
             }
         case .plan:
             if let plan = model.projectPlan?.plan {
@@ -79,9 +91,16 @@ struct OnboardingView: View {
         case .runtime:
             Button("Install local runtime") { model.prepareRuntime() }.buttonStyle(.borderedProminent)
         case .project:
-            Button("Choose repository…", action: chooseRepository).buttonStyle(.borderedProminent)
+            if model.onboarding.selectedRepository == nil {
+                Button("Choose repository…", action: chooseRepository)
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button("Review configuration") { model.planSelectedOnboardingProject() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.onboardingProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         case .plan:
-            Button("Confirm and add project") { model.applyNewProject() }
+            Button(planActionTitle) { model.applyNewProject() }
                 .buttonStyle(.borderedProminent).disabled(model.projectPlan == nil)
         case .services:
             Button("Install and start services") { model.installOnboardingServices() }
@@ -91,6 +110,14 @@ struct OnboardingView: View {
                 .buttonStyle(.borderedProminent)
         case .ready:
             Button("Open Project Brain") { model.finishOnboarding() }.buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var planActionTitle: String {
+        switch model.projectPlan?.plan.action {
+        case "use_existing": "Confirm and use existing project"
+        case "update": "Confirm and update project"
+        default: "Confirm and add project"
         }
     }
 
@@ -119,7 +146,7 @@ struct OnboardingView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
-            model.planNewProject(repository: url)
+            model.selectOnboardingRepository(url)
         }
     }
 }
@@ -129,8 +156,8 @@ struct PlanSummary: View {
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
-            row("Project", plan.projectID)
-            row("Action", plan.action.capitalized)
+            row("Project", plan.nextName ?? plan.currentName ?? plan.projectID)
+            row("Action", plan.action == "use_existing" ? "Use existing" : plan.action.capitalized)
             row("Revision", plan.nextRevision.map(String.init) ?? "—")
             row("Config hash", plan.nextSHA256.map { String($0.prefix(12)) } ?? "—")
             row("Changed fields", plan.changedFields.joined(separator: ", "))
@@ -144,5 +171,56 @@ struct PlanSummary: View {
             Text(title).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
+    }
+}
+
+private struct InstallationNotice: View {
+    let status: ApplicationInstallationStatus
+    let reveal: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(status.title, systemImage: "externaldrive.badge.exclamationmark")
+                .font(.headline)
+            Text(status.guidance).font(.callout)
+            Button("Show current copy in Finder", action: reveal)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityIdentifier("application-installation-notice")
+    }
+}
+
+private struct OnboardingIssueNotice: View {
+    let issue: UserFacingIssue
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(issue.title, systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+            Text(issue.message)
+            Text("Next: \(issue.nextAction)").font(.callout).foregroundStyle(.secondary)
+            if let conflict = issue.conflict {
+                Text("Conflicting project: \(conflict.existingProjectName) (\(conflict.existingProjectID))")
+                    .font(.callout.bold())
+                HStack {
+                    if conflict.recoveryOptions.contains(.useExistingProject) {
+                        Button("Use existing project") { model.useExistingProjectFromConflict() }
+                    }
+                    if conflict.recoveryOptions.contains(.chooseDifferentRepository) {
+                        Button("Choose other directory") { model.chooseDifferentOnboardingRepository() }
+                    }
+                    if conflict.recoveryOptions.contains(.editProjectName) {
+                        Button("Modify name") { model.editOnboardingProjectName() }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityIdentifier("onboarding-inline-error")
     }
 }

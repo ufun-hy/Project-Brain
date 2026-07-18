@@ -64,19 +64,19 @@ jobs:
           test -x "${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app/Contents/Resources/project-brain"
           test -f "${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app/Contents/Resources/tunnel-client-compatibility.json"
           test ! -e "${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app/Contents/Resources/tunnel-client"
-      - name: Build unsigned internal RC1 DMG, ZIP, and manifest
+      - name: Build unsigned internal RC1 Build 5 DMG, ZIP, and manifest
         env:
           PROJECT_BRAIN_BUNDLED_HELPER: ${{ runner.temp }}/helper-dist/project-brain
           PROJECT_BRAIN_RC_DERIVED_DATA: ${{ runner.temp }}/RC1DerivedData
-          PROJECT_BRAIN_RC_OUTPUT_DIR: ${{ runner.temp }}/Project-Brain-RC1-arm64
+          PROJECT_BRAIN_RC_OUTPUT_DIR: ${{ runner.temp }}/Project-Brain-RC1-Build5-arm64
           PROJECT_BRAIN_CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: scripts/build-rc-artifact.sh
-      - name: Verify RC1 build manifest and artifact SHA-256
-        run: python scripts/verify-rc-artifact.py "${{ runner.temp }}/Project-Brain-RC1-arm64"
+      - name: Verify RC1 Build 5 manifest and artifact SHA-256
+        run: python scripts/verify-rc-artifact.py "${{ runner.temp }}/Project-Brain-RC1-Build5-arm64"
       - name: Verify Gmail legacy isolation
         run: git diff --exit-code 7dcf1f8c59937d2195ae75404ab7b4e4801c5c31 -- experiments/gmail-inbox/
       - uses: actions/upload-artifact@v4
         with:
-          name: Project-Brain-RC1-arm64
-          path: ${{ runner.temp }}/Project-Brain-RC1-arm64
+          name: Project-Brain-RC1-Build5-arm64
+          path: ${{ runner.temp }}/Project-Brain-RC1-Build5-arm64
           retention-days: 7

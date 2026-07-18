@@ -26,7 +26,7 @@ def verify(directory: Path) -> None:
     assert manifest["signing_status"] == "unsigned_internal_rc"
     assert manifest["notarization_status"] == "not_notarized"
     assert manifest["external_acceptance"] == "pending_user_credentials_and_actions"
-    assert manifest["app"] == {"build": "4", "version": "0.7.0"}
+    assert manifest["app"] == {"build": "5", "version": "0.7.0"}
     assert manifest["core_helper"]["version"] == "0.7.0"
     assert manifest["tunnel_compatibility_manifest_version"] == 1
     assert manifest["supported_tunnel_client_versions"] == ["0.0.10"]
@@ -34,8 +34,8 @@ def verify(directory: Path) -> None:
     assert len(manifest["git_head_sha"]) == 40
     assert manifest["ci_run_url"].startswith("https://github.com/")
     assert {entry["name"] for entry in manifest["artifacts"]} == {
-        "Project-Brain-RC1-arm64.dmg",
-        "Project-Brain-RC1-arm64.zip",
+        "Project-Brain-RC1-Build5-arm64.dmg",
+        "Project-Brain-RC1-Build5-arm64.zip",
     }
     for entry in manifest["artifacts"]:
         name = entry["name"]

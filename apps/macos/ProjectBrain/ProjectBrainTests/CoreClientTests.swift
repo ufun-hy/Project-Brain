@@ -52,6 +52,7 @@ final class CoreClientTests: XCTestCase {
         let token = "v1:abc123"
         let apply = CoreCommand.addProject(draft, planToken: token).arguments(runtimeRoot: runtime)
         XCTAssertTrue(plan.contains("--plan"))
+        XCTAssertTrue(plan.contains("--resolve-existing"))
         XCTAssertFalse(plan.contains("--non-interactive"))
         XCTAssertTrue(apply.contains("--non-interactive"))
         XCTAssertEqual(apply.suffix(3), ["--plan-token", token, "--json"])
@@ -78,11 +79,36 @@ final class CoreClientTests: XCTestCase {
         }
     }
 
+    func testStructuredProjectConflictIsDecodedForOnboardingRecovery() throws {
+        let runner = CapturingCoreRunner(result: .init(
+            exitCode: 2,
+            stdout: Data(),
+            stderr: Data(#"{"status":"error","error_category":"project_conflict","error":"Name is registered","conflict":{"kind":"project_name_conflict","existing_project_id":"project-brain","existing_project_name":"Project-Brain","repository_label":"Project-Brain","recovery_options":["use_existing_project","choose_different_repository","edit_project_name"]}}"#.utf8)
+        ))
+        let client = try CoreClient(
+            executable: URL(filePath: "/tmp/project-brain"),
+            runner: runner
+        )
+        XCTAssertThrowsError(try client.projects()) { error in
+            guard let clientError = error as? CoreClientError,
+                  case .projectConflict(let message, let conflict) = clientError else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(message, "Name is registered")
+            XCTAssertEqual(conflict.existingProjectID, "project-brain")
+            XCTAssertEqual(
+                conflict.recoveryOptions,
+                [.useExistingProject, .chooseDifferentRepository, .editProjectName]
+            )
+        }
+    }
+
     func testAllCommandsComeFromClosedTypedAllowlist() {
         let runtime = URL(filePath: "/Users/example/.project-brain")
         let commands: [CoreCommand] = [
             .initialize, .status, .tasks, .task("task-1"), .projects, .health, .readiness,
             .serviceStatus, .service(.restart),
+            .useProject("project-1", planToken: nil),
             .projectLifecycle("project-1", .pause, execute: false),
             .acceptanceStatus,
             .acceptanceCreate(appVersion: "0.7.0", tunnelFingerprint: "fingerprint"),

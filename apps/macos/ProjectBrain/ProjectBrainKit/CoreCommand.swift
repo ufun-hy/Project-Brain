@@ -81,6 +81,7 @@ public enum CoreCommand: Equatable, Sendable {
     case serviceStatus
     case service(ServiceAction)
     case addProject(ProjectDraft, planToken: String?)
+    case useProject(String, planToken: String?)
     case updateProject(String, ProjectUpdateDraft, planToken: String?)
     case projectLifecycle(String, ProjectLifecycleAction, execute: Bool)
     case acceptanceStatus
@@ -119,7 +120,7 @@ public enum CoreCommand: Equatable, Sendable {
         case .service(let action):
             value += ["service", action.rawValue, "--json"]
         case .addProject(let draft, let planToken):
-            value += ["projects", "add", draft.repository.path]
+            value += ["projects", "add", draft.repository.path, "--resolve-existing"]
             if let projectID = draft.projectID, !projectID.isEmpty {
                 value += ["--project-id", projectID]
             }
@@ -133,6 +134,14 @@ public enum CoreCommand: Equatable, Sendable {
             }
             value += [draft.autoPush ? "--auto-push" : "--no-auto-push"]
             value += [draft.autoPR ? "--auto-pr" : "--no-auto-pr"]
+            if let planToken {
+                value += ["--non-interactive", "--plan-token", planToken]
+            } else {
+                value.append("--plan")
+            }
+            value.append("--json")
+        case .useProject(let identifier, let planToken):
+            value += ["projects", "use", identifier]
             if let planToken {
                 value += ["--non-interactive", "--plan-token", planToken]
             } else {

@@ -8,9 +8,9 @@ DERIVED_DATA=${PROJECT_BRAIN_RC_DERIVED_DATA:?PROJECT_BRAIN_RC_DERIVED_DATA is r
 HELPER=${PROJECT_BRAIN_BUNDLED_HELPER:?PROJECT_BRAIN_BUNDLED_HELPER is required}
 CI_RUN_URL=${PROJECT_BRAIN_CI_RUN_URL:-local_unpublished_build}
 APP_VERSION=0.7.0
-APP_BUILD=4
+APP_BUILD=5
 ARCHITECTURE=arm64
-ARTIFACT_BASE=Project-Brain-RC1-arm64
+ARTIFACT_BASE=Project-Brain-RC1-Build5-arm64
 
 if [ ! -x "$HELPER" ]; then
   echo "error: self-contained Core helper is missing or not executable" >&2
@@ -66,7 +66,7 @@ DMG="$OUTPUT_DIR/$ARTIFACT_BASE.dmg"
 ZIP="$OUTPUT_DIR/$ARTIFACT_BASE.zip"
 /usr/bin/hdiutil create \
   -quiet \
-  -volname "Project Brain RC1" \
+  -volname "Project Brain RC1 Build 5" \
   -srcfolder "$TEMP_ROOT/dmg" \
   -format UDZO \
   -ov \

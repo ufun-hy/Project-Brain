@@ -27,6 +27,19 @@ struct UserFacingIssue: Identifiable, Equatable {
     let title: String
     let message: String
     let nextAction: String
+    let conflict: ProjectConflict?
+
+    init(
+        title: String,
+        message: String,
+        nextAction: String,
+        conflict: ProjectConflict? = nil
+    ) {
+        self.title = title
+        self.message = message
+        self.nextAction = nextAction
+        self.conflict = conflict
+    }
 }
 
 private struct ProductSnapshot: Sendable {
@@ -81,6 +94,15 @@ private actor ProductShellBackend {
     }
     func addProject(_ draft: ProjectDraft, planToken: String) throws -> ProjectMutationResponse {
         try requireClient().addProject(draft, planToken: planToken)
+    }
+    func planExistingProject(_ identifier: String) throws -> ProjectMutationResponse {
+        try requireClient().planExistingProject(identifier)
+    }
+    func confirmExistingProject(
+        _ identifier: String,
+        planToken: String
+    ) throws -> ProjectMutationResponse {
+        try requireClient().confirmExistingProject(identifier, planToken: planToken)
     }
     func planProjectUpdate(
         _ identifier: String,
@@ -241,6 +263,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var health: HealthResponse?
     @Published private(set) var selectedTask: TaskDetail?
     @Published private(set) var onboarding: OnboardingProgress
+    @Published private(set) var installationStatus: ApplicationInstallationStatus
+    @Published var onboardingProjectName = ""
     @Published private(set) var connection: ConnectionSnapshot
     @Published var projectDraft: ProjectDraft?
     @Published var projectPlan: ProjectMutationResponse?
@@ -266,13 +290,15 @@ final class AppModel: ObservableObject {
     private var didBootstrap = false
     private var tunnelStatusTask: Task<Void, Never>?
     private var acceptanceChallengeRunID: String?
+    private var onboardingExistingProjectID: String?
 
     init(
         installer: HelperInstaller = HelperInstaller(),
         tunnelInstaller: TunnelClientInstaller? = nil,
         onboardingStore: OnboardingStore = OnboardingStore(),
         connectionStore: ConnectionStore = ConnectionStore(),
-        keychain: KeychainStore = KeychainStore()
+        keychain: KeychainStore = KeychainStore(),
+        applicationBundleURL: URL = Bundle.main.bundleURL
     ) {
         let managedTunnelInstaller = tunnelInstaller ?? Self.makeTunnelInstaller()
         self.backend = ProductShellBackend(
@@ -284,11 +310,15 @@ final class AppModel: ObservableObject {
         self.keychain = keychain
         self.observation = StateObservationLoop()
         self.onboarding = onboardingStore.load()
+        self.installationStatus = ApplicationInstallationStatus(bundleURL: applicationBundleURL)
         self.connection = connectionStore.load()
         self.connection.runtimeTokenConfigured =
             (try? keychain.read(account: "secure-mcp-tunnel-token")) != nil
         self.connection.tunnelClientAvailable = TunnelClient.discover() != nil
         self.installedTunnelClient = try? managedTunnelInstaller?.validateInstalled()
+        if let selectedRepository = onboarding.selectedRepository {
+            self.onboardingProjectName = URL(filePath: selectedRepository).lastPathComponent
+        }
     }
 
     var menuSnapshot: MenuBarSnapshot {
@@ -318,7 +348,20 @@ final class AppModel: ObservableObject {
     func bootstrap() {
         guard !didBootstrap else { return }
         didBootstrap = true
-        guard onboarding.completed else { return }
+        if onboarding.completed {
+            prepareRuntime(advanceOnboarding: false)
+            return
+        }
+        guard let stageIndex = OnboardingStage.allCases.firstIndex(of: onboarding.stage),
+              let projectIndex = OnboardingStage.allCases.firstIndex(of: .project),
+              stageIndex >= projectIndex else { return }
+        if onboarding.stage == .plan {
+            // Mutation plans are process-local and token-bound. Re-plan against
+            // the preserved database instead of restoring a stale confirmation.
+            onboarding.stage = .project
+            onboarding.projectPlanSHA256 = nil
+            persistOnboarding()
+        }
         prepareRuntime(advanceOnboarding: false)
     }
 
@@ -344,20 +387,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func selectOnboardingRepository(_ repository: URL) {
+        onboardingProjectName = repository.lastPathComponent
+        planNewProject(repository: repository)
+    }
+
+    func planSelectedOnboardingProject() {
+        guard let selected = onboarding.selectedRepository else { return }
+        planNewProject(repository: URL(filePath: selected))
+    }
+
     func planNewProject(repository: URL, verificationFile: URL? = nil) {
+        let canonicalRepository = repository.resolvingSymlinksInPath().standardizedFileURL
+        let requestedName = onboardingProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
         let draft = ProjectDraft(
-            repository: repository,
-            name: repository.lastPathComponent,
+            repository: canonicalRepository,
+            name: requestedName.isEmpty ? canonicalRepository.lastPathComponent : requestedName,
             codexExecutable: ExecutableDiscovery.find("codex"),
             verificationFile: verificationFile
         )
+        issue = nil
+        onboardingExistingProjectID = nil
+        projectPlan = nil
         projectDraft = draft
+        onboarding.selectedRepository = canonicalRepository.path
+        onboarding.lastError = nil
+        persistOnboarding()
         runOperation {
             try await self.backend.planProject(draft)
         } onSuccess: { plan in
             self.projectPlan = plan
             if !self.onboarding.completed {
-                self.onboarding.selectedRepository = repository.path
                 self.onboarding.projectPlanSHA256 = plan.plan.nextSHA256
                 self.onboarding.stage = .plan
                 self.persistOnboarding()
@@ -366,10 +426,21 @@ final class AppModel: ObservableObject {
     }
 
     func applyNewProject() {
-        guard let draft = projectDraft, let token = projectPlan?.plan.planToken else { return }
+        guard let token = projectPlan?.plan.planToken else { return }
+        let draft = projectDraft
+        let existingProjectID = onboardingExistingProjectID
+        guard draft != nil || existingProjectID != nil else { return }
         runOperation {
-            try await self.backend.addProject(draft, planToken: token)
+            if let existingProjectID {
+                return try await self.backend.confirmExistingProject(
+                    existingProjectID,
+                    planToken: token
+                )
+            }
+            return try await self.backend.addProject(draft!, planToken: token)
         } onSuccess: { response in
+            self.issue = nil
+            self.onboardingExistingProjectID = nil
             if self.onboarding.completed {
                 self.projectPlan = nil
                 self.projectDraft = nil
@@ -380,6 +451,45 @@ final class AppModel: ObservableObject {
             }
             self.refresh()
         }
+    }
+
+    func useExistingProjectFromConflict() {
+        guard let conflict = issue?.conflict else { return }
+        issue = nil
+        projectDraft = nil
+        projectPlan = nil
+        onboardingExistingProjectID = conflict.existingProjectID
+        runOperation {
+            try await self.backend.planExistingProject(conflict.existingProjectID)
+        } onSuccess: { plan in
+            self.projectPlan = plan
+            self.onboarding.projectPlanSHA256 = plan.plan.nextSHA256
+            self.onboarding.stage = .plan
+            self.persistOnboarding()
+        }
+    }
+
+    func chooseDifferentOnboardingRepository() {
+        issue = nil
+        projectDraft = nil
+        projectPlan = nil
+        onboardingExistingProjectID = nil
+        onboardingProjectName = ""
+        onboarding.selectedRepository = nil
+        onboarding.projectPlanSHA256 = nil
+        onboarding.lastError = nil
+        onboarding.stage = .project
+        persistOnboarding()
+    }
+
+    func editOnboardingProjectName() {
+        issue = nil
+        projectPlan = nil
+        onboardingExistingProjectID = nil
+        onboarding.projectPlanSHA256 = nil
+        onboarding.lastError = nil
+        onboarding.stage = .project
+        persistOnboarding()
     }
 
     func planProjectUpdate(project: ProjectSummary, draft: ProjectUpdateDraft) {
@@ -430,6 +540,10 @@ final class AppModel: ObservableObject {
     }
 
     func runOnboardingHealthCheck() {
+        guard installationStatus.isInstalled else {
+            presentInstallationRequirement()
+            return
+        }
         runOperation {
             try await self.backend.readiness()
         } onSuccess: { response in
@@ -448,6 +562,10 @@ final class AppModel: ObservableObject {
     }
 
     func finishOnboarding() {
+        guard installationStatus.isInstalled else {
+            presentInstallationRequirement()
+            return
+        }
         onboarding.completed = true
         onboarding.lastError = nil
         persistOnboarding()
@@ -459,7 +577,12 @@ final class AppModel: ObservableObject {
             return
         }
         onboarding.stage = OnboardingStage.allCases[index - 1]
+        issue = nil
         persistOnboarding()
+    }
+
+    func revealApplicationBundle() {
+        NSWorkspace.shared.activateFileViewerSelecting([installationStatus.bundleURL])
     }
 
     func refresh() {
@@ -725,6 +848,11 @@ final class AppModel: ObservableObject {
     func restartOnboarding() {
         Task { await observation.cancel() }
         onboarding = OnboardingProgress()
+        onboardingProjectName = ""
+        onboardingExistingProjectID = nil
+        projectDraft = nil
+        projectPlan = nil
+        issue = nil
         persistOnboarding()
     }
 
@@ -897,10 +1025,17 @@ final class AppModel: ObservableObject {
 
     private func present(_ error: Error) {
         if let core = error as? CoreClientError {
+            let conflict: ProjectConflict?
+            if case .projectConflict(_, let value) = core {
+                conflict = value
+            } else {
+                conflict = nil
+            }
             issue = UserFacingIssue(
                 title: core.userTitle,
                 message: core.localizedDescription,
-                nextAction: core.nextAction
+                nextAction: core.nextAction,
+                conflict: conflict
             )
         } else {
             issue = UserFacingIssue(
@@ -909,6 +1044,16 @@ final class AppModel: ObservableObject {
                 nextAction: "Open Diagnostics, review failed checks, then retry."
             )
         }
+        onboarding.lastError = issue?.message
+        persistOnboarding()
+    }
+
+    private func presentInstallationRequirement() {
+        issue = UserFacingIssue(
+            title: installationStatus.title,
+            message: installationStatus.guidance,
+            nextAction: "Open the installed copy from /Applications and rerun local health."
+        )
         onboarding.lastError = issue?.message
         persistOnboarding()
     }
