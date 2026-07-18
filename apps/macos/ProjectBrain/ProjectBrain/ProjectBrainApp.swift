@@ -3,14 +3,22 @@ import SwiftUI
 
 @main
 struct ProjectBrainApp: App {
+    @NSApplicationDelegateAdaptor(ApplicationInstanceCoordinator.self)
+    private var applicationInstanceCoordinator
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("Project Brain", id: "management") {
+        Window("Project Brain", id: "management") {
             ManagementView(model: model)
                 .frame(minWidth: 980, minHeight: 680)
-                .task { model.bootstrap() }
+                .task {
+                    let environment = ProcessInfo.processInfo.environment
+                    if environment["CI"] != "true"
+                        || environment["PROJECT_BRAIN_UI_TEST_MODE"] != "1" {
+                        model.bootstrap()
+                    }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     model.setApplicationActive(phase == .active)
                 }

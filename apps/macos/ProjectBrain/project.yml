@@ -45,12 +45,19 @@ targets:
           /bin/mkdir -p "$(/usr/bin/dirname "${DESTINATION}")"
           /usr/bin/ditto "${HELPER}" "${DESTINATION}"
           /bin/chmod 0755 "${DESTINATION}"
+          CONTRACT="${SRCROOT}/../../../src/project_brain/cli_contract.json"
+          CONTRACT_DESTINATION="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/project-brain-cli-contract.json"
+          if [ ! -f "${CONTRACT}" ]; then
+            echo "error: canonical Core CLI contract is missing" >&2
+            exit 1
+          fi
+          /usr/bin/ditto "${CONTRACT}" "${CONTRACT_DESTINATION}"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.projectbrain.ProductBrain
         PRODUCT_NAME: Project Brain
         MARKETING_VERSION: 0.7.0
-        CURRENT_PROJECT_VERSION: 6
+        CURRENT_PROJECT_VERSION: 7
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: ProjectBrain/Info.plist
   ProjectBrainTests:

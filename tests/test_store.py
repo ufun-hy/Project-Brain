@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -25,10 +26,13 @@ class StoreTests(unittest.TestCase):
 
     def test_schema_initialization_is_repeatable_and_persistent(self) -> None:
         self.fixture.store.initialize()
+        before = hashlib.sha256(self.fixture.runtime.database.read_bytes()).hexdigest()
         reopened = TaskStore(self.fixture.runtime.database)
         reopened.initialize()
+        after = hashlib.sha256(self.fixture.runtime.database.read_bytes()).hexdigest()
         self.assertEqual(reopened.schema_version(), SCHEMA_VERSION)
         self.assertEqual(reopened.list_projects()[0]["project_id"], "project-one")
+        self.assertEqual(after, before)
 
     def test_task_id_is_idempotent(self) -> None:
         task = CanonicalTask(

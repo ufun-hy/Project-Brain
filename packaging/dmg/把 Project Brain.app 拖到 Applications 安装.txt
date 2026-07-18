@@ -1,7 +1,7 @@
 安装 Project Brain
 
 1. 把“Project Brain.app”拖到旁边的“Applications”文件夹。
-2. 复制完成后，弹出“Project Brain RC1 Build 6”磁盘映像。
+2. 复制完成后，弹出“Project Brain RC1 Build 7”磁盘映像。
 3. 打开 Finder → 应用程序 → Project Brain。
 
 请不要直接从磁盘映像运行 App；正式验收必须从“应用程序”启动。
@@ -9,5 +9,5 @@
 Install Project Brain
 
 1. Drag “Project Brain.app” onto the “Applications” folder beside it.
-2. Eject the “Project Brain RC1 Build 6” disk image after copying.
+2. Eject the “Project Brain RC1 Build 7” disk image after copying.
 3. Open Project Brain from Finder → Applications.

@@ -69,9 +69,11 @@ notarized, universal distribution is a separate release task.
    Applications folder. Do not run the copy inside the mounted DMG for formal
    acceptance.
 
-The app declares the macOS single-instance Launch Services key so a second copy
-cannot run alongside the installed copy. Use **Quit Project Brain** at the
-bottom of the menu-bar panel or in Settings to close it explicitly.
+The app combines the macOS single-instance Launch Services key with a user-level
+non-blocking process lock, and uses one unique management `Window`. Starting the
+DMG copy while the Applications copy is active wakes the existing instance and
+exits; one process cannot create a second management window. Use **Quit Project
+Brain** at the bottom of the menu-bar panel or in Settings to close it explicitly.
 
 ## First run
 
@@ -130,11 +132,13 @@ plists for an explicit retry.
 
 ## Helper upgrade and recovery
 
-The app validates the bundled helper with the fixed `--version` argv, copies it
-to a private candidate file, validates its executable bit and version, fsyncs
-it, and atomically replaces the managed helper. During upgrades it retains the
-old executable until the new helper and service restart both succeed. A failed
-activation restores and reactivates the previous helper.
+The App and Core share a packaged schema-v1 CLI contract. The app validates the
+bundled helper with fixed `--version` and `cli-contract --json` argv, and checks
+the helper binary SHA-256 plus exact contract version/document SHA. A stale
+same-version helper is therefore upgraded rather than retained. The candidate
+is fsynced and atomically activated; the old executable remains available until
+the new helper and service restart both succeed. A failed activation restores
+and reactivates the previous helper.
 
 ## Connection acceptance
 

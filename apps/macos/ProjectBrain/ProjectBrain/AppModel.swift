@@ -61,25 +61,53 @@ private struct ProductSnapshot: Sendable {
 private actor ProductShellBackend {
     private let installer: HelperInstaller
     private let tunnelInstaller: TunnelClientInstaller?
+    private let cliContractURL: URL?
     private var client: CoreClient?
     private var tunnelClient: TunnelClient?
 
-    init(installer: HelperInstaller, tunnelInstaller: TunnelClientInstaller?) {
+    init(
+        installer: HelperInstaller,
+        tunnelInstaller: TunnelClientInstaller?,
+        cliContractURL: URL?
+    ) {
         self.installer = installer
         self.tunnelInstaller = tunnelInstaller
+        self.cliContractURL = cliContractURL
         self.tunnelClient = Self.makeTunnelClient()
     }
 
     func prepare(bundledHelper: URL) throws -> ProductSnapshot {
-        let result = try installer.install(bundledHelper: bundledHelper) { destination, action in
+        guard let cliContractURL else {
+            throw CoreClientError.invalidInstallation(
+                "The app bundle does not contain the Core CLI contract."
+            )
+        }
+        let contractDocument: CoreCLIContractDocument
+        do {
+            contractDocument = try CoreCLIContractDocument(contentsOf: cliContractURL)
+        } catch {
+            throw CoreClientError.invalidInstallation(
+                "The bundled Core CLI contract is invalid."
+            )
+        }
+        let result = try installer.install(
+            bundledHelper: bundledHelper,
+            cliContract: contractDocument
+        ) { destination, action in
             guard action == .upgraded || action == .current else { return }
-            let candidateClient = try CoreClient(executable: destination)
+            let candidateClient = try CoreClient(
+                executable: destination,
+                cliContract: contractDocument.contract
+            )
             let current = try candidateClient.serviceStatus()
             if current.status != "not_installed" {
                 _ = try candidateClient.perform(.restart)
             }
         }
-        let client = try CoreClient(executable: result.destination)
+        let client = try CoreClient(
+            executable: result.destination,
+            cliContract: contractDocument.contract
+        )
         _ = try client.initializeRuntime()
         self.client = client
         return try loadSnapshot(client: client, selectedTaskID: nil)
@@ -298,12 +326,17 @@ final class AppModel: ObservableObject {
         onboardingStore: OnboardingStore = OnboardingStore(),
         connectionStore: ConnectionStore = ConnectionStore(),
         keychain: KeychainStore = KeychainStore(),
-        applicationBundleURL: URL = Bundle.main.bundleURL
+        applicationBundleURL: URL = Bundle.main.bundleURL,
+        cliContractURL: URL? = Bundle.main.url(
+            forResource: "project-brain-cli-contract",
+            withExtension: "json"
+        )
     ) {
         let managedTunnelInstaller = tunnelInstaller ?? Self.makeTunnelInstaller()
         self.backend = ProductShellBackend(
             installer: installer,
-            tunnelInstaller: managedTunnelInstaller
+            tunnelInstaller: managedTunnelInstaller,
+            cliContractURL: cliContractURL
         )
         self.onboardingStore = onboardingStore
         self.connectionStore = connectionStore

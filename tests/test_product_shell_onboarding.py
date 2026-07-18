@@ -23,7 +23,7 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn('Button("Modify name")', onboarding)
         self.assertIn("model.onboarding.completed ? model.issue : nil", management)
 
-    def test_build6_artifact_names_cannot_overwrite_build5_names(self) -> None:
+    def test_build7_artifact_names_cannot_overwrite_build6_names(self) -> None:
         build = (self.root / "scripts/build-rc-artifact.sh").read_text(encoding="utf-8")
         verifier = (self.root / "scripts/verify-rc-artifact.py").read_text(
             encoding="utf-8"
@@ -32,9 +32,10 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         for source in (build, verifier, workflow):
-            self.assertIn("Project-Brain-RC1-Build6-arm64", source)
-        self.assertIn("APP_BUILD=6", build)
-        self.assertIn('{"build": "6", "version": "0.7.0"}', verifier)
+            self.assertIn("Project-Brain-RC1-Build7-arm64", source)
+            self.assertNotIn("Project-Brain-RC1-Build6-arm64", source)
+        self.assertIn("APP_BUILD=7", build)
+        self.assertIn('manifest["app"]["build"] == "7"', verifier)
 
     def test_quit_is_visible_in_menu_bar_and_settings(self) -> None:
         menu = (
@@ -65,6 +66,16 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         build = (self.root / "scripts/build-rc-artifact.sh").read_text(
             encoding="utf-8"
         )
+        app = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/ProjectBrainApp.swift"
+        ).read_text(encoding="utf-8")
+        coordinator = (
+            self.root
+            / "apps/macos/ProjectBrain/ProjectBrain/ApplicationInstanceCoordinator.swift"
+        ).read_text(encoding="utf-8")
+        instance_verifier = (
+            self.root / "scripts/verify-final-app-single-instance.sh"
+        ).read_text(encoding="utf-8")
         info_plist = plistlib.loads(
             (
                 self.root
@@ -79,6 +90,30 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         )
         self.assertIs(info_plist["LSMultipleInstancesProhibited"], True)
         self.assertIn("Print :LSMultipleInstancesProhibited", build)
+        self.assertIn('Window("Project Brain", id: "management")', app)
+        self.assertNotIn('WindowGroup("Project Brain", id: "management")', app)
+        self.assertIn("UserProcessLock.acquire", coordinator)
+        self.assertIn('INSTALLED_APP="/Applications/Project Brain.app"', instance_verifier)
+        self.assertIn("management_window_count", instance_verifier)
+
+    def test_final_app_embeds_and_executes_shared_cli_contract(self) -> None:
+        project = (self.root / "apps/macos/ProjectBrain/project.yml").read_text(
+            encoding="utf-8"
+        )
+        workflow = (self.root / ".github/workflows/core-tests.yml").read_text(
+            encoding="utf-8"
+        )
+        build = (self.root / "scripts/build-rc-artifact.sh").read_text(
+            encoding="utf-8"
+        )
+        verifier = (
+            self.root / "scripts/verify-bundled-helper-onboarding.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("project-brain-cli-contract.json", project)
+        self.assertIn("verify-bundled-helper-onboarding.py", workflow + build)
+        self.assertIn('"--resolve-existing"', verifier)
+        self.assertIn('existing_plan["plan"]["action"] == "use_existing"', verifier)
+        self.assertIn('update_plan["plan"]["action"] == "update"', verifier)
 
     def test_dmg_contains_applications_link_and_visible_installation_guide(
         self,

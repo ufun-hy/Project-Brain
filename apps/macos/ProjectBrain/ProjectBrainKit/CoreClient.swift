@@ -125,6 +125,7 @@ private struct CoreErrorEnvelope: Decodable {
 public final class CoreClient: @unchecked Sendable {
     public let executable: URL
     public let runtimeRoot: URL
+    public let cliContract: CoreCLIContract
     private let runner: any CoreProcessRunning
     private let decoder: JSONDecoder
 
@@ -132,6 +133,7 @@ public final class CoreClient: @unchecked Sendable {
         executable: URL,
         runtimeRoot: URL = FileManager.default.homeDirectoryForCurrentUser
             .appending(path: ".project-brain"),
+        cliContract: CoreCLIContract,
         runner: any CoreProcessRunning = FoundationCoreProcessRunner()
     ) throws {
         guard executable.path.hasPrefix("/"), !executable.hasDirectoryPath else {
@@ -144,12 +146,13 @@ public final class CoreClient: @unchecked Sendable {
         }
         self.executable = executable.standardizedFileURL
         self.runtimeRoot = runtimeRoot.standardizedFileURL
+        self.cliContract = cliContract
         self.runner = runner
         self.decoder = JSONDecoder()
     }
 
     public func execute<T: Decodable>(_ command: CoreCommand, as type: T.Type = T.self) throws -> T {
-        let arguments = command.arguments(runtimeRoot: runtimeRoot)
+        let arguments = command.arguments(runtimeRoot: runtimeRoot, cliContract: cliContract)
         let result: CoreProcessResult
         do {
             result = try runner.run(executable: executable, arguments: arguments)

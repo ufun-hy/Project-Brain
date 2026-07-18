@@ -43,6 +43,7 @@ from .project_config import (
 from .project_plans import bind_project_plan, require_matching_project_plan
 from .acceptance import ExternalAcceptanceManager
 from .acceptance_tasks import acceptance_task_plan, create_acceptance_task
+from .cli_contract import cli_contract_sha256, load_cli_contract
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -60,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="Show task status summary")
     _add_json(status)
+
+    cli_contract = sub.add_parser(
+        "cli-contract", help="Show the versioned App/Core CLI contract"
+    )
+    _add_json(cli_contract)
 
     projects = sub.add_parser("projects", help="Inspect registered projects")
     project_sub = projects.add_subparsers(dest="projects_command", required=True)
@@ -504,6 +510,26 @@ def _error_payload(exc: ProjectBrainError) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "cli-contract":
+        contract = load_cli_contract()
+        if args.json_output:
+            print(
+                json.dumps(
+                    {
+                        "contract": contract,
+                        "document_sha256": cli_contract_sha256(),
+                        "status": "ok",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "Project Brain CLI contract "
+                f"{contract['contract_version']} (schema {contract['schema_version']})"
+            )
+        return 0
     runtime_value = RuntimePaths.from_value(args.runtime_root)
     if args.command == "service":
         try:

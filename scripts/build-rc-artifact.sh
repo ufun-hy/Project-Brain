@@ -8,9 +8,9 @@ DERIVED_DATA=${PROJECT_BRAIN_RC_DERIVED_DATA:?PROJECT_BRAIN_RC_DERIVED_DATA is r
 HELPER=${PROJECT_BRAIN_BUNDLED_HELPER:?PROJECT_BRAIN_BUNDLED_HELPER is required}
 CI_RUN_URL=${PROJECT_BRAIN_CI_RUN_URL:-local_unpublished_build}
 APP_VERSION=0.7.0
-APP_BUILD=6
+APP_BUILD=7
 ARCHITECTURE=arm64
-ARTIFACT_BASE=Project-Brain-RC1-Build6-arm64
+ARTIFACT_BASE=Project-Brain-RC1-Build7-arm64
 INSTALL_GUIDE_NAME="把 Project Brain.app 拖到 Applications 安装.txt"
 INSTALL_GUIDE="$ROOT/packaging/dmg/$INSTALL_GUIDE_NAME"
 
@@ -42,6 +42,16 @@ if [ ! -x "$APP/Contents/Resources/project-brain" ]; then
   echo "error: Release app does not contain the self-contained Core helper" >&2
   exit 1
 fi
+if [ ! -f "$APP/Contents/Resources/project-brain-cli-contract.json" ]; then
+  echo "error: Release app does not contain the Core CLI contract" >&2
+  exit 1
+fi
+if ! /usr/bin/cmp -s \
+  "$ROOT/src/project_brain/cli_contract.json" \
+  "$APP/Contents/Resources/project-brain-cli-contract.json"; then
+  echo "error: Release app Core CLI contract is not canonical" >&2
+  exit 1
+fi
 if [ ! -f "$APP/Contents/Resources/tunnel-client-compatibility.json" ]; then
   echo "error: Release app does not contain the static Tunnel compatibility manifest" >&2
   exit 1
@@ -63,6 +73,34 @@ if [ ! -f "$INSTALL_GUIDE" ]; then
   exit 1
 fi
 
+/usr/bin/python3 - \
+  "$APP/Contents/Resources/project-brain" \
+  "$APP/Contents/Resources/project-brain-cli-contract.json" <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+
+helper, contract_path = sys.argv[1:]
+contract_bytes = open(contract_path, "rb").read()
+contract = json.loads(contract_bytes)
+reported = json.loads(subprocess.run(
+    [helper, "cli-contract", "--json"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout)
+assert reported["status"] == "ok"
+assert reported["contract"] == contract
+assert reported["document_sha256"] == hashlib.sha256(contract_bytes).hexdigest()
+assert contract["schema_version"] == 1
+assert contract["contract_version"] == "1.0.0"
+assert contract["core_version"] == "0.7.0"
+assert contract["operations"]["native_onboarding"]["options"]["resolve_existing"] == "--resolve-existing"
+PY
+
+/usr/bin/python3 "$ROOT/scripts/verify-bundled-helper-onboarding.py" "$APP"
+
 MANIFEST_VERSION=$(/usr/bin/python3 -c \
   'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["schema_version"])' \
   "$APP/Contents/Resources/tunnel-client-compatibility.json")
@@ -82,7 +120,7 @@ DMG="$OUTPUT_DIR/$ARTIFACT_BASE.dmg"
 ZIP="$OUTPUT_DIR/$ARTIFACT_BASE.zip"
 /usr/bin/hdiutil create \
   -quiet \
-  -volname "Project Brain RC1 Build 6" \
+  -volname "Project Brain RC1 Build 7" \
   -srcfolder "$TEMP_ROOT/dmg" \
   -format UDZO \
   -ov \
@@ -90,7 +128,9 @@ ZIP="$OUTPUT_DIR/$ARTIFACT_BASE.zip"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 
 HEAD_SHA=$(/usr/bin/git -C "$ROOT" rev-parse HEAD)
-HELPER_SHA=$(/usr/bin/shasum -a 256 "$HELPER" | /usr/bin/awk '{print $1}')
+APP_EXECUTABLE_SHA=$(/usr/bin/shasum -a 256 "$APP/Contents/MacOS/Project Brain" | /usr/bin/awk '{print $1}')
+HELPER_SHA=$(/usr/bin/shasum -a 256 "$APP/Contents/Resources/project-brain" | /usr/bin/awk '{print $1}')
+CLI_CONTRACT_SHA=$(/usr/bin/shasum -a 256 "$APP/Contents/Resources/project-brain-cli-contract.json" | /usr/bin/awk '{print $1}')
 DMG_SHA=$(/usr/bin/shasum -a 256 "$DMG" | /usr/bin/awk '{print $1}')
 ZIP_SHA=$(/usr/bin/shasum -a 256 "$ZIP" | /usr/bin/awk '{print $1}')
 MANIFEST="$OUTPUT_DIR/build-manifest.json"
@@ -98,7 +138,9 @@ MANIFEST="$OUTPUT_DIR/build-manifest.json"
 APP_VERSION="$APP_VERSION" \
 APP_BUILD="$APP_BUILD" \
 HEAD_SHA="$HEAD_SHA" \
+APP_EXECUTABLE_SHA="$APP_EXECUTABLE_SHA" \
 HELPER_SHA="$HELPER_SHA" \
+CLI_CONTRACT_SHA="$CLI_CONTRACT_SHA" \
 MANIFEST_VERSION="$MANIFEST_VERSION" \
 ARCHITECTURE="$ARCHITECTURE" \
 CI_RUN_URL="$CI_RUN_URL" \
@@ -112,16 +154,23 @@ import json
 import os
 
 manifest = {
-    "schema_version": 1,
+    "schema_version": 2,
     "artifact_classification": "unsigned_internal_rc",
     "app": {
         "version": os.environ["APP_VERSION"],
         "build": os.environ["APP_BUILD"],
+        "executable_sha256": os.environ["APP_EXECUTABLE_SHA"],
     },
     "git_head_sha": os.environ["HEAD_SHA"],
     "core_helper": {
         "version": "0.7.0",
         "sha256": os.environ["HELPER_SHA"],
+    },
+    "core_cli_contract": {
+        "schema_version": 1,
+        "contract_version": "1.0.0",
+        "core_version": "0.7.0",
+        "document_sha256": os.environ["CLI_CONTRACT_SHA"],
     },
     "tunnel_compatibility_manifest_version": int(os.environ["MANIFEST_VERSION"]),
     "supported_tunnel_client_versions": ["0.0.10"],

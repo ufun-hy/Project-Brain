@@ -8,6 +8,7 @@ datas, binaries, hiddenimports = collect_all(
     "mcp",
     filter_submodules=lambda name: not name.startswith("mcp.cli"),
 )
+datas.append((str(root / "src" / "project_brain" / "cli_contract.json"), "project_brain"))
 
 analysis = Analysis(
     [str(root / "packaging" / "pyinstaller" / "entrypoint.py")],
