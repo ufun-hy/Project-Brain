@@ -17,6 +17,7 @@ from .engine import TaskEngine
 from .errors import (
     AlreadyRunningError,
     InvalidTaskError,
+    ProjectConflictError,
     ProjectBrainError,
     StateConflictError,
 )
@@ -42,6 +43,7 @@ from .project_config import (
 from .project_plans import bind_project_plan, require_matching_project_plan
 from .acceptance import ExternalAcceptanceManager
 from .acceptance_tasks import acceptance_task_plan, create_acceptance_task
+from .cli_contract import cli_contract_sha256, load_cli_contract
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -60,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="Show task status summary")
     _add_json(status)
 
+    cli_contract = sub.add_parser(
+        "cli-contract", help="Show the versioned App/Core CLI contract"
+    )
+    _add_json(cli_contract)
+
     projects = sub.add_parser("projects", help="Inspect registered projects")
     project_sub = projects.add_subparsers(dest="projects_command", required=True)
     project_list = project_sub.add_parser("list")
@@ -72,7 +79,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(project_check)
     project_add = project_sub.add_parser("add")
     project_add.add_argument("repo_path", type=Path)
+    project_add.add_argument(
+        "--resolve-existing",
+        action="store_true",
+        help="Resolve an existing repository identity for native onboarding",
+    )
     _project_options(project_add, include_identity=True)
+    project_use = project_sub.add_parser("use")
+    project_use.add_argument("project_id")
+    _project_plan_options(project_use)
     project_update = project_sub.add_parser("update")
     project_update.add_argument("project_id")
     project_update.add_argument("--repo-path", type=Path)
@@ -208,6 +223,10 @@ def _project_options(parser: argparse.ArgumentParser, *, include_identity: bool)
     parser.add_argument("--verification-file", type=Path)
     parser.add_argument("--auto-push", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--auto-pr", action=argparse.BooleanOptionalAction, default=None)
+    _project_plan_options(parser)
+
+
+def _project_plan_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--plan",
         action="store_true",
@@ -243,12 +262,15 @@ def _prepare_project_add(
     args: argparse.Namespace,
     store: TaskStore,
     runtime: RuntimePaths,
+    *,
+    project_id_override: str | None = None,
+    name_override: str | None = None,
 ) -> dict[str, Any]:
     repo = args.repo_path.expanduser().resolve()
-    project_id = args.project_id or _derived_project_id(repo)
+    project_id = project_id_override or args.project_id or _derived_project_id(repo)
     values: dict[str, Any] = {
         "project_id": project_id,
-        "name": args.name or args.project_id or _derived_project_id(repo),
+        "name": name_override or args.name or args.project_id or _derived_project_id(repo),
         "repo_path": str(repo),
         "default_branch": args.default_branch,
         "codex_path": args.codex_path,
@@ -280,6 +302,55 @@ def _add_project_plan(prepared: dict[str, Any]) -> dict[str, Any]:
             "task_snapshot_effect": "new tasks bind revision 1",
         }
     )
+
+
+def _use_existing_project_plan(
+    store: TaskStore, current: dict[str, Any]
+) -> dict[str, Any]:
+    return bind_project_plan(
+        {
+            "project_id": current["project_id"],
+            "action": "use_existing",
+            "current_revision": current["config_revision"],
+            "next_revision": current["config_revision"],
+            "current_sha256": current["config_sha256"],
+            "next_sha256": current["config_sha256"],
+            "current_name": current["name"],
+            "next_name": current["name"],
+            "changed_fields": [],
+            "nonterminal_task_count": store.nonterminal_task_count(current["project_id"]),
+            "task_snapshot_effect": "existing and new tasks keep the active revision",
+        }
+    )
+
+
+def _resolve_onboarding_add(
+    args: argparse.Namespace,
+    store: TaskStore,
+    runtime: RuntimePaths,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    requested = _prepare_project_add(args, store, runtime)
+    existing = ProjectRegistry(store, runtime).resolve_onboarding_identity(requested)
+    if existing is None:
+        return requested, _add_project_plan(requested), None
+    values = {**existing, "repo_path": requested["repo_path"], "remote_url": requested["remote_url"]}
+    if args.default_branch is not None:
+        values["default_branch"] = args.default_branch
+    if args.codex_path is not None:
+        values["codex_path"] = args.codex_path
+        values.pop("codex_command", None)
+    if args.auto_push is not None:
+        values["auto_push"] = args.auto_push
+    if args.auto_pr is not None:
+        values["auto_pr"] = args.auto_pr
+    verification = _verification_file(args.verification_file)
+    if verification is not None:
+        values["verification_commands"] = verification
+    prepared = ProjectRegistry(store, runtime).prepare(values)
+    plan = _update_project_plan(store, existing, prepared)
+    if plan["action"] == "noop":
+        plan = _use_existing_project_plan(store, existing)
+    return prepared, plan, existing
 
 
 def _prepare_project_update(
@@ -321,14 +392,15 @@ def _update_project_plan(
     current: dict[str, Any],
     prepared: dict[str, Any],
 ) -> dict[str, Any]:
-    digest = config_sha256(normalize_execution_profile(prepared))
+    prepared_profile = normalize_execution_profile(prepared)
+    digest = config_sha256(prepared_profile)
     current_profile = (
         normalize_legacy_execution_profile(current)
         if current.get("config_source") == LEGACY_CONFIG_REQUIRES_UPDATE
         else normalize_execution_profile(current)
     )
     changed = [
-        field for field in EXECUTION_FIELDS if prepared[field] != current_profile[field]
+        field for field in EXECUTION_FIELDS if prepared_profile[field] != current_profile[field]
     ]
     if prepared["name"] != current["name"]:
         changed.append("name")
@@ -424,8 +496,40 @@ def _redact_local_paths(value: str) -> str:
     )
 
 
+def _error_payload(exc: ProjectBrainError) -> dict[str, Any]:
+    message = _redact_local_paths(redact_text(str(exc)))
+    value: dict[str, Any] = {
+        "status": "error",
+        "error_category": exc.category,
+        "error": message,
+    }
+    if isinstance(exc, ProjectConflictError):
+        value["conflict"] = exc.conflict
+    return _safe_output(value)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "cli-contract":
+        contract = load_cli_contract()
+        if args.json_output:
+            print(
+                json.dumps(
+                    {
+                        "contract": contract,
+                        "document_sha256": cli_contract_sha256(),
+                        "status": "ok",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "Project Brain CLI contract "
+                f"{contract['contract_version']} (schema {contract['schema_version']})"
+            )
+        return 0
     runtime_value = RuntimePaths.from_value(args.runtime_root)
     if args.command == "service":
         try:
@@ -437,8 +541,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render(value, json_output=args.json_output)
             return 0
         except ProjectBrainError as exc:
-            message = _redact_local_paths(redact_text(str(exc)))
-            value = {"status": "error", "error_category": exc.category, "error": message}
+            value = _error_payload(exc)
             print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
             return 2
     runtime_preexisting = runtime_value.database.exists()
@@ -447,8 +550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         store.initialize()
     except ProjectBrainError as exc:
-        message = _redact_local_paths(redact_text(str(exc)))
-        value = {"status": "error", "error_category": exc.category, "error": message}
+        value = _error_payload(exc)
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 2
     except Exception as exc:
@@ -534,23 +636,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     json_output=args.json_output,
                 )
         elif args.command == "projects" and args.projects_command == "add":
-            project_id = args.project_id or _derived_project_id(
-                args.repo_path.expanduser().resolve()
-            )
-            try:
-                store.get_project(project_id)
-            except InvalidTaskError:
-                pass
+            if args.resolve_existing:
+                prepared, plan, existing = _resolve_onboarding_add(args, store, runtime)
             else:
-                if args.plan_token:
-                    raise StateConflictError(
-                        "Project was registered after planning; refresh the add plan"
-                    )
-                raise ProjectBrainError(
-                    f"Project is already registered; use projects update: {project_id}"
+                project_id = args.project_id or _derived_project_id(
+                    args.repo_path.expanduser().resolve()
                 )
-            prepared = _prepare_project_add(args, store, runtime)
-            plan = _add_project_plan(prepared)
+                try:
+                    store.get_project(project_id)
+                except InvalidTaskError:
+                    pass
+                else:
+                    if args.plan_token:
+                        raise StateConflictError(
+                            "Project was registered after planning; refresh the add plan"
+                        )
+                    raise ProjectBrainError(
+                        f"Project is already registered; use projects update: {project_id}"
+                    )
+                prepared = _prepare_project_add(args, store, runtime)
+                plan = _add_project_plan(prepared)
+                existing = None
             if args.plan_only:
                 _render({"status": "planned", "plan": plan}, json_output=args.json_output)
             elif not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
@@ -560,20 +666,58 @@ def main(argv: Sequence[str] | None = None) -> int:
                     plan["plan_token"] if not args.non_interactive else None
                 )
                 with RuntimeLock(runtime.lock_file):
-                    locked_prepared = _prepare_project_add(args, store, runtime)
-                    locked_plan = _add_project_plan(locked_prepared)
+                    if args.resolve_existing:
+                        locked_prepared, locked_plan, locked_existing = (
+                            _resolve_onboarding_add(args, store, runtime)
+                        )
+                    else:
+                        locked_prepared = _prepare_project_add(args, store, runtime)
+                        locked_plan = _add_project_plan(locked_prepared)
+                        locked_existing = None
                     require_matching_project_plan(locked_plan, confirmed_token)
-                    result = store.apply_projects(
-                        [locked_prepared],
-                        source="projects_add",
-                        expected_plans={locked_prepared["project_id"]: locked_plan},
-                    )[0]
+                    if locked_plan["action"] == "use_existing":
+                        assert locked_existing is not None
+                        result = {"action": "use_existing", "project": locked_existing}
+                    else:
+                        result = store.apply_projects(
+                            [locked_prepared],
+                            source=(
+                                "project_onboarding_update"
+                                if locked_existing is not None
+                                else "projects_add"
+                            ),
+                            expected_plans={locked_prepared["project_id"]: locked_plan},
+                        )[0]
                 _render(
                     {
                         "status": "applied",
                         "action": result["action"],
                         "plan": locked_plan,
                         "project": safe_project(result["project"]),
+                    },
+                    json_output=args.json_output,
+                )
+        elif args.command == "projects" and args.projects_command == "use":
+            current = store.get_project(args.project_id)
+            plan = _use_existing_project_plan(store, current)
+            if args.plan_only:
+                _render({"status": "planned", "plan": plan}, json_output=args.json_output)
+            elif not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
+                _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
+            else:
+                confirmed_token = args.plan_token or (
+                    plan["plan_token"] if not args.non_interactive else None
+                )
+                with RuntimeLock(runtime.lock_file):
+                    locked_current = store.get_project(args.project_id)
+                    locked_plan = _use_existing_project_plan(store, locked_current)
+                    require_matching_project_plan(locked_plan, confirmed_token)
+                _render(
+                    {
+                        "status": "applied",
+                        "action": "use_existing",
+                        "plan": locked_plan,
+                        "project": safe_project(locked_current),
                     },
                     json_output=args.json_output,
                 )
@@ -773,8 +917,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _render({"status": "already_running"}, json_output=getattr(args, "json_output", False))
         return 0
     except ProjectBrainError as exc:
-        message = _redact_local_paths(redact_text(str(exc)))
-        value = {"status": "error", "error_category": exc.category, "error": message}
+        value = _error_payload(exc)
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 2
     except Exception as exc:

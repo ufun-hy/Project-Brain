@@ -21,7 +21,10 @@ without asking the user to run a CLI or maintain Python.
 
 The app embeds a self-contained Core helper and can import a user-downloaded,
 reviewed Tunnel Client into its private App Support directory. Both installers
-use atomic replacement and rollback. RC1 build 4 adds an MCP transport-probe
+use atomic replacement and rollback. RC1 Build 7 also binds the App and helper
+to one immutable, versioned CLI contract, upgrades a stale same-version helper
+by SHA-256, and enforces one user process and one management window. Build 4
+added an MCP transport-probe
 wizard with explicit external-acceptance Pending state. The optional fixed
 one-document Draft PR task remains locked because the current Tunnel contract
 does not provide trusted ChatGPT control-plane attestation. The unsigned
@@ -267,7 +270,9 @@ The same command runs in Linux CI. macOS CI additionally packages the frozen
 helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
 `Project Brain.app`, creates an unsigned internal RC1 DMG/ZIP plus build
 manifest, verifies all artifact hashes, verifies the embedded helper and static
-Tunnel compatibility manifest, and checks Gmail legacy isolation. Tests use temporary repositories,
+Tunnel compatibility manifest, executes existing-project onboarding through the
+final app's embedded helper, launches the final DMG and Applications copies to
+verify one process/window, and checks Gmail legacy isolation. Tests use temporary repositories,
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.
 

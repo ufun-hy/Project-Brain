@@ -82,4 +82,33 @@ final class OnboardingDiagnosticsTests: XCTestCase {
         XCTAssertEqual(error.userTitle, "Background service needs attention")
         XCTAssertTrue(error.nextAction.contains("Connection Center"))
     }
+
+    func testDMGRunIsExplicitlyNotInstalled() {
+        let status = ApplicationInstallationStatus(
+            bundleURL: URL(filePath: "/Volumes/Project Brain RC1/Project Brain.app")
+        )
+        XCTAssertEqual(status.location, .diskImage)
+        XCTAssertFalse(status.isInstalled)
+        XCTAssertTrue(status.title.contains("not installed"))
+        XCTAssertTrue(status.guidance.contains("/Applications"))
+        XCTAssertTrue(status.guidance.contains("eject"))
+    }
+
+    func testApplicationsRunMeetsFormalInstallationLocation() {
+        let status = ApplicationInstallationStatus(
+            bundleURL: URL(filePath: "/Applications/Project Brain.app")
+        )
+        XCTAssertEqual(status.location, .applications)
+        XCTAssertTrue(status.isInstalled)
+        XCTAssertEqual(status.bundleURL.path, "/Applications/Project Brain.app")
+    }
+
+    func testOtherRunLocationDoesNotMeetFormalInstallationLocation() {
+        let status = ApplicationInstallationStatus(
+            bundleURL: URL(filePath: "/Users/example/Downloads/Project Brain.app")
+        )
+        XCTAssertEqual(status.location, .other)
+        XCTAssertFalse(status.isInstalled)
+        XCTAssertTrue(status.guidance.contains("/Applications/Project Brain.app"))
+    }
 }

@@ -1,0 +1,29 @@
+{
+  "contract_version": "1.0.0",
+  "core_version": "0.7.0",
+  "operations": {
+    "native_onboarding": {
+      "command_path": [
+        "projects",
+        "add"
+      ],
+      "options": {
+        "auto_pr_disabled": "--no-auto-pr",
+        "auto_pr_enabled": "--auto-pr",
+        "auto_push_disabled": "--no-auto-push",
+        "auto_push_enabled": "--auto-push",
+        "codex_path": "--codex-path",
+        "default_branch": "--default-branch",
+        "json": "--json",
+        "name": "--name",
+        "non_interactive": "--non-interactive",
+        "plan": "--plan",
+        "plan_token": "--plan-token",
+        "project_id": "--project-id",
+        "resolve_existing": "--resolve-existing",
+        "verification_file": "--verification-file"
+      }
+    }
+  },
+  "schema_version": 1
+}

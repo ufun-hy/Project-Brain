@@ -81,6 +81,39 @@ class TaskStore:
             connection.close()
 
     def initialize(self) -> None:
+        # A current database is the common App startup and onboarding-plan
+        # path. Detect it without opening a write transaction so repeated
+        # runtime preparation cannot change the preserved database merely by
+        # checking its schema.
+        with self.connect() as connection:
+            user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if user_version > self.supported_schema_version:
+                raise MigrationError(
+                    f"Database schema {user_version} is newer than supported "
+                    f"{self.supported_schema_version}"
+                )
+            table_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'schema_migrations'"
+            ).fetchone() is not None
+            if table_exists:
+                applied = {
+                    int(row["version"])
+                    for row in connection.execute("SELECT version FROM schema_migrations")
+                }
+                if applied and max(applied) > self.supported_schema_version:
+                    raise MigrationError(
+                        f"Database migration {max(applied)} is newer than supported "
+                        f"{self.supported_schema_version}"
+                    )
+                expected = {
+                    version
+                    for version in self.migrations
+                    if version <= self.supported_schema_version
+                }
+                if user_version == self.supported_schema_version and applied == expected:
+                    return
+
         with self.transaction(immediate=True) as connection:
             user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if user_version > self.supported_schema_version:
@@ -179,11 +212,21 @@ class TaskStore:
         with self.transaction(immediate=True) as connection:
             for record in prepared:
                 name_owner = connection.execute(
-                    "SELECT project_id FROM projects WHERE name = ? AND project_id != ?",
+                    "SELECT project_id FROM projects "
+                    "WHERE lower(name) = lower(?) AND project_id != ? AND registered = 1",
                     (record["name"], record["project_id"]),
                 ).fetchone()
                 if name_owner is not None:
                     raise InvalidTaskError(f"Project name is already registered: {record['name']}")
+                path_owner = connection.execute(
+                    "SELECT project_id FROM projects "
+                    "WHERE repo_path = ? AND project_id != ? AND registered = 1",
+                    (record["repo_path"], record["project_id"]),
+                ).fetchone()
+                if path_owner is not None:
+                    raise InvalidTaskError(
+                        "Repository path is already registered to another project"
+                    )
                 existing = connection.execute(
                     "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
                 ).fetchone()

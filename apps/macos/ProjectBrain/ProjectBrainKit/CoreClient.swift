@@ -61,12 +61,15 @@ public enum CoreClientError: LocalizedError, Equatable, Sendable {
     case process(String)
     case invalidResponse(String)
     case core(category: String, message: String)
+    case projectConflict(message: String, conflict: ProjectConflict)
 
     public var errorDescription: String? {
         switch self {
         case .invalidInstallation(let message), .process(let message), .invalidResponse(let message):
             message
         case .core(_, let message):
+            message
+        case .projectConflict(let message, _):
             message
         }
     }
@@ -84,6 +87,7 @@ public enum CoreClientError: LocalizedError, Equatable, Sendable {
             case "state_conflict": "Project Brain state changed"
             default: "Project Brain needs attention"
             }
+        case .projectConflict: "Project registration conflicts with existing data"
         }
     }
 
@@ -100,6 +104,8 @@ public enum CoreClientError: LocalizedError, Equatable, Sendable {
             case "state_conflict": "Refresh and review the latest state before retrying."
             default: "Open Diagnostics for a safe, detailed check."
             }
+        case .projectConflict:
+            "Use the existing project, choose another repository, or edit the project name."
         }
     }
 }
@@ -108,9 +114,10 @@ private struct CoreErrorEnvelope: Decodable {
     let status: String?
     let errorCategory: String?
     let error: String?
+    let conflict: ProjectConflict?
 
     enum CodingKeys: String, CodingKey {
-        case status, error
+        case status, error, conflict
         case errorCategory = "error_category"
     }
 }
@@ -118,6 +125,7 @@ private struct CoreErrorEnvelope: Decodable {
 public final class CoreClient: @unchecked Sendable {
     public let executable: URL
     public let runtimeRoot: URL
+    public let cliContract: CoreCLIContract
     private let runner: any CoreProcessRunning
     private let decoder: JSONDecoder
 
@@ -125,6 +133,7 @@ public final class CoreClient: @unchecked Sendable {
         executable: URL,
         runtimeRoot: URL = FileManager.default.homeDirectoryForCurrentUser
             .appending(path: ".project-brain"),
+        cliContract: CoreCLIContract,
         runner: any CoreProcessRunning = FoundationCoreProcessRunner()
     ) throws {
         guard executable.path.hasPrefix("/"), !executable.hasDirectoryPath else {
@@ -137,12 +146,13 @@ public final class CoreClient: @unchecked Sendable {
         }
         self.executable = executable.standardizedFileURL
         self.runtimeRoot = runtimeRoot.standardizedFileURL
+        self.cliContract = cliContract
         self.runner = runner
         self.decoder = JSONDecoder()
     }
 
     public func execute<T: Decodable>(_ command: CoreCommand, as type: T.Type = T.self) throws -> T {
-        let arguments = command.arguments(runtimeRoot: runtimeRoot)
+        let arguments = command.arguments(runtimeRoot: runtimeRoot, cliContract: cliContract)
         let result: CoreProcessResult
         do {
             result = try runner.run(executable: executable, arguments: arguments)
@@ -154,9 +164,18 @@ public final class CoreClient: @unchecked Sendable {
         guard command.acceptedExitCodes.contains(result.exitCode) else {
             let bounded = Data(result.stderr.prefix(8_192))
             if let envelope = try? decoder.decode(CoreErrorEnvelope.self, from: bounded) {
+                let message = SecretRedactor.redact(
+                    envelope.error ?? "Core operation failed."
+                )
+                if let conflict = envelope.conflict {
+                    throw CoreClientError.projectConflict(
+                        message: message,
+                        conflict: conflict
+                    )
+                }
                 throw CoreClientError.core(
                     category: envelope.errorCategory ?? "core",
-                    message: SecretRedactor.redact(envelope.error ?? "Core operation failed.")
+                    message: message
                 )
             }
             let detail = String(decoding: bounded, as: UTF8.self)
@@ -197,6 +216,15 @@ public final class CoreClient: @unchecked Sendable {
         planToken: String
     ) throws -> ProjectMutationResponse {
         try execute(.addProject(draft, planToken: planToken))
+    }
+    public func planExistingProject(_ identifier: String) throws -> ProjectMutationResponse {
+        try execute(.useProject(identifier, planToken: nil))
+    }
+    public func confirmExistingProject(
+        _ identifier: String,
+        planToken: String
+    ) throws -> ProjectMutationResponse {
+        try execute(.useProject(identifier, planToken: planToken))
     }
     public func planProjectUpdate(
         _ identifier: String,

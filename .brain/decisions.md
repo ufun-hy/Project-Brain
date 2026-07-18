@@ -170,3 +170,36 @@ explicit user authorization. Installation additionally proves the reviewed
 read-only `runtimes list --json` contract under an isolated temporary HOME while
 the old binary is still available for rollback; invalid contracts remove fresh
 installs or restore the previous SHA.
+
+## D-022: Resolve onboarding identity before mutation and require Applications
+
+Native onboarding uses a dedicated Core mode that compares canonical repository
+real path and normalized origin before stable ID and case-folded display-name
+owners. A matching registration keeps its authoritative ID and name and yields
+`use_existing` or an execution-profile `update`; it never becomes a duplicate
+`add`. ID, name, and path collisions are structured plan errors. Apply repeats
+resolution under RuntimeLock, and SQLite retains the final transactional name,
+path, revision, hash, and action checks. The ordinary CLI add contract remains
+strict unless the native onboarding flag is explicitly supplied.
+
+An app bundle is formally installed only at
+`/Applications/Project Brain.app`. DMG and other locations remain usable for
+exploration but cannot complete local readiness or onboarding. Build 5 uses
+distinct artifact names and supersedes immutable Build 4 without overwriting it.
+
+## D-023: Make installation and process lifecycle explicit
+
+The Release app declares `LSMultipleInstancesProhibited` so Launch Services
+rejects a second instance even when a user opens different bundle copies. The
+final generated `Info.plist` is authoritative; packaging and mounted-artifact
+verification assert its Boolean value rather than trusting only project source.
+
+Quitting is a first-class user action in both the menu-bar panel and Settings.
+It terminates the app process without deleting or resetting services, projects,
+tasks, Keychain values, or runtime data.
+
+The internal RC DMG contains `Project Brain.app`, an `Applications` symlink to
+`/Applications`, and a bilingual file whose name and contents instruct the user
+to drag the app onto that folder. CI mounts the completed image and validates
+the visible install components. Build 6 supersedes immutable Builds 4 and 5
+using new artifact names; it never overwrites either historical build.

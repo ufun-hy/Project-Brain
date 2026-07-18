@@ -19,6 +19,8 @@ from project_brain.configuration import (
 )
 from project_brain.errors import ConfigurationError, InvalidTaskError
 from project_brain.project_config import canonical_profile_json, config_sha256
+from project_brain.projects import ProjectRegistry
+from project_brain.runtime import RuntimePaths
 from project_brain.store import TaskStore
 
 from tests.helpers import CoreFixture, create_remote_clone, executable_script
@@ -60,6 +62,38 @@ class ConfigurationTests(unittest.TestCase):
         path = self.fixture.root / "projects.json"
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
+
+    def invoke_cli(self, runtime: Path, *arguments: str) -> tuple[int, object]:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = main(["--runtime-root", str(runtime), *arguments])
+        return code, json.loads(stdout.getvalue() or stderr.getvalue())
+
+    def register_cli_project(
+        self,
+        runtime: Path,
+        repo: Path,
+        *,
+        project_id: str,
+        name: str,
+    ) -> None:
+        arguments = (
+            "projects", "add", str(repo), "--project-id", project_id,
+            "--name", name, "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr",
+        )
+        code, preview = self.invoke_cli(runtime, *arguments, "--plan", "--json")
+        self.assertEqual(code, 0)
+        code, _ = self.invoke_cli(
+            runtime,
+            *arguments,
+            "--non-interactive",
+            "--plan-token",
+            preview["plan"]["plan_token"],
+            "--json",
+        )
+        self.assertEqual(code, 0)
 
     def test_hash_is_canonical_and_exactly_matches_snapshot_json(self) -> None:
         path = self.write_config([self.project_value()])
@@ -533,6 +567,247 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(stale_update["error_category"], "state_conflict")
         self.assertEqual(store.get_project("token-project")["name"], "Concurrent name")
+
+    def test_onboarding_recognizes_existing_project_from_upgraded_database(self) -> None:
+        runtime = RuntimePaths.from_value(self.fixture.root / "upgraded-runtime").ensure()
+        store = TaskStore(runtime.database)
+        store.initialize()
+        prepared = ProjectRegistry(store, runtime).prepare(
+            {
+                "project_id": "project-brain",
+                "name": "Project-Brain",
+                "repo_path": str(self.repo),
+                "remote_url": str(self.remote),
+                "codex_command": [
+                    sys.executable, "exec", "--sandbox", "workspace-write", "-",
+                ],
+                "auto_push": False,
+                "auto_pr": False,
+            }
+        )
+        store.apply_projects([prepared], source="schema_v5_migration")
+
+        code, preview = self.invoke_cli(
+            runtime.root,
+            "projects", "add", str(self.repo), "--resolve-existing",
+            "--name", self.repo.name, "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr", "--plan", "--json",
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(preview["plan"]["project_id"], "project-brain")
+        self.assertEqual(preview["plan"]["next_name"], "Project-Brain")
+        self.assertEqual(preview["plan"]["action"], "use_existing")
+        self.assertEqual(store.get_project("project-brain")["config_source"], "schema_v5_migration")
+
+    def test_repeat_onboarding_same_directory_uses_existing_project(self) -> None:
+        runtime = self.fixture.root / "repeat-onboarding-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        code, preview = self.invoke_cli(
+            runtime,
+            "projects", "add", str(self.repo), "--resolve-existing",
+            "--name", "Project-Brain", "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr", "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(preview["plan"]["action"], "use_existing")
+        code, applied = self.invoke_cli(
+            runtime,
+            "projects", "add", str(self.repo), "--resolve-existing",
+            "--name", "Project-Brain", "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr", "--non-interactive",
+            "--plan-token", preview["plan"]["plan_token"], "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(applied["action"], "use_existing")
+        self.assertEqual(len(TaskStore(runtime / "project-brain.db").list_projects()), 1)
+
+    def test_onboarding_realpath_alias_resolves_existing_project(self) -> None:
+        runtime = self.fixture.root / "realpath-onboarding-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        alias = self.fixture.root / "repository-alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        code, preview = self.invoke_cli(
+            runtime,
+            "projects", "add", str(alias), "--resolve-existing",
+            "--name", "Alias", "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr", "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(preview["plan"]["project_id"], "project-brain")
+        self.assertEqual(preview["plan"]["action"], "use_existing")
+
+    def test_same_directory_different_name_preserves_existing_identity(self) -> None:
+        runtime = self.fixture.root / "same-path-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        code, preview = self.invoke_cli(
+            runtime,
+            "projects", "add", str(self.repo), "--resolve-existing",
+            "--name", "Different Name", "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr", "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(preview["plan"]["action"], "use_existing")
+        self.assertEqual(preview["plan"]["next_name"], "Project-Brain")
+
+    def test_existing_repository_plans_update_without_changing_identity(self) -> None:
+        runtime = self.fixture.root / "existing-update-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        code, preview = self.invoke_cli(
+            runtime,
+            "projects", "add", str(self.repo), "--resolve-existing",
+            "--name", "Different Name", "--codex-path", sys.executable,
+            "--auto-push", "--no-auto-pr", "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(preview["plan"]["action"], "update")
+        self.assertEqual(preview["plan"]["project_id"], "project-brain")
+        self.assertEqual(preview["plan"]["next_name"], "Project-Brain")
+        code, applied = self.invoke_cli(
+            runtime,
+            "projects", "add", str(self.repo), "--resolve-existing",
+            "--name", "Different Name", "--codex-path", sys.executable,
+            "--auto-push", "--no-auto-pr", "--non-interactive",
+            "--plan-token", preview["plan"]["plan_token"], "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(applied["action"], "update")
+        project = TaskStore(runtime / "project-brain.db").get_project("project-brain")
+        self.assertTrue(project["auto_push"])
+        self.assertEqual(project["name"], "Project-Brain")
+
+    def test_same_name_different_directory_is_structured_plan_conflict(self) -> None:
+        runtime = self.fixture.root / "same-name-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        other, _ = create_remote_clone(self.fixture.root, "different-checkout")
+        code, conflict = self.invoke_cli(
+            runtime,
+            "projects", "add", str(other), "--resolve-existing",
+            "--name", "Project-Brain", "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr", "--plan", "--json",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(conflict["error_category"], "project_conflict")
+        self.assertEqual(conflict["conflict"]["kind"], "project_name_conflict")
+        self.assertEqual(conflict["conflict"]["existing_project_id"], "project-brain")
+        self.assertEqual(
+            conflict["conflict"]["recovery_options"],
+            [
+                "use_existing_project",
+                "choose_different_repository",
+                "edit_project_name",
+            ],
+        )
+
+    def test_same_project_id_different_directory_is_plan_conflict(self) -> None:
+        runtime = self.fixture.root / "same-id-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        other, _ = create_remote_clone(self.fixture.root, "other-project-id")
+        code, conflict = self.invoke_cli(
+            runtime,
+            "projects", "add", str(other), "--resolve-existing",
+            "--project-id", "Project-Brain", "--name", "Other",
+            "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",
+            "--plan", "--json",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(conflict["conflict"]["kind"], "project_id_conflict")
+
+    def test_same_path_changed_origin_is_structured_plan_conflict(self) -> None:
+        runtime = self.fixture.root / "same-path-origin-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        _other, other_remote = create_remote_clone(self.fixture.root, "replacement-origin")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "remote", "set-url", "origin", str(other_remote)],
+            check=True,
+        )
+        code, conflict = self.invoke_cli(
+            runtime,
+            "projects", "add", str(self.repo), "--resolve-existing",
+            "--name", "Replacement", "--codex-path", sys.executable,
+            "--no-auto-push", "--no-auto-pr", "--plan", "--json",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(conflict["error_category"], "project_conflict")
+        self.assertEqual(conflict["conflict"]["kind"], "repository_path_conflict")
+
+    def test_onboarding_apply_concurrent_conflict_fails_closed(self) -> None:
+        runtime = self.fixture.root / "onboarding-concurrent-runtime"
+        selected, _ = create_remote_clone(self.fixture.root, "selected-project")
+        code, preview = self.invoke_cli(
+            runtime,
+            "projects", "add", str(selected), "--resolve-existing",
+            "--project-id", "selected", "--name", "Shared Name",
+            "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",
+            "--plan", "--json",
+        )
+        self.assertEqual(code, 0)
+        concurrent, _ = create_remote_clone(self.fixture.root, "concurrent-project")
+        self.register_cli_project(
+            runtime, concurrent, project_id="concurrent", name="Shared Name"
+        )
+        code, conflict = self.invoke_cli(
+            runtime,
+            "projects", "add", str(selected), "--resolve-existing",
+            "--project-id", "selected", "--name", "Shared Name",
+            "--codex-path", sys.executable, "--no-auto-push", "--no-auto-pr",
+            "--non-interactive", "--plan-token", preview["plan"]["plan_token"],
+            "--json",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(conflict["error_category"], "project_conflict")
+        store = TaskStore(runtime / "project-brain.db")
+        self.assertEqual([item["project_id"] for item in store.list_projects()], ["concurrent"])
+
+    def test_transaction_rejects_repository_path_owner_after_plan(self) -> None:
+        first = self.manager.registry.prepare(
+            self.project_value(project_id="first", name="First")
+        )
+        second = self.manager.registry.prepare(
+            self.project_value(project_id="second", name="Second")
+        )
+        self.fixture.store.apply_projects([first], source="first_apply")
+        with self.assertRaises(InvalidTaskError):
+            self.fixture.store.apply_projects([second], source="concurrent_apply")
+        self.assertEqual(
+            [item["project_id"] for item in self.fixture.store.list_projects()],
+            ["first"],
+        )
+
+    def test_use_existing_plan_token_rechecks_registered_state(self) -> None:
+        runtime = self.fixture.root / "use-existing-runtime"
+        self.register_cli_project(
+            runtime, self.repo, project_id="project-brain", name="Project-Brain"
+        )
+        code, preview = self.invoke_cli(
+            runtime, "projects", "use", "project-brain", "--plan", "--json"
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(preview["plan"]["action"], "use_existing")
+        store = TaskStore(runtime / "project-brain.db")
+        current = store.get_project("project-brain")
+        current["auto_push"] = True
+        store.apply_projects([current], source="concurrent_update")
+        code, stale = self.invoke_cli(
+            runtime, "projects", "use", "project-brain", "--non-interactive",
+            "--plan-token", preview["plan"]["plan_token"], "--json",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(stale["error_category"], "state_conflict")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+
+from project_brain.cli import build_parser, main
+from project_brain.cli_contract import cli_contract_sha256, load_cli_contract
+
+
+class CLIContractTests(unittest.TestCase):
+    def test_contract_command_is_runtime_free_and_machine_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "runtime-must-not-exist"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    ["--runtime-root", str(runtime), "cli-contract", "--json"]
+                )
+            rendered = json.loads(output.getvalue())
+            self.assertEqual(code, 0)
+            self.assertFalse(runtime.exists())
+            self.assertEqual(rendered["status"], "ok")
+            self.assertEqual(rendered["contract"], load_cli_contract())
+            self.assertEqual(rendered["document_sha256"], cli_contract_sha256())
+            self.assertRegex(cli_contract_sha256(), r"^[0-9a-f]{64}$")
+
+    def test_python_parser_accepts_the_shared_native_onboarding_contract(self) -> None:
+        contract = load_cli_contract()["operations"]["native_onboarding"]
+        options = contract["options"]
+        parsed = build_parser().parse_args(
+            [
+                *contract["command_path"],
+                "/tmp/repository",
+                options["resolve_existing"],
+                options["project_id"],
+                "project-brain",
+                options["name"],
+                "Project-Brain",
+                options["codex_path"],
+                "/usr/bin/true",
+                options["auto_push_disabled"],
+                options["auto_pr_disabled"],
+                options["plan"],
+                options["json"],
+            ]
+        )
+        self.assertEqual(parsed.projects_command, "add")
+        self.assertTrue(parsed.resolve_existing)
+        self.assertTrue(parsed.plan_only)
+        self.assertTrue(parsed.json_output)
+
+
+if __name__ == "__main__":
+    unittest.main()

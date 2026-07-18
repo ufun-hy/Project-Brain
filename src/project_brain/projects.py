@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .errors import ConfigurationError
+from .errors import ConfigurationError, ProjectConflictError
 from .models import Project, STABLE_ID_PATTERN
 from .project_config import resolve_executable
 from .runtime import RuntimePaths
@@ -21,6 +21,100 @@ class ProjectRegistry:
 
     def register(self, value: dict[str, Any]) -> dict[str, Any]:
         return self.store.register_project(self.prepare(value))
+
+    def resolve_onboarding_identity(
+        self, requested: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Resolve an onboarding selection without changing registered data.
+
+        A checkout is the existing project only when its canonical real path and
+        normalized origin both match. Stable ID and display-name owners are then
+        checked before an add plan is allowed.
+        """
+        requested_path = str(Path(requested["repo_path"]).expanduser().resolve())
+        requested_remote = self._normalize_remote(str(requested["remote_url"]))
+        projects = self.store.list_projects()
+        identity_matches = [
+            project
+            for project in projects
+            if str(Path(project["repo_path"]).expanduser().resolve()) == requested_path
+            and self._normalize_remote(str(project["remote_url"])) == requested_remote
+        ]
+        if len(identity_matches) == 1:
+            return identity_matches[0]
+        if len(identity_matches) > 1:
+            self._raise_conflict(
+                "repository_identity_ambiguous",
+                identity_matches[0],
+                "More than one registered project owns this repository identity.",
+            )
+
+        path_owner = next(
+            (
+                project
+                for project in projects
+                if str(Path(project["repo_path"]).expanduser().resolve()) == requested_path
+            ),
+            None,
+        )
+        if path_owner is not None:
+            self._raise_conflict(
+                "repository_path_conflict",
+                path_owner,
+                "This repository path is registered with a different origin.",
+            )
+
+        requested_id = str(requested["project_id"]).casefold()
+        id_owner = next(
+            (
+                project
+                for project in projects
+                if str(project["project_id"]).casefold() == requested_id
+            ),
+            None,
+        )
+        if id_owner is not None:
+            self._raise_conflict(
+                "project_id_conflict",
+                id_owner,
+                "This project ID is already registered to another repository.",
+            )
+
+        requested_name = str(requested["name"]).casefold()
+        name_owner = next(
+            (
+                project
+                for project in projects
+                if str(project["name"]).casefold() == requested_name
+            ),
+            None,
+        )
+        if name_owner is not None:
+            self._raise_conflict(
+                "project_name_conflict",
+                name_owner,
+                "This project name is already registered to another repository.",
+            )
+        return None
+
+    @staticmethod
+    def _raise_conflict(
+        kind: str, existing: dict[str, Any], message: str
+    ) -> None:
+        raise ProjectConflictError(
+            message,
+            conflict={
+                "kind": kind,
+                "existing_project_id": existing["project_id"],
+                "existing_project_name": existing["name"],
+                "repository_label": Path(existing["repo_path"]).name,
+                "recovery_options": [
+                    "use_existing_project",
+                    "choose_different_repository",
+                    "edit_project_name",
+                ],
+            },
+        )
 
     def prepare(self, value: dict[str, Any]) -> dict[str, Any]:
         """Validate and enrich one project without changing runtime state."""

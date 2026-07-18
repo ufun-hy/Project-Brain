@@ -18,6 +18,7 @@ let package = Package(
             name: "ProjectBrainApp",
             dependencies: ["ProjectBrainKit"],
             path: "ProjectBrain",
+            exclude: ["Info.plist"],
             resources: [.copy("Resources/tunnel-client-compatibility.json")]
         ),
         .testTarget(

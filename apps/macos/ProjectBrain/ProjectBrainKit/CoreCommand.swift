@@ -81,6 +81,7 @@ public enum CoreCommand: Equatable, Sendable {
     case serviceStatus
     case service(ServiceAction)
     case addProject(ProjectDraft, planToken: String?)
+    case useProject(String, planToken: String?)
     case updateProject(String, ProjectUpdateDraft, planToken: String?)
     case projectLifecycle(String, ProjectLifecycleAction, execute: Bool)
     case acceptanceStatus
@@ -97,7 +98,7 @@ public enum CoreCommand: Equatable, Sendable {
         }
     }
 
-    public func arguments(runtimeRoot: URL) -> [String] {
+    public func arguments(runtimeRoot: URL, cliContract: CoreCLIContract) -> [String] {
         var value = ["--runtime-root", runtimeRoot.path]
         switch self {
         case .initialize:
@@ -119,20 +120,30 @@ public enum CoreCommand: Equatable, Sendable {
         case .service(let action):
             value += ["service", action.rawValue, "--json"]
         case .addProject(let draft, let planToken):
-            value += ["projects", "add", draft.repository.path]
+            let operation = cliContract.operations.nativeOnboarding
+            let options = operation.options
+            value += operation.commandPath + [draft.repository.path, options.resolveExisting]
             if let projectID = draft.projectID, !projectID.isEmpty {
-                value += ["--project-id", projectID]
+                value += [options.projectID, projectID]
             }
-            if let name = draft.name, !name.isEmpty { value += ["--name", name] }
+            if let name = draft.name, !name.isEmpty { value += [options.name, name] }
             if let branch = draft.defaultBranch, !branch.isEmpty {
-                value += ["--default-branch", branch]
+                value += [options.defaultBranch, branch]
             }
-            if let codex = draft.codexExecutable { value += ["--codex-path", codex.path] }
+            if let codex = draft.codexExecutable { value += [options.codexPath, codex.path] }
             if let checks = draft.verificationFile {
-                value += ["--verification-file", checks.path]
+                value += [options.verificationFile, checks.path]
             }
-            value += [draft.autoPush ? "--auto-push" : "--no-auto-push"]
-            value += [draft.autoPR ? "--auto-pr" : "--no-auto-pr"]
+            value += [draft.autoPush ? options.autoPushEnabled : options.autoPushDisabled]
+            value += [draft.autoPR ? options.autoPREnabled : options.autoPRDisabled]
+            if let planToken {
+                value += [options.nonInteractive, options.planToken, planToken]
+            } else {
+                value.append(options.plan)
+            }
+            value.append(options.json)
+        case .useProject(let identifier, let planToken):
+            value += ["projects", "use", identifier]
             if let planToken {
                 value += ["--non-interactive", "--plan-token", planToken]
             } else {

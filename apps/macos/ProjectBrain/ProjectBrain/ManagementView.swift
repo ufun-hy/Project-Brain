@@ -41,7 +41,10 @@ struct ManagementView: View {
             OnboardingView(model: model)
                 .interactiveDismissDisabled()
         }
-        .alert(item: $model.issue) { issue in
+        .alert(item: Binding(
+            get: { model.onboarding.completed ? model.issue : nil },
+            set: { model.issue = $0 }
+        )) { issue in
             Alert(
                 title: Text(issue.title),
                 message: Text("\(issue.message)\n\nNext: \(issue.nextAction)"),

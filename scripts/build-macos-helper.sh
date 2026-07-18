@@ -25,4 +25,23 @@ case "$VERSION" in
     ;;
 esac
 
+CONTRACT="$($HELPER cli-contract --json)"
+PROJECT_BRAIN_CONTRACT_JSON="$CONTRACT" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+
+response = json.loads(os.environ["PROJECT_BRAIN_CONTRACT_JSON"])
+assert response["status"] == "ok"
+assert len(response["document_sha256"]) == 64
+contract = response["contract"]
+assert contract["schema_version"] == 1
+assert contract["contract_version"] == "1.0.0"
+assert contract["core_version"] == "0.7.0"
+native = contract["operations"]["native_onboarding"]
+assert native["command_path"] == ["projects", "add"]
+assert native["options"]["resolve_existing"] == "--resolve-existing"
+PY
+
+"$HELPER" projects add --help | /usr/bin/grep -F -- "--resolve-existing" >/dev/null
+
 echo "helper_path=$HELPER"

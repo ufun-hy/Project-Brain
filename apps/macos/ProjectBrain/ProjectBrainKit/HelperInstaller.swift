@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -53,11 +54,24 @@ public struct HelperInstallResult: Equatable, Sendable {
     public let action: HelperInstallAction
     public let version: String
     public let destination: URL
+    public let sha256: String
+    public let cliContractVersion: String
+    public let cliContractSHA256: String
 
-    public init(action: HelperInstallAction, version: String, destination: URL) {
+    public init(
+        action: HelperInstallAction,
+        version: String,
+        destination: URL,
+        sha256: String,
+        cliContractVersion: String,
+        cliContractSHA256: String
+    ) {
         self.action = action
         self.version = version
         self.destination = destination
+        self.sha256 = sha256
+        self.cliContractVersion = cliContractVersion
+        self.cliContractSHA256 = cliContractSHA256
     }
 }
 
@@ -98,10 +112,18 @@ public final class HelperInstaller: @unchecked Sendable {
 
     public func install(
         bundledHelper: URL,
+        cliContract document: CoreCLIContractDocument,
         onActivated: @Sendable (URL, HelperInstallAction) throws -> Void = { _, _ in }
     ) throws -> HelperInstallResult {
         try validateRegularFile(bundledHelper, requireExecutable: true)
         let bundledVersion = try version(of: bundledHelper)
+        guard bundledVersion == "project-brain \(document.contract.coreVersion)" else {
+            throw HelperInstallerError.versionCheck(
+                "Bundled helper version does not match the Core CLI contract"
+            )
+        }
+        try requireContract(of: bundledHelper, matches: document)
+        let bundledSHA256 = try sha256(bundledHelper)
         let destination = destination.standardizedFileURL
         let binDirectory = destination.deletingLastPathComponent()
         try rejectSymbolicLink(binDirectory)
@@ -114,11 +136,17 @@ public final class HelperInstaller: @unchecked Sendable {
 
         if fileManager.fileExists(atPath: destination.path) {
             try validateRegularFile(destination, requireExecutable: true)
-            if try version(of: destination) == bundledVersion {
+            let destinationMatches = (try? version(of: destination)) == bundledVersion
+                && (try? sha256(destination)) == bundledSHA256
+                && (try? contractMatches(executable: destination, document: document)) == true
+            if destinationMatches {
                 return HelperInstallResult(
                     action: .current,
                     version: bundledVersion,
-                    destination: destination
+                    destination: destination,
+                    sha256: bundledSHA256,
+                    cliContractVersion: document.contract.contractVersion,
+                    cliContractSHA256: document.sha256
                 )
             }
         }
@@ -135,6 +163,10 @@ public final class HelperInstaller: @unchecked Sendable {
             try syncFile(candidate)
             guard try version(of: candidate) == bundledVersion else {
                 throw HelperInstallerError.versionCheck("Candidate helper version changed")
+            }
+            try requireContract(of: candidate, matches: document)
+            guard try sha256(candidate) == bundledSHA256 else {
+                throw HelperInstallerError.versionCheck("Candidate helper SHA-256 changed")
             }
 
             let upgrading = fileManager.fileExists(atPath: destination.path)
@@ -157,6 +189,12 @@ public final class HelperInstaller: @unchecked Sendable {
                         "Installed helper did not report the bundled version"
                     )
                 }
+                try requireContract(of: destination, matches: document)
+                guard try sha256(destination) == bundledSHA256 else {
+                    throw HelperInstallerError.versionCheck(
+                        "Installed helper SHA-256 does not match the bundled helper"
+                    )
+                }
                 try onActivated(destination, action)
             } catch {
                 if upgrading, fileManager.fileExists(atPath: rollback.path) {
@@ -176,7 +214,10 @@ public final class HelperInstaller: @unchecked Sendable {
             return HelperInstallResult(
                 action: action,
                 version: bundledVersion,
-                destination: destination
+                destination: destination,
+                sha256: bundledSHA256,
+                cliContractVersion: document.contract.contractVersion,
+                cliContractSHA256: document.sha256
             )
         } catch {
             if candidateExists, fileManager.fileExists(atPath: candidate.path) {
@@ -199,6 +240,50 @@ public final class HelperInstaller: @unchecked Sendable {
             throw HelperInstallerError.versionCheck("Helper version validation failed")
         }
         return value
+    }
+
+    private func requireContract(
+        of executable: URL,
+        matches document: CoreCLIContractDocument
+    ) throws {
+        guard try contractMatches(executable: executable, document: document) else {
+            throw HelperInstallerError.versionCheck(
+                "Helper CLI contract does not match this app"
+            )
+        }
+    }
+
+    private func contractMatches(
+        executable: URL,
+        document: CoreCLIContractDocument
+    ) throws -> Bool {
+        let result = try runner.run(
+            executable: executable,
+            arguments: ["cli-contract", "--json"]
+        )
+        guard result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let response = try? JSONDecoder().decode(
+                  CoreCLIContractResponse.self,
+                  from: data
+              ) else {
+            return false
+        }
+        return response.status == "ok"
+            && response.contract == document.contract
+            && response.documentSHA256 == document.sha256
+    }
+
+    private func sha256(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if data.isEmpty { break }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func validateRegularFile(_ url: URL, requireExecutable: Bool) throws {
