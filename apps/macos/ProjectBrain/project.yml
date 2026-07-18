@@ -48,10 +48,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.projectbrain.ProductBrain
         PRODUCT_NAME: Project Brain
         MARKETING_VERSION: 0.7.0
-        CURRENT_PROJECT_VERSION: 5
+        CURRENT_PROJECT_VERSION: 6
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Project Brain
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_LSMultipleInstancesProhibited: YES
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_NSHumanReadableCopyright: Project Brain
   ProjectBrainTests:

@@ -26,6 +26,14 @@ struct SettingsView: View {
                 Text("This does not delete or reset the existing runtime.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Application") {
+                Button("Quit Project Brain", role: .destructive) {
+                    model.quitApplication()
+                }
+                .accessibilityIdentifier("settings-quit-project-brain")
+                Text("Stops this app without deleting projects, tasks, or runtime data.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Safety boundaries") {
                 Label("No arbitrary shell, argv, SQL, merge, or Git cleanup entry points", systemImage: "checkmark.shield")
                 Label("Runtime deletion is intentionally unavailable in Product Shell v1", systemImage: "externaldrive.badge.xmark")

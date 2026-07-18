@@ -63,6 +63,13 @@ struct MenuBarView: View {
                     openWindow(id: "management")
                 }
             }
+
+            Divider()
+            Button("Quit Project Brain", role: .destructive) {
+                model.quitApplication()
+            }
+            .keyboardShortcut("q")
+            .accessibilityIdentifier("menu-bar-quit-project-brain")
         }
         .padding(16)
         .frame(width: 390)

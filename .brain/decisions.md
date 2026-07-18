@@ -186,3 +186,20 @@ An app bundle is formally installed only at
 `/Applications/Project Brain.app`. DMG and other locations remain usable for
 exploration but cannot complete local readiness or onboarding. Build 5 uses
 distinct artifact names and supersedes immutable Build 4 without overwriting it.
+
+## D-023: Make installation and process lifecycle explicit
+
+The Release app declares `LSMultipleInstancesProhibited` so Launch Services
+rejects a second instance even when a user opens different bundle copies. The
+final generated `Info.plist` is authoritative; packaging and mounted-artifact
+verification assert its Boolean value rather than trusting only project source.
+
+Quitting is a first-class user action in both the menu-bar panel and Settings.
+It terminates the app process without deleting or resetting services, projects,
+tasks, Keychain values, or runtime data.
+
+The internal RC DMG contains `Project Brain.app`, an `Applications` symlink to
+`/Applications`, and a bilingual file whose name and contents instruct the user
+to drag the app onto that folder. CI mounts the completed image and validates
+the visible install components. Build 6 supersedes immutable Builds 4 and 5
+using new artifact names; it never overwrites either historical build.

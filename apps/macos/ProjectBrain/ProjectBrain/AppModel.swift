@@ -866,6 +866,11 @@ final class AppModel: ObservableObject {
         Task { await observation.cancel() }
     }
 
+    func quitApplication() {
+        shutdown()
+        NSApplication.shared.terminate(nil)
+    }
+
     func exportDiagnostics(to url: URL) {
         do {
             let report = DiagnosticReport(

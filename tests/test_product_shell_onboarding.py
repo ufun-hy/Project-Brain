@@ -22,7 +22,7 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn('Button("Modify name")', onboarding)
         self.assertIn("model.onboarding.completed ? model.issue : nil", management)
 
-    def test_build5_artifact_names_cannot_overwrite_build4_names(self) -> None:
+    def test_build6_artifact_names_cannot_overwrite_build5_names(self) -> None:
         build = (self.root / "scripts/build-rc-artifact.sh").read_text(encoding="utf-8")
         verifier = (self.root / "scripts/verify-rc-artifact.py").read_text(
             encoding="utf-8"
@@ -31,9 +31,67 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         for source in (build, verifier, workflow):
-            self.assertIn("Project-Brain-RC1-Build5-arm64", source)
-        self.assertIn("APP_BUILD=5", build)
-        self.assertIn('{"build": "5", "version": "0.7.0"}', verifier)
+            self.assertIn("Project-Brain-RC1-Build6-arm64", source)
+        self.assertIn("APP_BUILD=6", build)
+        self.assertIn('{"build": "6", "version": "0.7.0"}', verifier)
+
+    def test_quit_is_visible_in_menu_bar_and_settings(self) -> None:
+        menu = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/MenuBarView.swift"
+        ).read_text(encoding="utf-8")
+        settings = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/SettingsView.swift"
+        ).read_text(encoding="utf-8")
+        model = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/AppModel.swift"
+        ).read_text(encoding="utf-8")
+        self.assertIn('Button("Quit Project Brain", role: .destructive)', menu)
+        self.assertIn('Button("Quit Project Brain", role: .destructive)', settings)
+        self.assertIn("func quitApplication()", model)
+        self.assertIn("NSApplication.shared.terminate(nil)", model)
+
+    def test_release_app_is_single_instance(self) -> None:
+        project = (
+            self.root / "apps/macos/ProjectBrain/project.yml"
+        ).read_text(encoding="utf-8")
+        xcode_project = (
+            self.root
+            / "apps/macos/ProjectBrain/ProjectBrain.xcodeproj/project.pbxproj"
+        ).read_text(encoding="utf-8")
+        build = (self.root / "scripts/build-rc-artifact.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("INFOPLIST_KEY_LSMultipleInstancesProhibited: YES", project)
+        self.assertEqual(
+            xcode_project.count(
+                "INFOPLIST_KEY_LSMultipleInstancesProhibited = YES;"
+            ),
+            2,
+        )
+        self.assertIn("Print :LSMultipleInstancesProhibited", build)
+
+    def test_dmg_contains_applications_link_and_visible_installation_guide(
+        self,
+    ) -> None:
+        build = (self.root / "scripts/build-rc-artifact.sh").read_text(
+            encoding="utf-8"
+        )
+        workflow = (self.root / ".github/workflows/core-tests.yml").read_text(
+            encoding="utf-8"
+        )
+        verifier = (self.root / "scripts/verify-rc-dmg-layout.sh").read_text(
+            encoding="utf-8"
+        )
+        guide = (
+            self.root
+            / "packaging/dmg/把 Project Brain.app 拖到 Applications 安装.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '/bin/ln -s /Applications "$TEMP_ROOT/dmg/Applications"', build
+        )
+        self.assertIn("verify-rc-dmg-layout.sh", workflow)
+        self.assertIn("LSMultipleInstancesProhibited", verifier)
+        self.assertIn("拖到旁边的“Applications”", guide)
 
 
 if __name__ == "__main__":

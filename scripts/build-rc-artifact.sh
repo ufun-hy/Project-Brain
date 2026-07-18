@@ -8,9 +8,11 @@ DERIVED_DATA=${PROJECT_BRAIN_RC_DERIVED_DATA:?PROJECT_BRAIN_RC_DERIVED_DATA is r
 HELPER=${PROJECT_BRAIN_BUNDLED_HELPER:?PROJECT_BRAIN_BUNDLED_HELPER is required}
 CI_RUN_URL=${PROJECT_BRAIN_CI_RUN_URL:-local_unpublished_build}
 APP_VERSION=0.7.0
-APP_BUILD=5
+APP_BUILD=6
 ARCHITECTURE=arm64
-ARTIFACT_BASE=Project-Brain-RC1-Build5-arm64
+ARTIFACT_BASE=Project-Brain-RC1-Build6-arm64
+INSTALL_GUIDE_NAME="把 Project Brain.app 拖到 Applications 安装.txt"
+INSTALL_GUIDE="$ROOT/packaging/dmg/$INSTALL_GUIDE_NAME"
 
 if [ ! -x "$HELPER" ]; then
   echo "error: self-contained Core helper is missing or not executable" >&2
@@ -48,6 +50,18 @@ if [ -e "$APP/Contents/Resources/tunnel-client" ]; then
   echo "error: Tunnel Client must not be bundled in Project Brain.app" >&2
   exit 1
 fi
+if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" != "$APP_BUILD" ]; then
+  echo "error: Release app build number does not match RC artifact" >&2
+  exit 1
+fi
+if [ "$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' "$APP/Contents/Info.plist")" != "true" ]; then
+  echo "error: Release app does not prohibit multiple instances" >&2
+  exit 1
+fi
+if [ ! -f "$INSTALL_GUIDE" ]; then
+  echo "error: DMG installation guide is missing" >&2
+  exit 1
+fi
 
 MANIFEST_VERSION=$(/usr/bin/python3 -c \
   'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["schema_version"])' \
@@ -61,12 +75,14 @@ TEMP_ROOT=$(/usr/bin/mktemp -d "${RUNNER_TEMP:-/tmp}/project-brain-rc1.XXXXXX")
 trap '/bin/rm -rf "$TEMP_ROOT"' EXIT INT TERM
 /bin/mkdir -p "$TEMP_ROOT/dmg"
 /usr/bin/ditto "$APP" "$TEMP_ROOT/dmg/Project Brain.app"
+/bin/ln -s /Applications "$TEMP_ROOT/dmg/Applications"
+/usr/bin/ditto "$INSTALL_GUIDE" "$TEMP_ROOT/dmg/$INSTALL_GUIDE_NAME"
 
 DMG="$OUTPUT_DIR/$ARTIFACT_BASE.dmg"
 ZIP="$OUTPUT_DIR/$ARTIFACT_BASE.zip"
 /usr/bin/hdiutil create \
   -quiet \
-  -volname "Project Brain RC1 Build 5" \
+  -volname "Project Brain RC1 Build 6" \
   -srcfolder "$TEMP_ROOT/dmg" \
   -format UDZO \
   -ov \
