@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import plistlib
 import unittest
 from pathlib import Path
 
@@ -54,6 +55,9 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         project = (
             self.root / "apps/macos/ProjectBrain/project.yml"
         ).read_text(encoding="utf-8")
+        package = (
+            self.root / "apps/macos/ProjectBrain/Package.swift"
+        ).read_text(encoding="utf-8")
         xcode_project = (
             self.root
             / "apps/macos/ProjectBrain/ProjectBrain.xcodeproj/project.pbxproj"
@@ -61,13 +65,19 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         build = (self.root / "scripts/build-rc-artifact.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("INFOPLIST_KEY_LSMultipleInstancesProhibited: YES", project)
+        info_plist = plistlib.loads(
+            (
+                self.root
+                / "apps/macos/ProjectBrain/ProjectBrain/Info.plist"
+            ).read_bytes()
+        )
+        self.assertIn("INFOPLIST_FILE: ProjectBrain/Info.plist", project)
+        self.assertIn('exclude: ["Info.plist"]', package)
         self.assertEqual(
-            xcode_project.count(
-                "INFOPLIST_KEY_LSMultipleInstancesProhibited = YES;"
-            ),
+            xcode_project.count("INFOPLIST_FILE = ProjectBrain/Info.plist;"),
             2,
         )
+        self.assertIs(info_plist["LSMultipleInstancesProhibited"], True)
         self.assertIn("Print :LSMultipleInstancesProhibited", build)
 
     def test_dmg_contains_applications_link_and_visible_installation_guide(
