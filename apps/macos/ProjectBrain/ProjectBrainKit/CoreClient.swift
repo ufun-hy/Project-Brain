@@ -76,19 +76,30 @@ public struct FoundationCoreProcessRunner: CoreProcessRunning {
     }
 }
 
+public struct CoreFailure: Equatable, Sendable {
+    public let category: String
+    public let errorCode: String?
+    public let field: String?
+    public let constraints: [String: Int]
+    public let retryable: Bool
+    public let nextActionCode: String?
+    public let correlationID: String?
+    public let diagnosticMessage: String
+}
+
 public enum CoreClientError: LocalizedError, Equatable, Sendable {
     case invalidInstallation(String)
     case process(String)
     case invalidResponse(String)
-    case core(category: String, message: String)
+    case core(CoreFailure)
     case projectConflict(message: String, conflict: ProjectConflict)
 
     public var errorDescription: String? {
         switch self {
         case .invalidInstallation(let message), .process(let message), .invalidResponse(let message):
             message
-        case .core(_, let message):
-            message
+        case .core(let failure):
+            failure.diagnosticMessage
         case .projectConflict(let message, _):
             message
         }
@@ -99,8 +110,8 @@ public enum CoreClientError: LocalizedError, Equatable, Sendable {
         case .invalidInstallation: "Core helper needs repair"
         case .process: "Project Brain could not start"
         case .invalidResponse: "Project Brain returned an invalid response"
-        case .core(let category, _):
-            switch category {
+        case .core(let failure):
+            switch failure.category {
             case "configuration": "Project configuration needs attention"
             case "service": "Background service needs attention"
             case "security": "A safety check blocked this action"
@@ -117,8 +128,8 @@ public enum CoreClientError: LocalizedError, Equatable, Sendable {
         case .invalidInstallation: "Reinstall the bundled helper from Settings."
         case .process: "Open Diagnostics and check the helper and runtime."
         case .invalidResponse: "Export diagnostics, then restart the app."
-        case .core(let category, _):
-            switch category {
+        case .core(let failure):
+            switch failure.category {
             case "configuration": "Review the project plan and update invalid fields."
             case "service": "Use Connection Center to reinstall or restart services."
             case "security": "Choose a validated repository or trusted executable."
@@ -137,10 +148,19 @@ private struct CoreErrorEnvelope: Decodable {
     let errorCategory: String?
     let error: String?
     let conflict: ProjectConflict?
+    let errorCode: String?
+    let field: String?
+    let constraints: [String: Int]?
+    let retryable: Bool?
+    let nextActionCode: String?
+    let correlationID: String?
 
     enum CodingKeys: String, CodingKey {
-        case status, error, conflict
+        case status, error, field, constraints, retryable, conflict
         case errorCategory = "error_category"
+        case errorCode = "error_code"
+        case nextActionCode = "next_action_code"
+        case correlationID = "correlation_id"
     }
 }
 
@@ -205,10 +225,16 @@ public final class CoreClient: @unchecked Sendable {
                         conflict: conflict
                     )
                 }
-                throw CoreClientError.core(
+                throw CoreClientError.core(CoreFailure(
                     category: envelope.errorCategory ?? "core",
-                    message: message
-                )
+                    errorCode: envelope.errorCode,
+                    field: envelope.field,
+                    constraints: envelope.constraints ?? [:],
+                    retryable: envelope.retryable ?? false,
+                    nextActionCode: envelope.nextActionCode,
+                    correlationID: envelope.correlationID,
+                    diagnosticMessage: message
+                ))
             }
             let detail = String(decoding: bounded, as: UTF8.self)
             throw CoreClientError.process(
@@ -314,9 +340,12 @@ public final class CoreClient: @unchecked Sendable {
         try execute(.localTaskPlan(request))
     }
     public func createLocalTask(
-        _ request: LocalTaskRequest,
-        planToken: String
+        planToken: String,
+        expectedPlanHash: String
     ) throws -> LocalTaskCreateResponse {
-        try execute(.localTaskCreate(request, planToken: planToken))
+        try execute(.localTaskCreate(.init(
+            planToken: planToken,
+            expectedPlanHash: expectedPlanHash
+        )))
     }
 }

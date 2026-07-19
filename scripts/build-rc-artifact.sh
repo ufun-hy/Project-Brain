@@ -8,9 +8,9 @@ DERIVED_DATA=${PROJECT_BRAIN_RC_DERIVED_DATA:?PROJECT_BRAIN_RC_DERIVED_DATA is r
 HELPER=${PROJECT_BRAIN_BUNDLED_HELPER:?PROJECT_BRAIN_BUNDLED_HELPER is required}
 CI_RUN_URL=${PROJECT_BRAIN_CI_RUN_URL:-local_unpublished_build}
 APP_VERSION=0.8.0
-APP_BUILD=8
+APP_BUILD=9
 ARCHITECTURE=arm64
-ARTIFACT_BASE=Project-Brain-Local-Tasks-Build8-arm64
+ARTIFACT_BASE=Project-Brain-Local-Tasks-Build9-arm64
 INSTALL_GUIDE_NAME="把 Project Brain.app 拖到 Applications 安装.txt"
 INSTALL_GUIDE="$ROOT/packaging/dmg/$INSTALL_GUIDE_NAME"
 
@@ -19,7 +19,7 @@ if [ ! -x "$HELPER" ]; then
   exit 1
 fi
 if [ "$("$HELPER" --version)" != "project-brain 0.8.0" ]; then
-  echo "error: self-contained Core helper version does not match Build 8" >&2
+  echo "error: self-contained Core helper version does not match Build 9" >&2
   exit 1
 fi
 
@@ -94,11 +94,12 @@ assert reported["status"] == "ok"
 assert reported["contract"] == contract
 assert reported["document_sha256"] == hashlib.sha256(contract_bytes).hexdigest()
 assert contract["schema_version"] == 1
-assert contract["contract_version"] == "1.1.0"
+assert contract["contract_version"] == "1.2.0"
 assert contract["core_version"] == "0.8.0"
 assert contract["operations"]["native_onboarding"]["options"]["resolve_existing"] == "--resolve-existing"
 local = contract["operations"]["local_task"]
 assert local["request_schema_version"] == 1
+assert local["confirmation_schema_version"] == 1
 assert local["transport"] == "stdin_json"
 assert local["plan_command_path"] == ["tasks", "local-plan"]
 assert local["create_command_path"] == ["tasks", "local-create"]
@@ -125,7 +126,7 @@ DMG="$OUTPUT_DIR/$ARTIFACT_BASE.dmg"
 ZIP="$OUTPUT_DIR/$ARTIFACT_BASE.zip"
 /usr/bin/hdiutil create \
   -quiet \
-  -volname "Project Brain Local Tasks Build 8" \
+  -volname "Project Brain Local Tasks Build 9" \
   -srcfolder "$TEMP_ROOT/dmg" \
   -format UDZO \
   -ov \
@@ -159,7 +160,7 @@ import json
 import os
 
 manifest = {
-    "schema_version": 3,
+    "schema_version": 4,
     "artifact_classification": "unsigned_internal_rc",
     "app": {
         "version": os.environ["APP_VERSION"],
@@ -173,16 +174,19 @@ manifest = {
     },
     "core_cli_contract": {
         "schema_version": 1,
-        "contract_version": "1.1.0",
+        "contract_version": "1.2.0",
         "core_version": "0.8.0",
         "document_sha256": os.environ["CLI_CONTRACT_SHA"],
     },
     "local_task_contract": {
         "task_request_schema_version": 1,
+        "confirmation_schema_version": 1,
         "result_schema_version": 1,
-        "database_schema_version": 9,
+        "database_schema_version": 10,
         "transport": "stdin_json",
-        "plan_token_prefix": "local-v1:",
+        "plan_token_prefix": "local-v2:",
+        "plan_token_storage": "sha256_only",
+        "confirm_fields": ["expected_plan_hash", "plan_token"],
     },
     "tunnel_compatibility_manifest_version": int(os.environ["MANIFEST_VERSION"]),
     "supported_tunnel_client_versions": ["0.0.10"],
@@ -207,7 +211,7 @@ PY
   /usr/bin/shasum -a 256 "$MANIFEST"
 } | /usr/bin/sed "s|$OUTPUT_DIR/||" > "$OUTPUT_DIR/SHA256SUMS"
 
-echo "Build 8 artifact directory: $OUTPUT_DIR"
-echo "Build 8 DMG SHA-256: $DMG_SHA"
-echo "Build 8 classification: unsigned_internal_rc; not notarized"
+echo "Build 9 artifact directory: $OUTPUT_DIR"
+echo "Build 9 DMG SHA-256: $DMG_SHA"
+echo "Build 9 classification: unsigned_internal_rc; not notarized"
 echo "External acceptance: pending; this build did not use real ChatGPT ingress"

@@ -8,6 +8,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -138,7 +140,6 @@ def build_parser() -> argparse.ArgumentParser:
     local_create = task_sub.add_parser(
         "local-create", help="Create a reviewed local App task request from stdin"
     )
-    local_create.add_argument("--plan-token", required=True)
     _add_json(local_create)
     task_review = task_sub.add_parser(
         "review", help="Record commit-bound review findings"
@@ -584,7 +585,13 @@ def _error_payload(exc: ProjectBrainError) -> dict[str, Any]:
     value: dict[str, Any] = {
         "status": "error",
         "error_category": exc.category,
+        "error_code": exc.error_code or exc.category,
+        "field": exc.field,
+        "constraints": exc.constraints or {},
         "error": message,
+        "retryable": bool(exc.retryable),
+        "next_action_code": exc.next_action_code or "open_diagnostics",
+        "correlation_id": uuid.uuid4().hex[:12],
     }
     if isinstance(exc, ProjectConflictError):
         value["conflict"] = exc.conflict
@@ -592,6 +599,7 @@ def _error_payload(exc: ProjectBrainError) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    process_started = time.perf_counter()
     args = build_parser().parse_args(argv)
     if args.command == "cli-contract":
         contract = load_cli_contract()
@@ -630,6 +638,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     runtime_preexisting = runtime_value.database.exists()
     runtime = runtime_value.ensure()
     store = TaskStore(runtime.database)
+    schema_started = time.perf_counter()
     try:
         store.initialize()
     except ProjectBrainError as exc:
@@ -646,6 +655,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         print(json.dumps(value, ensure_ascii=False), file=sys.stderr)
         return 3
+    schema_open_ms = round((time.perf_counter() - schema_started) * 1000, 3)
+    helper_to_dispatch_ms = round((time.perf_counter() - process_started) * 1000, 3)
     try:
         if args.command == "init":
             git = find_executable("git")
@@ -918,16 +929,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "tasks" and args.tasks_command == "local-plan":
             value = LocalTaskManager(store, runtime).plan(_read_stdin_json())
+            value["timing_ms"].update(
+                {
+                    "database_schema_open": schema_open_ms,
+                    "helper_process_to_dispatch": helper_to_dispatch_ms,
+                }
+            )
             _render_local_task(value)
         elif args.command == "tasks" and args.tasks_command == "local-create":
-            request = _read_stdin_json()
+            confirmation = _read_stdin_json()
             with RuntimeLock(runtime.lock_file):
-                value = LocalTaskManager(store, runtime).create(
-                    request, plan_token=args.plan_token
-                )
-            value["task"] = task_view(
-                value["task"],
-                {item["project_id"]: item for item in store.list_projects()},
+                value = LocalTaskManager(store, runtime).create(confirmation)
+            projects = {item["project_id"]: item for item in store.list_projects()}
+            summary = task_view(value.pop("task"), projects)
+            value["summary"] = summary
+            value["timing_ms"].update(
+                {
+                    "database_schema_open": schema_open_ms,
+                    "helper_process_to_dispatch": helper_to_dispatch_ms,
+                }
             )
             _render_local_task(value)
         elif args.command == "tasks" and args.tasks_command == "review":

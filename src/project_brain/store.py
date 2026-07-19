@@ -42,6 +42,15 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _loads(value: str | None, default: Any) -> Any:
     if value is None:
         return default
@@ -737,46 +746,67 @@ class TaskStore:
         self,
         *,
         plan_token: str,
-        request_sha256: str,
-        request: dict[str, Any],
+        canonical_request_sha256: str,
+        canonical_request: dict[str, Any],
+        plan_sha256: str,
         plan: dict[str, Any],
+        contract_version: str,
     ) -> None:
-        if contains_known_secret(request) or contains_known_secret(plan):
+        if contains_known_secret(canonical_request) or contains_known_secret(plan):
             raise InvalidTaskError("Local task plan contains a credential-like value")
+        token_sha256 = hashlib.sha256(plan_token.encode("utf-8")).hexdigest()
+        token_fingerprint = token_sha256[:12]
         with self.transaction(immediate=True) as connection:
             connection.execute(
                 """
+                UPDATE local_task_plans
+                SET superseded_at = ?
+                WHERE project_id = ? AND consumed_at IS NULL AND superseded_at IS NULL
+                """,
+                (plan["created_at"], plan["project_id"]),
+            )
+            connection.execute(
+                """
                 INSERT INTO local_task_plans(
-                    plan_token, schema_version, request_sha256, request_json,
-                    plan_json, project_id, project_config_revision,
-                    project_config_sha256, base_sha, created_at, expires_at
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    plan_token_sha256, schema_version, canonical_request_sha256,
+                    canonical_request_json, plan_json, project_id,
+                    project_config_revision, project_config_sha256, base_sha,
+                    created_at, expires_at, plan_sha256, token_fingerprint,
+                    contract_version
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    plan_token,
-                    request_sha256,
-                    _json(request),
-                    _json(plan),
+                    token_sha256,
+                    canonical_request_sha256,
+                    _canonical_json(canonical_request),
+                    _canonical_json(plan),
                     plan["project_id"],
                     plan["execution_profile_revision"],
                     plan["execution_profile_sha256"],
                     plan.get("base_sha"),
                     plan["created_at"],
                     plan["expires_at"],
+                    plan_sha256,
+                    token_fingerprint,
+                    contract_version,
                 ),
             )
 
     @staticmethod
     def _local_task_plan(row: sqlite3.Row) -> dict[str, Any]:
         value = dict(row)
-        value["request"] = _loads(value.pop("request_json"), {})
+        value["canonical_request"] = _loads(
+            value.pop("canonical_request_json"), {}
+        )
         value["plan"] = _loads(value.pop("plan_json"), {})
         return value
 
     def get_local_task_plan(self, plan_token: str) -> dict[str, Any]:
+        token_sha256 = hashlib.sha256(plan_token.encode("utf-8")).hexdigest()
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM local_task_plans WHERE plan_token = ?", (plan_token,)
+                "SELECT * FROM local_task_plans WHERE plan_token_sha256 = ?",
+                (token_sha256,),
             ).fetchone()
         if row is None:
             raise InvalidTaskError("Unknown local task plan token")
@@ -786,7 +816,7 @@ class TaskStore:
         self,
         *,
         plan_token: str,
-        request_sha256: str,
+        expected_plan_sha256: str,
         expected_project_revision: int,
         expected_project_sha256: str,
         task: CanonicalTask,
@@ -805,45 +835,113 @@ class TaskStore:
             raise InvalidTaskError(
                 "Task contains a credential-like value and was not persisted"
             )
+        token_sha256 = hashlib.sha256(plan_token.encode("utf-8")).hexdigest()
         with self.transaction(immediate=True) as connection:
             plan_row = connection.execute(
-                "SELECT * FROM local_task_plans WHERE plan_token = ?", (plan_token,)
+                "SELECT * FROM local_task_plans WHERE plan_token_sha256 = ?",
+                (token_sha256,),
             ).fetchone()
             if plan_row is None:
                 raise InvalidTaskError("Unknown local task plan token")
             if plan_row["consumed_at"] is not None:
-                if plan_row["task_id"]:
-                    existing = connection.execute(
-                        "SELECT * FROM tasks WHERE task_id = ?", (plan_row["task_id"],)
-                    ).fetchone()
-                    if existing is not None:
-                        return self._task(existing), False
-                raise StateConflictError("The local task plan was already consumed")
+                raise StateConflictError(
+                    "The local task plan was already consumed",
+                    error_code="local_task_plan_consumed",
+                    retryable=False,
+                    next_action_code="open_task_center",
+                )
+            if plan_row["superseded_at"] is not None:
+                raise StateConflictError(
+                    "The local task plan was superseded",
+                    error_code="local_task_plan_superseded",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                )
             expiry = parse_timestamp(plan_row["expires_at"])
             current = parse_timestamp(now)
             if expiry is None or current is None or expiry <= current:
                 raise StateConflictError(
-                    "The local task plan expired; review a new plan"
+                    "The local task plan expired; review a new plan",
+                    error_code="local_task_plan_expired",
+                    retryable=True,
+                    next_action_code="review_new_plan",
                 )
             if (
-                plan_row["request_sha256"] != request_sha256
+                plan_row["plan_sha256"] != expected_plan_sha256
                 or plan_row["project_id"] != record["project_id"]
                 or int(plan_row["project_config_revision"]) != expected_project_revision
                 or plan_row["project_config_sha256"] != expected_project_sha256
                 or plan_row["base_sha"] != base_sha
             ):
                 raise StateConflictError(
-                    "The local task plan snapshot no longer matches"
+                    "The local task plan snapshot no longer matches",
+                    error_code="local_task_plan_snapshot_invalid",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                )
+            try:
+                canonical_request = json.loads(plan_row["canonical_request_json"])
+                plan_document = json.loads(plan_row["plan_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise StateConflictError(
+                    "The canonical local task plan is invalid",
+                    error_code="local_task_plan_snapshot_invalid",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                ) from exc
+            canonical_request_sha256 = hashlib.sha256(
+                _canonical_json(canonical_request).encode("utf-8")
+            ).hexdigest()
+            plan_material = {
+                key: value
+                for key, value in plan_document.items()
+                if key not in {"plan_hash", "token_fingerprint"}
+            }
+            persisted_plan_sha256 = hashlib.sha256(
+                _canonical_json(plan_material).encode("utf-8")
+            ).hexdigest()
+            if (
+                canonical_request_sha256
+                != plan_row["canonical_request_sha256"]
+                or persisted_plan_sha256 != plan_row["plan_sha256"]
+                or plan_document.get("plan_hash") != plan_row["plan_sha256"]
+                or plan_document.get("token_fingerprint") != token_sha256[:12]
+                or plan_document.get("contract_version")
+                != plan_row["contract_version"]
+                or canonical_request.get("project_id") != record["project_id"]
+                or canonical_request.get("goal") != record["goal"]
+                or canonical_request.get("task_type") != local_task_type
+                or canonical_request.get("acceptance_criteria")
+                != [
+                    item.get("text") if isinstance(item, dict) else item
+                    for item in record.get("acceptance_criteria", [])
+                ]
+                or canonical_request.get("delivery") != delivery
+                or plan_document.get("request_sha256")
+                != plan_row["canonical_request_sha256"]
+                or plan_document.get("canonical_goal") != record["goal"]
+                or plan_document.get("task_type") != local_task_type
+                or plan_document.get("delivery") != delivery
+            ):
+                raise StateConflictError(
+                    "The canonical local task request no longer matches",
+                    error_code="local_task_plan_snapshot_invalid",
+                    retryable=True,
+                    next_action_code="review_new_plan",
                 )
             created, was_created = self._insert_task_record(connection, record, now=now)
             connection.execute(
                 "UPDATE local_task_plans SET consumed_at = ?, task_id = ? "
-                "WHERE plan_token = ? AND consumed_at IS NULL",
-                (now, created["task_id"], plan_token),
+                "WHERE plan_token_sha256 = ? AND consumed_at IS NULL "
+                "AND superseded_at IS NULL",
+                (now, created["task_id"], token_sha256),
             )
             if connection.execute("SELECT changes()").fetchone()[0] != 1:
                 raise StateConflictError(
-                    "The local task plan was consumed concurrently"
+                    "The local task plan was consumed concurrently",
+                    error_code="local_task_plan_consumed",
+                    retryable=False,
+                    next_action_code="open_task_center",
                 )
             self._event(
                 connection,
@@ -852,10 +950,9 @@ class TaskStore:
                 None,
                 TaskStatus.PENDING.value,
                 {
-                    "plan_token_sha256": hashlib.sha256(
-                        plan_token.encode("utf-8")
-                    ).hexdigest(),
-                    "request_sha256": request_sha256,
+                    "plan_token_sha256": token_sha256,
+                    "plan_sha256": expected_plan_sha256,
+                    "request_sha256": plan_row["canonical_request_sha256"],
                     "local_task_type": local_task_type,
                 },
             )

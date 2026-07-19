@@ -91,7 +91,7 @@ public enum CoreCommand: Equatable, Sendable {
     case acceptanceTaskPlan(String)
     case acceptanceTaskCreate(String, planToken: String)
     case localTaskPlan(LocalTaskRequest)
-    case localTaskCreate(LocalTaskRequest, planToken: String)
+    case localTaskCreate(LocalTaskConfirmation)
 
     public var acceptedExitCodes: Set<Int32> {
         switch self {
@@ -202,25 +202,31 @@ public enum CoreCommand: Equatable, Sendable {
         case .localTaskPlan:
             let operation = cliContract.operations.localTask
             value += operation.planCommandPath + [operation.options.json]
-        case .localTaskCreate(_, let planToken):
+        case .localTaskCreate:
             let operation = cliContract.operations.localTask
-            value += operation.createCommandPath + [
-                operation.options.planToken, planToken, operation.options.json,
-            ]
+            value += operation.createCommandPath + [operation.options.json]
         }
         return value
     }
 
     public func standardInput() throws -> Data? {
-        let request: LocalTaskRequest
+        let value: any Encodable
         switch self {
-        case .localTaskPlan(let value), .localTaskCreate(let value, _):
-            request = value
+        case .localTaskPlan(let request):
+            value = request
+        case .localTaskCreate(let confirmation):
+            value = confirmation
         default:
             return nil
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(request)
+        return try value.encode(using: encoder)
+    }
+}
+
+private extension Encodable {
+    func encode(using encoder: JSONEncoder) throws -> Data {
+        try encoder.encode(self)
     }
 }

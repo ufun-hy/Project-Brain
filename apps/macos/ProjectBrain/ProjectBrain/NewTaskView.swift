@@ -4,6 +4,7 @@ import SwiftUI
 struct NewTaskView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var focusedField: LocalTaskFocusedField?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,10 +16,10 @@ struct NewTaskView: View {
                 .font(.title2.bold())
                 Spacer()
                 Button("Cancel") {
-                    model.isNewTaskPresented = false
-                    dismiss()
+                    model.cancelLocalTaskSheet()
+                    if !model.isNewTaskPresented { dismiss() }
                 }
-                .disabled(model.isBusy)
+                .disabled(model.localTaskPhase.isBusy && !model.localTaskPhase.canCancel)
             }
             .padding(22)
 
@@ -32,7 +33,7 @@ struct NewTaskView: View {
                     if let response = model.localTaskPlan {
                         LocalTaskPlanView(plan: response.plan)
                     } else {
-                        LocalTaskForm(model: model)
+                        LocalTaskForm(model: model, focusedField: $focusedField)
                     }
                 }
                 .padding(24)
@@ -41,8 +42,15 @@ struct NewTaskView: View {
             Divider()
 
             HStack {
+                if model.localTaskPhase.isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(LocalizedStringKey(model.localTaskPhase.titleKey))
+                        .foregroundStyle(.secondary)
+                }
                 if model.localTaskPlan != nil {
                     Button("Back to edit") { model.reviewNewLocalTaskPlan() }
+                        .disabled(model.localTaskPhase.isBusy)
                 }
                 Spacer()
                 if let plan = model.localTaskPlan {
@@ -51,35 +59,39 @@ struct NewTaskView: View {
                     }
                     Button("Confirm and Create Task") { model.createLocalTask() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.isBusy || !plan.plan.readiness.ready)
+                        .disabled(model.localTaskPhase.isBusy || !plan.plan.readiness.ready)
                         .accessibilityIdentifier("local-task-confirm")
                 } else {
                     Button("Review Execution Plan") { model.planLocalTask() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.isBusy || !formIsValid)
+                        .disabled(model.localTaskPhase.isBusy || !formIsValid)
                         .accessibilityIdentifier("local-task-review-plan")
                 }
             }
             .padding(20)
         }
         .frame(width: 760, height: 700)
-        .interactiveDismissDisabled(model.isBusy)
+        .interactiveDismissDisabled(model.localTaskPhase.isBusy)
+        .onChange(of: model.localTaskIssue?.id) { _, _ in
+            if model.localTaskIssue?.field == "goal" {
+                focusedField = .goal
+            }
+        }
     }
 
     private var formIsValid: Bool {
-        let goal = model.localTaskRequest.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let criteriaCount = model.localTaskRequest.acceptanceCriteria.reduce(0) {
-            $0 + $1.trimmingCharacters(in: .whitespacesAndNewlines).count
-        }
         return !model.localTaskRequest.projectID.isEmpty
-            && (10...8_000).contains(goal.count)
-            && criteriaCount <= 8_000
-            && model.localTaskRequest.acceptanceCriteria.count <= 100
+            && !model.localTaskRequest.goal.isEmpty
     }
+}
+
+private enum LocalTaskFocusedField: Hashable {
+    case goal
 }
 
 private struct LocalTaskForm: View {
     @ObservedObject var model: AppModel
+    let focusedField: FocusState<LocalTaskFocusedField?>.Binding
 
     var body: some View {
         GroupBox("Task") {
@@ -109,7 +121,8 @@ private struct LocalTaskForm: View {
                         .frame(minHeight: 130)
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
                         .accessibilityIdentifier("local-task-goal")
-                    Text("\(model.localTaskRequest.goal.count) / 8,000 characters; minimum 10")
+                        .focused(focusedField, equals: .goal)
+                    Text("\(model.localTaskRequest.goal.unicodeScalars.count) / 8,000 characters; minimum 10")
                         .font(.caption)
                         .foregroundStyle(goalIsValid ? Color.secondary : Color.red)
                 }
@@ -160,7 +173,7 @@ private struct LocalTaskForm: View {
 
     private var goalIsValid: Bool {
         let count = model.localTaskRequest.goal
-            .trimmingCharacters(in: .whitespacesAndNewlines).count
+            .trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count
         return (10...8_000).contains(count)
     }
 
@@ -194,57 +207,28 @@ private struct LocalTaskForm: View {
 
 private struct LocalTaskPlanView: View {
     let plan: LocalTaskPlan
+    @State private var showsTechnicalDetails = false
 
     var body: some View {
         GroupBox("Execution snapshot") {
             VStack(alignment: .leading, spacing: 9) {
                 LabeledContent("Project", value: plan.projectName)
-                LabeledContent("Repository", value: plan.repositoryPath)
-                LabeledContent("Base", value: "\(plan.defaultBranch) @ \(plan.baseSHA ?? String(localized: "Unavailable"))")
                 LabeledContent("Task type", value: plan.taskType.title)
-                LabeledContent("Goal", value: plan.goalSummary)
-                LabeledContent(
-                    "Execution profile",
-                    value: "revision \(plan.executionProfileRevision) · \(plan.executionProfileSHA256)"
-                )
-                LabeledContent("Adapter", value: "\(plan.codexAdapter) · \(plan.codexExecutable)")
-                LabeledContent("Worktree root", value: plan.worktreeRoot)
+                LabeledContent("Goal", value: plan.canonicalGoal)
+                LabeledContent("Modifies files", value: yesNo(plan.taskType == .implement))
                 LabeledContent("Commit", value: yesNo(plan.delivery.commit))
                 LabeledContent("Push", value: yesNo(plan.delivery.push))
                 LabeledContent("Draft PR", value: yesNo(plan.delivery.draftPR))
-                LabeledContent("Plan expires", value: plan.expiresAt)
-                LabeledContent("Plan token", value: plan.planToken)
+                LabeledContent(
+                    "Readiness",
+                    value: plan.readiness.ready
+                        ? String(localized: "Ready to create")
+                        : String(localized: "Resolve blockers before creating")
+                )
+                LabeledContent("Risks", value: riskSummary)
             }
             .textSelection(.enabled)
             .padding(8)
-        }
-
-        if !plan.acceptanceCriteria.isEmpty {
-            GroupBox("Acceptance criteria") {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(plan.acceptanceCriteria.enumerated()), id: \.offset) {
-                        Text("\($0.offset + 1). \($0.element)")
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-            }
-        }
-
-        if !plan.verification.isEmpty {
-            GroupBox("Verification commands") {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(plan.verification) { verification in
-                        Label(
-                            verification.description,
-                            systemImage: verification.alwaysRun
-                                ? "checkmark.seal" : "checkmark.circle"
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-            }
         }
 
         GroupBox("Readiness") {
@@ -268,10 +252,65 @@ private struct LocalTaskPlanView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
         }
+
+        DisclosureGroup("Technical details", isExpanded: $showsTechnicalDetails) {
+            VStack(alignment: .leading, spacing: 9) {
+                LabeledContent("Repository", value: plan.repositoryPath)
+                LabeledContent(
+                    "Base",
+                    value: "\(plan.defaultBranch) @ \(plan.baseSHA ?? String(localized: "Unavailable"))"
+                )
+                LabeledContent(
+                    "Execution profile",
+                    value: "revision \(plan.executionProfileRevision) · \(plan.executionProfileSHA256)"
+                )
+                LabeledContent("Adapter", value: "\(plan.codexAdapter) · \(plan.codexExecutable)")
+                LabeledContent("Worktree root", value: plan.worktreeRoot)
+                LabeledContent("Plan expires", value: plan.expiresAt)
+                LabeledContent("Plan fingerprint", value: plan.tokenFingerprint)
+                LabeledContent("Plan schema", value: "\(plan.schemaVersion)")
+                LabeledContent("CLI contract", value: plan.contractVersion)
+                LabeledContent(
+                    "Canonical goal length",
+                    value: "\(plan.canonicalGoalLength) (\(plan.goalConstraints.minimum)…\(plan.goalConstraints.maximum))"
+                )
+            }
+            .textSelection(.enabled)
+
+            if !plan.acceptanceCriteria.isEmpty {
+                Divider()
+                Text("Acceptance criteria").font(.headline)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(plan.acceptanceCriteria.enumerated()), id: \.offset) {
+                        Text("\($0.offset + 1). \($0.element)")
+                    }
+                }
+            }
+
+            if !plan.verification.isEmpty {
+                Divider()
+                Text("Verification commands").font(.headline)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(plan.verification) { verification in
+                        Label(
+                            verification.description,
+                            systemImage: verification.alwaysRun
+                                ? "checkmark.seal" : "checkmark.circle"
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
     }
 
-    private func short(_ value: String?) -> String {
-        value.map { String($0.prefix(12)) } ?? String(localized: "Unavailable")
+    private var riskSummary: String {
+        plan.readiness.blockers.isEmpty
+            ? String(localized: "No blocking risks")
+            : String(
+                format: String(localized: "Blocking risk count format"),
+                plan.readiness.blockers.count
+            )
     }
 
     private func yesNo(_ value: Bool) -> String {
@@ -289,10 +328,16 @@ private struct LocalTaskInlineIssue: View {
                 Label(issue.title, systemImage: "exclamationmark.triangle.fill")
                     .font(.headline).foregroundStyle(.orange)
                 Text(issue.message).textSelection(.enabled)
-                Text("Next: \(issue.nextAction)")
+                Text(String(localized: "Next") + ": " + issue.nextAction)
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Review new plan") { model.reviewNewLocalTaskPlan() }
+                    if issue.errorCode == "local_task_plan_consumed" {
+                        Button("Open Task Center") { model.openTaskCenterFromLocalTask() }
+                    } else if issue.errorCode == "task_goal_invalid" {
+                        Button("Edit goal") { model.reviewNewLocalTaskPlan() }
+                    } else {
+                        Button("Review new plan") { model.reviewNewLocalTaskPlan() }
+                    }
                     Button("Open Diagnostics") { model.openDiagnosticsFromLocalTask() }
                 }
             }

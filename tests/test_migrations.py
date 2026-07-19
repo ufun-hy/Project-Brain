@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import sys
@@ -21,6 +22,7 @@ from project_brain.schema import (
     MIGRATION_7,
     MIGRATION_8,
     MIGRATION_9,
+    MIGRATION_10,
     SCHEMA_VERSION,
 )
 from project_brain.store import TaskStore
@@ -61,6 +63,74 @@ class MigrationTests(unittest.TestCase):
                 ) VALUES('legacy-task','legacy','legacy-task',1,'test','goal','[]','codex','{}',
                     'pending','2026-01-01','2026-01-01')
                 """)
+
+    def create_v9_plan(self) -> str:
+        self.create_v4_project_and_task([str(Path(sys.executable).resolve())])
+        migrations = {
+            1: MIGRATION_1,
+            2: MIGRATION_2,
+            3: MIGRATION_3,
+            4: MIGRATION_4,
+            5: MIGRATION_5,
+            6: MIGRATION_6,
+            7: MIGRATION_7,
+            8: MIGRATION_8,
+            9: MIGRATION_9,
+        }
+        old = TaskStore(self.database, migrations=migrations, schema_version=9)
+        old.initialize()
+        project = old.get_project("legacy")
+        token = "local-v1:build8-plaintext-plan-token"
+        request = {
+            "schema_version": 1,
+            "source": "local_app",
+            "project_id": "legacy",
+            "task_type": "analysis",
+            "goal": "分析旧数据库中的计划并保留现有运行数据。",
+            "acceptance_criteria": [],
+            "delivery": {"commit": False, "push": False, "draft_pr": False},
+        }
+        request_json = json.dumps(
+            request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        plan = {
+            "schema_version": 1,
+            "plan_id": "build8-plan",
+            "plan_token": token,
+            "project_id": "legacy",
+            "project_name": "legacy",
+            "repository_path": project["repo_path"],
+            "default_branch": project["default_branch"],
+            "base_sha": None,
+            "task_type": "analysis",
+            "goal_summary": request["goal"],
+            "execution_profile_revision": project["config_revision"],
+            "execution_profile_sha256": project["config_sha256"],
+            "delivery": request["delivery"],
+            "created_at": "2026-07-19T00:00:00+00:00",
+            "expires_at": "2026-07-19T00:10:00+00:00",
+        }
+        with old.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO local_task_plans(
+                    plan_token, schema_version, request_sha256, request_json,
+                    plan_json, project_id, project_config_revision,
+                    project_config_sha256, base_sha, created_at, expires_at
+                ) VALUES (?, 1, ?, ?, ?, 'legacy', ?, ?, NULL, ?, ?)
+                """,
+                (
+                    token,
+                    hashlib.sha256(request_json.encode("utf-8")).hexdigest(),
+                    request_json,
+                    json.dumps(plan, ensure_ascii=False, separators=(",", ":")),
+                    project["config_revision"],
+                    project["config_sha256"],
+                    plan["created_at"],
+                    plan["expires_at"],
+                ),
+            )
+        return token
 
     def test_version_one_database_migrates_forward(self) -> None:
         TaskStore(
@@ -179,7 +249,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(columns["accepting_tasks"]["dflt_value"], "1")
         self.assertEqual(columns["registered"]["dflt_value"], "1")
 
-    def test_version_six_migrates_through_v9_with_stable_installation_identity(
+    def test_version_six_migrates_through_current_with_stable_installation_identity(
         self,
     ) -> None:
         TaskStore(
@@ -206,7 +276,7 @@ class MigrationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
             }
-        self.assertEqual(store.schema_version(), 9)
+        self.assertEqual(store.schema_version(), SCHEMA_VERSION)
         self.assertIn("external_acceptance_runs", tables)
         self.assertIn("local_task_plans", tables)
         store.initialize()
@@ -238,7 +308,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIsNone(old_task["delivery"])
         self.assertIsNone(old_task["result"])
         upgraded.initialize()
-        self.assertEqual(upgraded.schema_version(), 9)
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
 
     def test_v9_sql_failure_rolls_back_columns_table_and_version(self) -> None:
         migrations = {
@@ -266,6 +336,79 @@ class MigrationTests(unittest.TestCase):
             }
         self.assertNotIn("local_task_type", columns)
         self.assertNotIn("local_task_plans", tables)
+
+    def test_v9_plan_migrates_without_plaintext_token_and_is_idempotent(self) -> None:
+        token = self.create_v9_plan()
+        upgraded = TaskStore(self.database)
+        upgraded.initialize()
+        with upgraded.connect() as connection:
+            row = connection.execute("SELECT * FROM local_task_plans").fetchone()
+            columns = {
+                item["name"]
+                for item in connection.execute("PRAGMA table_info(local_task_plans)")
+            }
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
+        self.assertIn("plan_token_sha256", columns)
+        self.assertNotIn("plan_token", columns)
+        self.assertEqual(
+            row["plan_token_sha256"], hashlib.sha256(token.encode("utf-8")).hexdigest()
+        )
+        self.assertEqual(row["contract_version"], "1.1.0")
+        self.assertRegex(row["plan_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn(token, row["plan_json"])
+        self.assertNotIn(token.encode("utf-8"), self.database.read_bytes())
+        upgraded.initialize()
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
+
+    def test_v10_failure_rolls_back_plan_columns_data_and_version(self) -> None:
+        token = self.create_v9_plan()
+        migrations = {
+            1: MIGRATION_1,
+            2: MIGRATION_2,
+            3: MIGRATION_3,
+            4: MIGRATION_4,
+            5: MIGRATION_5,
+            6: MIGRATION_6,
+            7: MIGRATION_7,
+            8: MIGRATION_8,
+            9: MIGRATION_9,
+            10: MIGRATION_10 + "\nINVALID SQL;",
+        }
+        with self.assertRaises(sqlite3.DatabaseError):
+            TaskStore(self.database, migrations=migrations, schema_version=10).initialize()
+        with sqlite3.connect(self.database) as connection:
+            connection.row_factory = sqlite3.Row
+            columns = {
+                item["name"]
+                for item in connection.execute("PRAGMA table_info(local_task_plans)")
+            }
+            row = connection.execute("SELECT * FROM local_task_plans").fetchone()
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        self.assertEqual(version, 9)
+        self.assertIn("plan_token", columns)
+        self.assertNotIn("plan_token_sha256", columns)
+        self.assertEqual(row["plan_token"], token)
+
+    def test_v10_data_hook_failure_rolls_back_schema_and_plaintext_plan(self) -> None:
+        token = self.create_v9_plan()
+
+        def fail(_connection):
+            raise RuntimeError("plan authority backfill failed")
+
+        with self.assertRaises(RuntimeError):
+            TaskStore(self.database, data_migrations={10: fail}).initialize()
+        with sqlite3.connect(self.database) as connection:
+            connection.row_factory = sqlite3.Row
+            columns = {
+                item["name"]
+                for item in connection.execute("PRAGMA table_info(local_task_plans)")
+            }
+            row = connection.execute("SELECT * FROM local_task_plans").fetchone()
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        self.assertEqual(version, 9)
+        self.assertIn("plan_token", columns)
+        self.assertNotIn("plan_token_sha256", columns)
+        self.assertEqual(row["plan_token"], token)
 
     def test_v7_data_hook_failure_rolls_back_and_restart_succeeds(self) -> None:
         TaskStore(
@@ -297,7 +440,7 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("external_acceptance_runs", tables)
         restarted = TaskStore(self.database)
         restarted.initialize()
-        self.assertEqual(restarted.schema_version(), 9)
+        self.assertEqual(restarted.schema_version(), SCHEMA_VERSION)
 
     def test_version_seven_pass_is_migrated_to_unattributed_transport_evidence(
         self,
@@ -361,7 +504,7 @@ class MigrationTests(unittest.TestCase):
             event = connection.execute(
                 "SELECT * FROM external_acceptance_events WHERE run_id = 'acceptance-v7'"
             ).fetchone()
-        self.assertEqual(upgraded.schema_version(), 9)
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
         self.assertEqual(run["status"], "mcp_transport_probe_passed")
         self.assertEqual(run["acceptance_contract_version"], 1)
         self.assertEqual(run["ingress"], "local_or_tunneled_mcp_unattributed")

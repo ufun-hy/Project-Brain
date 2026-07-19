@@ -18,6 +18,7 @@ from project_brain.local_tasks import (
 )
 from project_brain.locking import RuntimeLock
 from project_brain.models import TaskStatus
+from project_brain.store import TaskStore
 
 from tests.helpers import CoreFixture, create_remote_clone, executable_script, git
 
@@ -84,6 +85,18 @@ class LocalTaskTests(unittest.TestCase):
         value.update(overrides)
         return value
 
+    def planned(
+        self,
+        request: dict,
+        manager: LocalTaskManager | None = None,
+    ) -> tuple[dict, dict[str, str]]:
+        response = (manager or self.manager).plan(request)
+        plan = response["plan"]
+        return response, {
+            "plan_token": plan["plan_token"],
+            "expected_plan_hash": plan["plan_hash"],
+        }
+
     def test_strict_schema_accepts_only_source_neutral_fields(self) -> None:
         request = self.request()
         self.assertEqual(validate_local_task_request(request)["source"], "local_app")
@@ -111,6 +124,28 @@ class LocalTaskTests(unittest.TestCase):
                 self.request(acceptance_criteria=["验" * 4001, "收" * 4000])
             )
 
+    def test_core_is_unicode_authority_for_whitespace_cjk_emoji_and_combining(self) -> None:
+        goal = "\u3000分析 e\u0301 与 👩‍💻 组合字符，不要修改文件。\u00a0"
+        normalized = validate_local_task_request(self.request(goal=goal))
+        canonical = "分析 e\u0301 与 👩‍💻 组合字符，不要修改文件。"
+        self.assertEqual(normalized["goal"], canonical)
+        response, confirmation = self.planned(self.request(goal=goal))
+        self.assertEqual(response["plan"]["canonical_goal"], canonical)
+        self.assertEqual(response["plan"]["canonical_goal_length"], len(canonical))
+        created = self.manager.create(confirmation)
+        self.assertEqual(created["task"]["goal"], canonical)
+
+        for length, valid in ((9, False), (10, True), (8000, True), (8001, False)):
+            with self.subTest(length=length):
+                request = self.request(goal="界" * length)
+                if valid:
+                    self.assertEqual(len(validate_local_task_request(request)["goal"]), length)
+                else:
+                    with self.assertRaises(InvalidTaskError) as raised:
+                        validate_local_task_request(request)
+                    self.assertEqual(raised.exception.error_code, "task_goal_invalid")
+                    self.assertEqual(raised.exception.constraints["actual"], length)
+
     def test_plan_binds_exact_remote_project_profile_and_delivery(self) -> None:
         response = self.manager.plan(self.request())
         plan = response["plan"]
@@ -123,13 +158,33 @@ class LocalTaskTests(unittest.TestCase):
             plan["execution_profile_sha256"], self.project["config_sha256"]
         )
         self.assertEqual(plan["repository_path"], str(self.repo.resolve()))
-        self.assertTrue(plan["plan_token"].startswith("local-v1:"))
-        reviewed = {key: value for key, value in plan.items() if key != "plan_token"}
+        self.assertTrue(plan["plan_token"].startswith("local-v2:"))
+        reviewed = {
+            key: value
+            for key, value in plan.items()
+            if key not in {"plan_token", "plan_hash", "token_fingerprint"}
+        }
         self.assertEqual(
-            plan["plan_token"],
-            "local-v1:" + sha256(_canonical_json(reviewed).encode("utf-8")).hexdigest(),
+            plan["plan_hash"],
+            sha256(_canonical_json(reviewed).encode("utf-8")).hexdigest(),
         )
+        self.assertEqual(
+            plan["token_fingerprint"],
+            sha256(plan["plan_token"].encode("utf-8")).hexdigest()[:12],
+        )
+        self.assertEqual(plan["contract_version"], "1.2.0")
         self.assertEqual(plan["external_chatgpt_acceptance"], "pending")
+
+    def test_plan_token_is_never_persisted_in_plaintext(self) -> None:
+        response, _ = self.planned(self.request())
+        token = response["plan"]["plan_token"]
+        with self.fixture.store.connect() as connection:
+            row = connection.execute("SELECT * FROM local_task_plans").fetchone()
+        self.assertEqual(
+            row["plan_token_sha256"], sha256(token.encode("utf-8")).hexdigest()
+        )
+        self.assertNotIn(token, row["plan_json"])
+        self.assertNotIn(token.encode("utf-8"), self.fixture.runtime.database.read_bytes())
 
     def test_default_readiness_accepts_the_runtime_lock_held_by_confirmation(self) -> None:
         manager = LocalTaskManager(
@@ -143,23 +198,53 @@ class LocalTaskTests(unittest.TestCase):
             "services": [{"name": "worker", "state": "running"}],
         }
         with patch("project_brain.local_tasks.ServiceManager.status", return_value=service):
-            token = manager.plan(self.request())["plan"]["plan_token"]
+            _, confirmation = self.planned(self.request(), manager)
             with RuntimeLock(self.fixture.runtime.lock_file):
-                created = manager.create(self.request(), plan_token=token)
+                created = manager.create(confirmation)
         self.assertEqual(created["status"], "created")
         self.assertEqual(len(self.fixture.store.list_tasks()), 1)
 
-    def test_plan_expiry_and_request_change_fail_closed(self) -> None:
+    def test_confirmation_uses_only_plan_authority_and_preserves_exact_chinese_goal(self) -> None:
+        goal = "分析当前项目的 README 和代码目录，说明项目用途、主要模块和当前风险。不要修改任何文件。"
+        request = self.request(goal=goal)
+        response, confirmation = self.planned(request)
+        request["goal"] = "客户端在计划后发生的修改绝不能进入任务。"
+        request["delivery"] = {"commit": True, "push": True, "draft_pr": True}
+        restarted_manager = LocalTaskManager(
+            self.fixture.store,
+            self.fixture.runtime,
+            readiness_provider=healthy,
+            clock=lambda: self.now,
+        )
+        created = restarted_manager.create(confirmation)
+        self.assertEqual(response["plan"]["canonical_goal"], goal)
+        self.assertEqual(created["task"]["goal"], goal)
+        self.assertEqual(created["task"]["delivery"], {
+            "commit": False,
+            "push": False,
+            "draft_pr": False,
+        })
+
+    def test_expired_hash_mismatch_and_superseded_plans_fail_closed(self) -> None:
         request = self.request()
-        token = self.manager.plan(request)["plan"]["plan_token"]
-        with self.assertRaises(StateConflictError):
-            self.manager.create(
-                {**request, "goal": "Review a changed goal with enough characters."},
-                plan_token=token,
-            )
+        _, expired = self.planned(request)
         self.now += timedelta(minutes=11)
-        with self.assertRaises(StateConflictError):
-            self.manager.create(request, plan_token=token)
+        with self.assertRaises(StateConflictError) as raised:
+            self.manager.create(expired)
+        self.assertEqual(raised.exception.error_code, "local_task_plan_expired")
+
+        self.now -= timedelta(minutes=11)
+        _, mismatch = self.planned(request)
+        mismatch["expected_plan_hash"] = "0" * 64
+        with self.assertRaises(StateConflictError) as raised:
+            self.manager.create(mismatch)
+        self.assertEqual(raised.exception.error_code, "local_task_plan_hash_mismatch")
+
+        _, superseded = self.planned(request)
+        self.planned({**request, "goal": "Review the newer canonical request and report findings."})
+        with self.assertRaises(StateConflictError) as raised:
+            self.manager.create(superseded)
+        self.assertEqual(raised.exception.error_code, "local_task_plan_superseded")
         self.assertEqual(self.fixture.store.list_tasks(), [])
 
     def test_profile_and_readiness_changes_reject_old_plan(self) -> None:
@@ -171,13 +256,13 @@ class LocalTaskTests(unittest.TestCase):
             clock=lambda: self.now,
         )
         request = self.request()
-        token = manager.plan(request)["plan"]["plan_token"]
+        _, confirmation = self.planned(request, manager)
         readiness.ready = False
         with self.assertRaises(StateConflictError):
-            manager.create(request, plan_token=token)
+            manager.create(confirmation)
 
         readiness.ready = True
-        token = manager.plan(request)["plan"]["plan_token"]
+        _, confirmation = self.planned(request, manager)
         project = self.fixture.store.get_project("project-one")
         project["verification_commands"] = [
             {
@@ -189,7 +274,7 @@ class LocalTaskTests(unittest.TestCase):
         ]
         self.fixture.store.register_project(project)
         with self.assertRaises(StateConflictError):
-            manager.create(request, plan_token=token)
+            manager.create(confirmation)
 
     def test_delivery_can_tighten_but_never_expand_project_policy(self) -> None:
         with self.assertRaises(InvalidTaskError):
@@ -209,7 +294,7 @@ class LocalTaskTests(unittest.TestCase):
 
     def test_concurrent_confirmation_creates_exactly_one_task(self) -> None:
         request = self.request()
-        token = self.manager.plan(request)["plan"]["plan_token"]
+        _, confirmation = self.planned(request)
         barrier = threading.Barrier(2)
         results: list[dict] = []
         errors: list[Exception] = []
@@ -217,7 +302,7 @@ class LocalTaskTests(unittest.TestCase):
         def create() -> None:
             try:
                 barrier.wait()
-                results.append(self.manager.create(request, plan_token=token))
+                results.append(self.manager.create(confirmation))
             except Exception as exc:  # pragma: no cover - diagnostic capture
                 errors.append(exc)
 
@@ -226,15 +311,56 @@ class LocalTaskTests(unittest.TestCase):
             thread.start()
         for thread in threads:
             thread.join()
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            sorted(item["status"] for item in results), ["created", "duplicate"]
-        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["status"], "created")
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], StateConflictError)
+        self.assertEqual(errors[0].error_code, "local_task_plan_consumed")
         self.assertEqual(len(self.fixture.store.list_tasks()), 1)
         task = self.fixture.store.list_tasks()[0]
         self.assertEqual(task["source_type"], "local_app")
         self.assertEqual(task["local_task_type"], "analysis")
         self.assertEqual(task["project_config_sha256"], self.project["config_sha256"])
+
+    def test_repeated_confirmation_fails_closed(self) -> None:
+        _, confirmation = self.planned(self.request())
+        self.assertEqual(self.manager.create(confirmation)["status"], "created")
+        with self.assertRaises(StateConflictError) as raised:
+            self.manager.create(confirmation)
+        self.assertEqual(raised.exception.error_code, "local_task_plan_consumed")
+        self.assertFalse(raised.exception.retryable)
+
+    def test_create_transaction_rolls_back_task_and_plan_consumption(self) -> None:
+        _, confirmation = self.planned(self.request())
+        with patch.object(
+            TaskStore, "_insert_task_record", side_effect=RuntimeError("injected")
+        ), self.assertRaises(RuntimeError):
+            self.manager.create(confirmation)
+        with self.fixture.store.connect() as connection:
+            row = connection.execute("SELECT consumed_at, task_id FROM local_task_plans").fetchone()
+        self.assertIsNone(row["consumed_at"])
+        self.assertIsNone(row["task_id"])
+        self.assertEqual(self.fixture.store.list_tasks(), [])
+        self.assertEqual(self.manager.create(confirmation)["status"], "created")
+
+    def test_transaction_rejects_tampered_persisted_plan_document(self) -> None:
+        _, confirmation = self.planned(self.request())
+        token_sha256 = sha256(confirmation["plan_token"].encode("utf-8")).hexdigest()
+        with self.fixture.store.connect() as connection:
+            row = connection.execute(
+                "SELECT plan_json FROM local_task_plans WHERE plan_token_sha256 = ?",
+                (token_sha256,),
+            ).fetchone()
+            plan = json.loads(row["plan_json"])
+            plan["canonical_goal"] = "Tampered persisted goal must never be created."
+            connection.execute(
+                "UPDATE local_task_plans SET plan_json = ? WHERE plan_token_sha256 = ?",
+                (_canonical_json(plan), token_sha256),
+            )
+        with self.assertRaises(StateConflictError) as raised:
+            self.manager.create(confirmation)
+        self.assertEqual(raised.exception.error_code, "local_task_plan_snapshot_invalid")
+        self.assertEqual(self.fixture.store.list_tasks(), [])
 
     def test_analyze_no_changes_completes_with_persisted_result(self) -> None:
         analyzer = executable_script(
@@ -244,8 +370,8 @@ class LocalTaskTests(unittest.TestCase):
         project = self.fixture.store.get_project("project-one")
         project["codex_command"] = [sys.executable, str(analyzer)]
         self.fixture.store.register_project(project)
-        token = self.manager.plan(self.request())["plan"]["plan_token"]
-        created = self.manager.create(self.request(), plan_token=token)["task"]
+        _, confirmation = self.planned(self.request())
+        created = self.manager.create(confirmation)["task"]
         main_before = git(
             self.repo, "status", "--porcelain=v1", "--untracked-files=all"
         ).stdout
@@ -270,8 +396,8 @@ class LocalTaskTests(unittest.TestCase):
         project["codex_command"] = [sys.executable, str(implementer)]
         self.fixture.store.register_project(project)
         request = self.request("implement")
-        token = self.manager.plan(request)["plan"]["plan_token"]
-        created = self.manager.create(request, plan_token=token)["task"]
+        _, confirmation = self.planned(request)
+        created = self.manager.create(confirmation)["task"]
         main_head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         result = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
         self.assertEqual(result["status"], TaskStatus.AWAITING_REVIEW.value)

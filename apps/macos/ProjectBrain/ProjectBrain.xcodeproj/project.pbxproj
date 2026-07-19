@@ -17,7 +17,9 @@
 		117777777777777777777777 /* CoreCLIContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 217777777777777777777777 /* CoreCLIContractTests.swift */; };
 		118888888888888888888888 /* UserProcessLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 218888888888888888888888 /* UserProcessLock.swift */; };
 		119999999999999999999999 /* UserProcessLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219999999999999999999999 /* UserProcessLockTests.swift */; };
+		13CCCCCCCCCCCCCCCCCCCCCC /* LocalTaskContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23CCCCCCCCCCCCCCCCCCCCCC /* LocalTaskContractTests.swift */; };
 		11AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift */; };
+		12BBBBBBBBBBBBBBBBBBBBBB /* Build9LocalTaskAppProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22BBBBBBBBBBBBBBBBBBBBBB /* Build9LocalTaskAppProbe.swift */; };
 		AA1111111111111111111111 /* FirstTaskGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1111111111111111111111 /* FirstTaskGuide.swift */; };
 		AA2222222222222222222222 /* NewTaskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA2222222222222222222222 /* NewTaskView.swift */; };
 		AA3333333333333333333333 /* FirstTaskGuideTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA3333333333333333333333 /* FirstTaskGuideTests.swift */; };
@@ -107,7 +109,9 @@
 		217777777777777777777777 /* CoreCLIContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreCLIContractTests.swift; sourceTree = "<group>"; };
 		218888888888888888888888 /* UserProcessLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProcessLock.swift; sourceTree = "<group>"; };
 		219999999999999999999999 /* UserProcessLockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProcessLockTests.swift; sourceTree = "<group>"; };
+		23CCCCCCCCCCCCCCCCCCCCCC /* LocalTaskContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTaskContractTests.swift; sourceTree = "<group>"; };
 		21AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationInstanceCoordinator.swift; sourceTree = "<group>"; };
+		22BBBBBBBBBBBBBBBBBBBBBB /* Build9LocalTaskAppProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Build9LocalTaskAppProbe.swift; sourceTree = "<group>"; };
 		BA1111111111111111111111 /* FirstTaskGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstTaskGuide.swift; sourceTree = "<group>"; };
 		BA2222222222222222222222 /* NewTaskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTaskView.swift; sourceTree = "<group>"; };
 		BA3333333333333333333333 /* FirstTaskGuideTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstTaskGuideTests.swift; sourceTree = "<group>"; };
@@ -187,6 +191,7 @@
 			isa = PBXGroup;
 			children = (
 				BA3333333333333333333333 /* FirstTaskGuideTests.swift */,
+				23CCCCCCCCCCCCCCCCCCCCCC /* LocalTaskContractTests.swift */,
 				217777777777777777777777 /* CoreCLIContractTests.swift */,
 				4595CA5CC38BED4393CD84DD /* CoreClientTests.swift */,
 				96D539B3B5F2AD0DBDE7E31F /* CoreModelsTests.swift */,
@@ -224,6 +229,7 @@
 			children = (
 				21AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift */,
 				9A7FB5018744643A08C9F9F4 /* AppModel.swift */,
+				22BBBBBBBBBBBBBBBBBBBBBB /* Build9LocalTaskAppProbe.swift */,
 				C3382C3F973ECDD34F66419A /* ConnectionCenterView.swift */,
 				59DDBAFDFAC4CEAFEFF7CBE9 /* DiagnosticsView.swift */,
 				14FCAD15B7C524000B2925B8 /* ManagementView.swift */,
@@ -442,6 +448,7 @@
 				113333333333333333333333 /* TunnelClientInstallerTests.swift in Sources */,
 				115555555555555555555555 /* ExternalAcceptancePresentationTests.swift in Sources */,
 				119999999999999999999999 /* UserProcessLockTests.swift in Sources */,
+				13CCCCCCCCCCCCCCCCCCCCCC /* LocalTaskContractTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -451,6 +458,7 @@
 			files = (
 				11AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift in Sources */,
 				53C79688C4AB108185FAE3AF /* AppModel.swift in Sources */,
+				12BBBBBBBBBBBBBBBBBBBBBB /* Build9LocalTaskAppProbe.swift in Sources */,
 				2A4C3F35B0919A751D36D877 /* ConnectionCenterView.swift in Sources */,
 				56F2A1498E27C7C937EACE85 /* DiagnosticsView.swift in Sources */,
 				EAC61F0512C15EB4E5B7601E /* ManagementView.swift in Sources */,
@@ -508,7 +516,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ProjectBrain/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -703,7 +711,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ProjectBrain/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

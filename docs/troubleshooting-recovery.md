@@ -16,10 +16,11 @@ running these developer/operator commands manually.
 ## Local task planning and creation
 
 The local task sheet keeps errors visible and offers a recovery action. If the
-project revision/hash, remote Base SHA, readiness, delivery policy, request, or
-ten-minute expiry changed after review, select **Review new plan**. Core will
-not apply a stale token. Repeated confirmation is idempotent and must not be
-worked around by deleting SQLite state.
+project revision/hash, remote Base SHA, readiness, delivery policy, plan hash,
+supersession state, or ten-minute expiry changed after review, select **Review
+new plan**. Core will not apply a stale token. A repeated or concurrent second
+confirmation fails closed; open Task Center to inspect the authoritative task.
+Never work around a conflict by deleting SQLite state.
 
 If readiness is blocked, use **Open Diagnostics** and repair the managed helper,
 Worker, project intake, Git repository, Codex executable, or GitHub publication

@@ -28,17 +28,23 @@ struct UserFacingIssue: Identifiable, Equatable {
     let message: String
     let nextAction: String
     let conflict: ProjectConflict?
+    let field: String?
+    let errorCode: String?
 
     init(
         title: String,
         message: String,
         nextAction: String,
-        conflict: ProjectConflict? = nil
+        conflict: ProjectConflict? = nil,
+        field: String? = nil,
+        errorCode: String? = nil
     ) {
         self.title = title
         self.message = message
         self.nextAction = nextAction
         self.conflict = conflict
+        self.field = field
+        self.errorCode = errorCode
     }
 }
 
@@ -248,14 +254,12 @@ private actor ProductShellBackend {
     }
 
     func createLocalTask(
-        _ request: LocalTaskRequest,
-        planToken: String
-    ) throws -> (LocalTaskCreateResponse, ProductSnapshot) {
-        let client = try requireClient()
-        let response = try client.createLocalTask(request, planToken: planToken)
-        return (
-            response,
-            try loadSnapshot(client: client, selectedTaskID: response.task.taskID)
+        planToken: String,
+        expectedPlanHash: String
+    ) throws -> LocalTaskCreateResponse {
+        try requireClient().createLocalTask(
+            planToken: planToken,
+            expectedPlanHash: expectedPlanHash
         )
     }
 
@@ -326,6 +330,8 @@ final class AppModel: ObservableObject {
     @Published var localTaskRequest = LocalTaskRequest(projectID: "")
     @Published var localTaskPlan: LocalTaskPlanResponse?
     @Published var localTaskIssue: UserFacingIssue?
+    @Published private(set) var localTaskPhase: LocalTaskOperationPhase = .idle
+    @Published private(set) var localTaskTimingMS: [String: Double] = [:]
     @Published var isNewTaskPresented = false
     @Published var shouldShowFirstTaskGuide = false
     @Published private(set) var isBusy = false
@@ -341,6 +347,8 @@ final class AppModel: ObservableObject {
     private var tunnelStatusTask: Task<Void, Never>?
     private var acceptanceChallengeRunID: String?
     private var onboardingExistingProjectID: String?
+    private var localTaskOperation: Task<Void, Never>?
+    private var localTaskOperationID = UUID()
 
     init(
         installer: HelperInstaller = HelperInstaller(),
@@ -657,9 +665,15 @@ final class AppModel: ObservableObject {
     }
 
     func openNewTask(defaultProjectID: String? = nil) {
+        let started = ContinuousClock.now
+        localTaskTimingMS = [:]
+        localTaskPhase = .checkingProject
         guard let project = projects.first(where: {
             $0.projectID == (defaultProjectID ?? selectedProjectID)
-        }) ?? projects.first(where: { $0.acceptingTasks }) else { return }
+        }) ?? projects.first(where: { $0.acceptingTasks }) else {
+            localTaskPhase = .failed
+            return
+        }
         selectedProjectID = project.projectID
         localTaskRequest = LocalTaskRequest(
             projectID: project.projectID,
@@ -669,6 +683,8 @@ final class AppModel: ObservableObject {
         localTaskPlan = nil
         localTaskIssue = nil
         isNewTaskPresented = true
+        localTaskPhase = .idle
+        localTaskTimingMS["open_sheet"] = Self.elapsedMilliseconds(since: started)
     }
 
     func updateLocalTaskType(_ type: LocalTaskType) {
@@ -693,37 +709,111 @@ final class AppModel: ObservableObject {
     }
 
     func planLocalTask() {
+        guard !localTaskPhase.isBusy else { return }
+        let requestSnapshot = localTaskRequest
+        let operationID = UUID()
+        localTaskOperationID = operationID
         localTaskPlan = nil
         localTaskIssue = nil
-        runLocalTaskOperation {
-            try await self.backend.planLocalTask(self.localTaskRequest)
-        } onSuccess: { self.localTaskPlan = $0 }
+        let feedbackStarted = ContinuousClock.now
+        localTaskPhase = .buildingPlan
+        localTaskTimingMS["plan_click_feedback"] = Self.elapsedMilliseconds(
+            since: feedbackStarted
+        )
+        localTaskOperation = Task {
+            do {
+                let response = try await backend.planLocalTask(requestSnapshot)
+                guard !Task.isCancelled, localTaskOperationID == operationID else { return }
+                localTaskPlan = response
+                localTaskTimingMS.merge(response.timingMS) { _, latest in latest }
+                localTaskPhase = .idle
+            } catch {
+                guard !Task.isCancelled, localTaskOperationID == operationID else { return }
+                presentLocalTask(error)
+                localTaskPhase = .failed
+            }
+            localTaskOperation = nil
+        }
     }
 
     func createLocalTask() {
-        guard let plan = localTaskPlan else { return }
+        guard let plan = localTaskPlan, !localTaskPhase.isBusy else { return }
+        let operationID = UUID()
+        localTaskOperationID = operationID
+        let token = plan.plan.planToken
+        let expectedHash = plan.plan.planHash
         localTaskIssue = nil
-        runLocalTaskOperation {
-            try await self.backend.createLocalTask(
-                self.localTaskRequest,
-                planToken: plan.plan.planToken
-            )
-        } onSuccess: { _, snapshot in
-            self.apply(snapshot)
-            self.selectedSection = .tasks
-            self.localTaskPlan = nil
-            self.isNewTaskPresented = false
+        let feedbackStarted = ContinuousClock.now
+        localTaskPhase = .creatingTask
+        localTaskTimingMS["create_click_feedback"] = Self.elapsedMilliseconds(
+            since: feedbackStarted
+        )
+        localTaskOperation = Task {
+            do {
+                let response = try await backend.createLocalTask(
+                    planToken: token,
+                    expectedPlanHash: expectedHash
+                )
+                guard localTaskOperationID == operationID else { return }
+                localTaskPhase = .openingTask
+                let updateStarted = ContinuousClock.now
+                tasks.removeAll { $0.taskID == response.summary.taskID }
+                tasks.insert(response.summary, at: 0)
+                if let index = projects.firstIndex(where: {
+                    $0.projectID == response.project.projectID
+                }) {
+                    projects[index] = response.project
+                }
+                selectedTask = TaskDetail(summary: response.summary)
+                selectedProjectID = response.project.projectID
+                selectedSection = .tasks
+                localTaskPlan = nil
+                isNewTaskPresented = false
+                localTaskTimingMS.merge(response.timingMS) { _, latest in latest }
+                localTaskTimingMS["post_create_ui_update"] = Self.elapsedMilliseconds(
+                    since: updateStarted
+                )
+                localTaskPhase = .idle
+                localTaskOperation = nil
+                schedulePostCreateRefresh(
+                    taskID: response.summary.taskID,
+                    after: response.nextRefreshAfterMS
+                )
+            } catch {
+                guard localTaskOperationID == operationID else { return }
+                presentLocalTask(error)
+                localTaskPhase = .failed
+                localTaskOperation = nil
+            }
+        }
+    }
+
+    func cancelLocalTaskSheet() {
+        if localTaskPhase.canCancel {
+            localTaskOperationID = UUID()
+            localTaskOperation?.cancel()
+            localTaskOperation = nil
+            localTaskPhase = .idle
+            isNewTaskPresented = false
+        } else if !localTaskPhase.isBusy {
+            isNewTaskPresented = false
         }
     }
 
     func reviewNewLocalTaskPlan() {
         localTaskPlan = nil
         localTaskIssue = nil
+        localTaskPhase = .idle
     }
 
     func openDiagnosticsFromLocalTask() {
         isNewTaskPresented = false
         selectedSection = .diagnostics
+    }
+
+    func openTaskCenterFromLocalTask() {
+        isNewTaskPresented = false
+        selectedSection = .tasks
     }
 
     func createFirstTaskFromGuide() {
@@ -1170,23 +1260,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func runLocalTaskOperation<Value: Sendable>(
-        _ operation: @escaping () async throws -> Value,
-        onSuccess: @escaping @MainActor (Value) -> Void
-    ) {
-        guard !isBusy else { return }
-        isBusy = true
-        Task {
-            do {
-                let value = try await operation()
-                onSuccess(value)
-            } catch {
-                presentLocalTask(error)
-            }
-            isBusy = false
-        }
-    }
-
     private func offerFirstTaskGuideIfNeeded() {
         guard onboarding.completed,
               firstTaskGuideStore.shouldPresent(taskCount: tasks.count) else { return }
@@ -1195,21 +1268,93 @@ final class AppModel: ObservableObject {
     }
 
     private func presentLocalTask(_ error: Error) {
-        if let core = error as? CoreClientError {
+        if let core = error as? CoreClientError, case .core(let failure) = core {
+            let copy = localTaskErrorCopy(for: failure)
+            if failure.field == "goal" || failure.nextActionCode == "edit_goal" {
+                localTaskPlan = nil
+            } else if failure.nextActionCode == "review_new_plan" {
+                localTaskPlan = nil
+            }
             localTaskIssue = UserFacingIssue(
-                title: core.userTitle,
-                message: core.localizedDescription,
-                nextAction: core.nextAction
+                title: copy.title,
+                message: copy.message,
+                nextAction: copy.nextAction,
+                field: failure.field,
+                errorCode: failure.errorCode
             )
         } else {
             localTaskIssue = UserFacingIssue(
-                title: String(localized: "Review task details"),
-                message: SecretRedactor.redact(error.localizedDescription),
+                title: String(localized: "Task could not be created"),
+                message: String(localized: "Project Brain could not complete this task action."),
                 nextAction: String(
-                    localized: "Correct the fields or open Diagnostics, then review a new plan."
+                    localized: "Open Diagnostics, then try the task action again."
                 )
             )
         }
+    }
+
+    private func localTaskErrorCopy(
+        for failure: CoreFailure
+    ) -> (title: String, message: String, nextAction: String) {
+        switch failure.errorCode {
+        case "task_goal_invalid":
+            let minimum = failure.constraints["minimum"] ?? 10
+            let maximum = failure.constraints["maximum"] ?? 8_000
+            let actual = failure.constraints["actual"] ?? 0
+            return (
+                String(localized: "Check the task goal"),
+                String(
+                    format: String(localized: "Goal length constraint format"),
+                    minimum,
+                    maximum,
+                    actual
+                ),
+                String(localized: "Edit the goal, then review a new plan.")
+            )
+        case "local_task_plan_expired", "local_task_plan_superseded",
+             "local_task_plan_hash_mismatch", "local_task_plan_snapshot_invalid",
+             "local_task_project_changed", "local_task_base_changed",
+             "local_task_readiness_changed", "local_task_plan_unknown":
+            return (
+                String(localized: "Execution plan changed"),
+                String(localized: "The reviewed plan is no longer current."),
+                String(localized: "Review a new execution plan before creating the task.")
+            )
+        case "local_task_plan_consumed":
+            return (
+                String(localized: "Task was already created"),
+                String(localized: "This execution plan has already been used."),
+                String(localized: "Open Task Center to view the created task.")
+            )
+        default:
+            return (
+                String(localized: "Task needs attention"),
+                String(localized: "Project Brain safely blocked this task action."),
+                String(localized: "Open Diagnostics, then review a new plan.")
+            )
+        }
+    }
+
+    private func schedulePostCreateRefresh(taskID: String, after milliseconds: Int) {
+        localTaskTimingMS["background_refresh_delay"] = Double(max(0, milliseconds))
+        Task {
+            try? await Task.sleep(for: .milliseconds(max(0, milliseconds)))
+            let started = ContinuousClock.now
+            do {
+                selectedTask = try await backend.task(taskID)
+                localTaskTimingMS["background_refresh"] = Self.elapsedMilliseconds(
+                    since: started
+                )
+            } catch { /* the observation loop remains the recovery authority */ }
+        }
+    }
+
+    private static func elapsedMilliseconds(
+        since started: ContinuousClock.Instant
+    ) -> Double {
+        let duration = started.duration(to: .now)
+        return Double(duration.components.seconds) * 1_000
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000
     }
 
     private func present(_ error: Error) {

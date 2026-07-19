@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -78,7 +79,64 @@ def create_installation_identity(connection: sqlite3.Connection) -> None:
     )
 
 
+def migrate_local_task_plan_authority(connection: sqlite3.Connection) -> None:
+    """Replace replayable Build 8 tokens with hashes and canonical snapshots."""
+
+    # Ensure the one-time plaintext Build 8 value is overwritten when its row
+    # is rewritten, without vacuuming, replacing, or otherwise clearing the DB.
+    connection.execute("PRAGMA secure_delete = ON")
+
+    def canonical(value: object) -> str:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    rows = connection.execute(
+        "SELECT * FROM local_task_plans ORDER BY created_at, plan_token_sha256"
+    ).fetchall()
+    for row in rows:
+        raw_token = str(row["plan_token_sha256"])
+        token_sha256 = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        request = json.loads(row["canonical_request_json"])
+        request_json = canonical(request)
+        request_sha256 = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+        plan = json.loads(row["plan_json"])
+        plan.pop("plan_token", None)
+        plan.pop("plan_hash", None)
+        plan.pop("token_fingerprint", None)
+        plan.setdefault("canonical_goal", request.get("goal", ""))
+        plan.setdefault("canonical_goal_length", len(plan["canonical_goal"]))
+        plan.setdefault("goal_constraints", {"minimum": 10, "maximum": 8000})
+        plan.setdefault("contract_version", "1.1.0")
+        plan_sha256 = hashlib.sha256(canonical(plan).encode("utf-8")).hexdigest()
+        plan["plan_hash"] = plan_sha256
+        plan["token_fingerprint"] = token_sha256[:12]
+        connection.execute(
+            """
+            UPDATE local_task_plans
+            SET plan_token_sha256 = ?, canonical_request_sha256 = ?,
+                canonical_request_json = ?, plan_json = ?, plan_sha256 = ?,
+                token_fingerprint = ?, contract_version = ?
+            WHERE plan_token_sha256 = ?
+            """,
+            (
+                token_sha256,
+                request_sha256,
+                request_json,
+                canonical(plan),
+                plan_sha256,
+                token_sha256[:12],
+                "1.1.0",
+                raw_token,
+            ),
+        )
+
+
 DATA_MIGRATIONS = {
     5: backfill_project_snapshots,
     7: create_installation_identity,
+    10: migrate_local_task_plan_authority,
 }

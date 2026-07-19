@@ -77,7 +77,7 @@ final class CoreClientTests: XCTestCase {
         let runner = CapturingCoreRunner(result: .init(
             exitCode: 2,
             stdout: Data(),
-            stderr: Data(#"{"status":"error","error_category":"configuration","error":"token=ghp_abcdefghijklmnopqrstuvwxyz1234567890"}"#.utf8)
+            stderr: Data(#"{"status":"error","error_category":"configuration","error_code":"local_task_plan_expired","field":"goal","constraints":{"minimum":10,"maximum":8000,"actual":9},"retryable":true,"next_action_code":"review_new_plan","correlation_id":"correlation-1","error":"token=ghp_abcdefghijklmnopqrstuvwxyz1234567890"}"#.utf8)
         ))
         let client = try CoreClient(
             executable: URL(filePath: "/tmp/project-brain"),
@@ -86,11 +86,17 @@ final class CoreClientTests: XCTestCase {
         )
         XCTAssertThrowsError(try client.projects()) { error in
             guard let clientError = error as? CoreClientError,
-                  case .core(let category, let message) = clientError else {
+                  case .core(let failure) = clientError else {
                 return XCTFail("unexpected error: \(error)")
             }
-            XCTAssertEqual(category, "configuration")
-            XCTAssertFalse(message.contains("ghp_"))
+            XCTAssertEqual(failure.category, "configuration")
+            XCTAssertEqual(failure.errorCode, "local_task_plan_expired")
+            XCTAssertEqual(failure.field, "goal")
+            XCTAssertEqual(failure.constraints["minimum"], 10)
+            XCTAssertTrue(failure.retryable)
+            XCTAssertEqual(failure.nextActionCode, "review_new_plan")
+            XCTAssertEqual(failure.correlationID, "correlation-1")
+            XCTAssertFalse(failure.diagnosticMessage.contains("ghp_"))
         }
     }
 
@@ -134,8 +140,7 @@ final class CoreClientTests: XCTestCase {
             .acceptanceTaskCreate("project-1", planToken: "v1:token"),
             .localTaskPlan(.init(projectID: "project-1", goal: "Review the repository.")),
             .localTaskCreate(
-                .init(projectID: "project-1", goal: "Review the repository."),
-                planToken: "local-v1:token"
+                .init(planToken: "local-v2:token", expectedPlanHash: String(repeating: "a", count: 64))
             ),
         ]
         for command in commands {
@@ -148,7 +153,7 @@ final class CoreClientTests: XCTestCase {
     }
 
     func testLocalTaskUsesFixedArgvAndStructuredStdin() throws {
-        let response = #"{"status":"planned","plan":{"schema_version":1,"plan_id":"p","plan_token":"local-v1:t","project_id":"project-1","project_name":"Project","repository_path":"/repo","default_branch":"main","base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","task_type":"analysis","goal_summary":"Review repository","acceptance_criteria":[],"execution_profile_revision":1,"execution_profile_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","codex_adapter":"codex","codex_executable":"codex","worktree_root":"/worktrees","verification":[],"delivery":{"commit":false,"push":false,"draft_pr":false},"readiness":{"status":"healthy","ready":true,"checks":[],"blockers":[],"external_chatgpt_acceptance":"pending"},"created_at":"2026-07-19T00:00:00Z","expires_at":"2026-07-19T00:10:00Z","external_chatgpt_acceptance":"pending"}}"#
+        let response = #"{"status":"planned","plan":{"schema_version":1,"contract_version":"1.2.0","plan_id":"p","plan_token":"local-v2:t","plan_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","token_fingerprint":"dddddddddddd","project_id":"project-1","project_name":"Project","repository_path":"/repo","default_branch":"main","base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","task_type":"analysis","canonical_goal":"Review repository","canonical_goal_length":17,"goal_constraints":{"minimum":10,"maximum":8000},"goal_summary":"Review repository","acceptance_criteria":[],"execution_profile_revision":1,"execution_profile_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","codex_adapter":"codex","codex_executable":"codex","worktree_root":"/worktrees","verification":[],"delivery":{"commit":false,"push":false,"draft_pr":false},"readiness":{"status":"healthy","ready":true,"checks":[],"blockers":[],"external_chatgpt_acceptance":"pending"},"created_at":"2026-07-19T00:00:00Z","expires_at":"2026-07-19T00:10:00Z","external_chatgpt_acceptance":"pending"},"timing_ms":{"core_operation_total":1.0}}"#
         let runner = CapturingCoreRunner(result: .init(
             exitCode: 0,
             stdout: Data(response.utf8),
@@ -183,6 +188,34 @@ final class CoreClientTests: XCTestCase {
         XCTAssertNil(object["argv"])
         XCTAssertNil(object["cwd"])
         XCTAssertNil(object["environment"])
+    }
+
+    func testLocalTaskConfirmationUsesTokenHashOnlyOverStdin() throws {
+        let runtime = URL(filePath: "/Users/example/.project-brain")
+        let contract = try repositoryCLIContractDocument().contract
+        let token = "local-v2:opaque-token"
+        let planHash = String(repeating: "a", count: 64)
+        let command = CoreCommand.localTaskCreate(.init(
+            planToken: token,
+            expectedPlanHash: planHash
+        ))
+        let arguments = command.arguments(runtimeRoot: runtime, cliContract: contract)
+        XCTAssertEqual(arguments, [
+            "--runtime-root", "/Users/example/.project-brain",
+            "tasks", "local-create", "--json",
+        ])
+        XCTAssertFalse(arguments.contains(token))
+        let input = try XCTUnwrap(command.standardInput())
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: input) as? [String: String]
+        )
+        XCTAssertEqual(object, [
+            "plan_token": token,
+            "expected_plan_hash": planHash,
+        ])
+        XCTAssertNil(object["goal"])
+        XCTAssertNil(object["project_id"])
+        XCTAssertNil(object["delivery"])
     }
 
     func testAcceptanceCommandsUseOnlyFixedCoreArgumentsAndExposeNoPassCommand() throws {

@@ -68,7 +68,7 @@ final class HelperInstallerTests: XCTestCase {
         )
         XCTAssertEqual(installed.action, .installed)
         XCTAssertEqual(installed.version, "project-brain 0.8.0")
-        XCTAssertEqual(installed.cliContractVersion, "1.1.0")
+        XCTAssertEqual(installed.cliContractVersion, "1.2.0")
         XCTAssertEqual(installed.cliContractSHA256, contractDocument.sha256)
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: installed.destination.path))
         XCTAssertTrue(installed.destination.path.hasPrefix("/"))

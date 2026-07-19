@@ -60,7 +60,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.projectbrain.ProductBrain
         PRODUCT_NAME: Project Brain
         MARKETING_VERSION: 0.8.0
-        CURRENT_PROJECT_VERSION: 8
+        CURRENT_PROJECT_VERSION: 9
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: ProjectBrain/Info.plist
   ProjectBrainTests:

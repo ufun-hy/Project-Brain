@@ -168,6 +168,37 @@ public enum LocalTaskType: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum LocalTaskOperationPhase: String, Equatable, Sendable {
+    case idle
+    case checkingProject
+    case buildingPlan
+    case creatingTask
+    case openingTask
+    case failed
+
+    public var isBusy: Bool {
+        switch self {
+        case .checkingProject, .buildingPlan, .creatingTask, .openingTask: true
+        case .idle, .failed: false
+        }
+    }
+
+    public var canCancel: Bool {
+        self == .checkingProject || self == .buildingPlan
+    }
+
+    public var titleKey: String {
+        switch self {
+        case .idle: "Ready"
+        case .checkingProject: "Checking project…"
+        case .buildingPlan: "Building execution plan…"
+        case .creatingTask: "Creating task record…"
+        case .openingTask: "Opening Task Center…"
+        case .failed: "Needs attention"
+        }
+    }
+}
+
 public struct LocalTaskDelivery: Codable, Equatable, Sendable {
     public var commit: Bool
     public var push: Bool
@@ -219,6 +250,26 @@ public struct LocalTaskRequest: Codable, Equatable, Sendable {
     }
 }
 
+public struct LocalTaskConfirmation: Codable, Equatable, Sendable {
+    public let planToken: String
+    public let expectedPlanHash: String
+
+    public init(planToken: String, expectedPlanHash: String) {
+        self.planToken = planToken
+        self.expectedPlanHash = expectedPlanHash
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case planToken = "plan_token"
+        case expectedPlanHash = "expected_plan_hash"
+    }
+}
+
+public struct LocalTaskGoalConstraints: Codable, Equatable, Sendable {
+    public let minimum: Int
+    public let maximum: Int
+}
+
 public struct LocalTaskPlanCheck: Codable, Identifiable, Equatable, Sendable {
     public let name: String
     public let status: String
@@ -260,14 +311,20 @@ public struct LocalTaskVerificationDescription: Codable, Identifiable, Equatable
 
 public struct LocalTaskPlan: Codable, Equatable, Sendable {
     public let schemaVersion: Int
+    public let contractVersion: String
     public let planID: String
     public let planToken: String
+    public let planHash: String
+    public let tokenFingerprint: String
     public let projectID: String
     public let projectName: String
     public let repositoryPath: String
     public let defaultBranch: String
     public let baseSHA: String?
     public let taskType: LocalTaskType
+    public let canonicalGoal: String
+    public let canonicalGoalLength: Int
+    public let goalConstraints: LocalTaskGoalConstraints
     public let goalSummary: String
     public let acceptanceCriteria: [String]
     public let executionProfileRevision: Int
@@ -285,14 +342,20 @@ public struct LocalTaskPlan: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case verification, delivery, readiness
         case schemaVersion = "schema_version"
+        case contractVersion = "contract_version"
         case planID = "plan_id"
         case planToken = "plan_token"
+        case planHash = "plan_hash"
+        case tokenFingerprint = "token_fingerprint"
         case projectID = "project_id"
         case projectName = "project_name"
         case repositoryPath = "repository_path"
         case defaultBranch = "default_branch"
         case baseSHA = "base_sha"
         case taskType = "task_type"
+        case canonicalGoal = "canonical_goal"
+        case canonicalGoalLength = "canonical_goal_length"
+        case goalConstraints = "goal_constraints"
         case goalSummary = "goal_summary"
         case acceptanceCriteria = "acceptance_criteria"
         case executionProfileRevision = "execution_profile_revision"
@@ -309,12 +372,42 @@ public struct LocalTaskPlan: Codable, Equatable, Sendable {
 public struct LocalTaskPlanResponse: Codable, Equatable, Sendable {
     public let status: String
     public let plan: LocalTaskPlan
+    public let timingMS: [String: Double]
+
+    enum CodingKeys: String, CodingKey {
+        case status, plan
+        case timingMS = "timing_ms"
+    }
+}
+
+public struct LocalTaskCreationEvidence: Codable, Equatable, Sendable {
+    public let planSHA256: String
+    public let canonicalRequestSHA256: String
+    public let createdAt: String?
+    public let transaction: String
+
+    enum CodingKeys: String, CodingKey {
+        case transaction
+        case planSHA256 = "plan_sha256"
+        case canonicalRequestSHA256 = "canonical_request_sha256"
+        case createdAt = "created_at"
+    }
 }
 
 public struct LocalTaskCreateResponse: Codable, Equatable, Sendable {
     public let status: String
-    public let plan: LocalTaskPlan
-    public let task: TaskSummary
+    public let summary: TaskSummary
+    public let project: ProjectSummary
+    public let creationEvidence: LocalTaskCreationEvidence
+    public let nextRefreshAfterMS: Int
+    public let timingMS: [String: Double]
+
+    enum CodingKeys: String, CodingKey {
+        case status, summary, project
+        case creationEvidence = "creation_evidence"
+        case nextRefreshAfterMS = "next_refresh_after_ms"
+        case timingMS = "timing_ms"
+    }
 }
 
 public struct CoreStatusResponse: Codable, Equatable, Sendable {
@@ -796,6 +889,36 @@ public struct TaskDetail: Codable, Equatable, Sendable {
     public let verificationSet: VerificationSetSummary?
     public let reviews: [ReviewSummary]
     public let events: [TaskEvent]
+
+    public init(summary: TaskSummary) {
+        self.taskID = summary.taskID
+        self.projectID = summary.projectID
+        self.project = summary.project
+        self.goal = summary.goal
+        self.sourceType = summary.sourceType
+        self.localTaskType = summary.localTaskType
+        self.status = summary.status
+        self.attemptPhase = summary.attemptPhase
+        self.attemptCount = summary.attemptCount
+        self.branch = summary.branch
+        self.commit = summary.commit
+        self.headSHA = summary.headSHA
+        self.prURL = summary.prURL
+        self.lastError = summary.lastError
+        self.nextAction = summary.nextAction
+        self.baseSHA = nil
+        self.projectConfigRevision = summary.projectConfigRevision
+        self.projectConfigSHA256 = summary.projectConfigSHA256
+        self.delivery = nil
+        self.result = nil
+        self.createdAt = summary.createdAt
+        self.updatedAt = summary.updatedAt
+        self.acceptanceCriteria = []
+        self.verification = []
+        self.verificationSet = nil
+        self.reviews = []
+        self.events = []
+    }
 
     public var changedFiles: [String] {
         for event in events.reversed() {

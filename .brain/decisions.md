@@ -220,3 +220,20 @@ verification seal, optional bounded push/Draft PR, review, recovery, and
 cleanup rules. ChatGPT, Secure MCP Tunnel, and Gmail are optional or separate
 ingresses; local success never changes external ChatGPT acceptance from
 Pending.
+
+## D-025: Make the persisted plan the sole confirmation authority
+
+Build 9 moves local-task plan authority to schema v10. Core canonicalizes the
+request once during planning, binds it to the exact project configuration and
+remote Base, persists request and plan SHA-256 values, and stores only the
+SHA-256 of the transient `local-v2:` token. The App confirms with only the
+opaque token and expected plan hash; it never rebuilds goal, task type, project,
+delivery, executable, verification, or Base fields from mutable SwiftUI state.
+
+RuntimeLock protects the minimal external revalidation path. The task insert
+and one-time token consumption share one immediate SQLite transaction. Expiry,
+hash mismatch, supersession, repetition, and concurrent second consumption all
+fail closed. The minimal create response opens Task Center immediately; one
+selected-task refresh runs in the background. CLI contract 1.2.0 makes this
+request/confirmation split explicit. External ChatGPT acceptance remains
+Pending and is not inferred from any Build 9 local or artifact test.

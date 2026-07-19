@@ -66,25 +66,25 @@ jobs:
           test -f "${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app/Contents/Resources/project-brain-cli-contract.json"
           test -f "${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app/Contents/Resources/tunnel-client-compatibility.json"
           test ! -e "${{ runner.temp }}/DerivedData/Build/Products/Debug/Project Brain.app/Contents/Resources/tunnel-client"
-      - name: Build unsigned internal Local Tasks Build 8 DMG, ZIP, and manifest
+      - name: Build unsigned internal Local Tasks Build 9 DMG, ZIP, and manifest
         env:
           PROJECT_BRAIN_BUNDLED_HELPER: ${{ runner.temp }}/helper-dist/project-brain
           PROJECT_BRAIN_RC_DERIVED_DATA: ${{ runner.temp }}/RC1DerivedData
-          PROJECT_BRAIN_RC_OUTPUT_DIR: ${{ runner.temp }}/Project-Brain-Local-Tasks-Build8-arm64
+          PROJECT_BRAIN_RC_OUTPUT_DIR: ${{ runner.temp }}/Project-Brain-Local-Tasks-Build9-arm64
           PROJECT_BRAIN_CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: scripts/build-rc-artifact.sh
-      - name: Verify Build 8 manifest and artifact SHA-256
-        run: python scripts/verify-rc-artifact.py "${{ runner.temp }}/Project-Brain-Local-Tasks-Build8-arm64"
-      - name: Verify Build 8 mounted DMG installation layout
-        run: scripts/verify-rc-dmg-layout.sh "${{ runner.temp }}/Project-Brain-Local-Tasks-Build8-arm64/Project-Brain-Local-Tasks-Build8-arm64.dmg"
-      - name: Verify final DMG embedded helper local Analyze task and schema upgrade
-        run: python scripts/verify-bundled-helper-local-task.py "${{ runner.temp }}/Project-Brain-Local-Tasks-Build8-arm64/Project-Brain-Local-Tasks-Build8-arm64.dmg"
+      - name: Verify Build 9 manifest and artifact SHA-256
+        run: python scripts/verify-rc-artifact.py "${{ runner.temp }}/Project-Brain-Local-Tasks-Build9-arm64"
+      - name: Verify Build 9 mounted DMG installation layout
+        run: scripts/verify-rc-dmg-layout.sh "${{ runner.temp }}/Project-Brain-Local-Tasks-Build9-arm64/Project-Brain-Local-Tasks-Build9-arm64.dmg"
+      - name: Verify final DMG App and embedded helper local Analyze task and schema upgrade
+        run: python scripts/verify-bundled-helper-local-task.py "${{ runner.temp }}/Project-Brain-Local-Tasks-Build9-arm64/Project-Brain-Local-Tasks-Build9-arm64.dmg" --evidence-output "${{ runner.temp }}/Project-Brain-Local-Tasks-Build9-arm64/build9-timing-evidence.json"
       - name: Verify final DMG and Applications copies have one process and management window
-        run: scripts/verify-final-app-single-instance.sh "${{ runner.temp }}/Project-Brain-Local-Tasks-Build8-arm64/Project-Brain-Local-Tasks-Build8-arm64.dmg"
+        run: scripts/verify-final-app-single-instance.sh "${{ runner.temp }}/Project-Brain-Local-Tasks-Build9-arm64/Project-Brain-Local-Tasks-Build9-arm64.dmg"
       - name: Verify Gmail legacy isolation
         run: git diff --exit-code 7259acfa1c38e30f3f8c2126eb7c7c3f8c271e3f -- experiments/gmail-inbox/
       - uses: actions/upload-artifact@v4
         with:
-          name: Project-Brain-Local-Tasks-Build8-arm64
-          path: ${{ runner.temp }}/Project-Brain-Local-Tasks-Build8-arm64
+          name: Project-Brain-Local-Tasks-Build9-arm64
+          path: ${{ runner.temp }}/Project-Brain-Local-Tasks-Build9-arm64
           retention-days: 7

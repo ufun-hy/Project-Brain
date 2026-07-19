@@ -36,7 +36,7 @@ final class CoreCLIContractTests: XCTestCase {
     func testRepositoryContractIsValidAndVersioned() throws {
         let document = try repositoryCLIContractDocument()
         XCTAssertEqual(document.contract.schemaVersion, 1)
-        XCTAssertEqual(document.contract.contractVersion, "1.1.0")
+        XCTAssertEqual(document.contract.contractVersion, "1.2.0")
         XCTAssertEqual(document.contract.coreVersion, "0.8.0")
         XCTAssertEqual(document.sha256.count, 64)
     }
@@ -51,6 +51,7 @@ final class CoreCLIContractTests: XCTestCase {
     func testLocalTaskContractUsesFixedCommandsAndStdinJSON() throws {
         let operation = try repositoryCLIContractDocument().contract.operations.localTask
         XCTAssertEqual(operation.requestSchemaVersion, 1)
+        XCTAssertEqual(operation.confirmationSchemaVersion, 1)
         XCTAssertEqual(operation.transport, "stdin_json")
         XCTAssertEqual(operation.planCommandPath, ["tasks", "local-plan"])
         XCTAssertEqual(operation.createCommandPath, ["tasks", "local-create"])
@@ -62,7 +63,7 @@ final class CoreCLIContractTests: XCTestCase {
             as: UTF8.self
         )
         XCTAssertThrowsError(try CoreCLIContractDocument(
-            data: Data(current.replacingOccurrences(of: "1.1.0", with: "1.0.0").utf8)
+            data: Data(current.replacingOccurrences(of: "1.2.0", with: "1.1.0").utf8)
         ))
         XCTAssertThrowsError(try CoreCLIContractDocument(
             data: Data(current.replacingOccurrences(of: "0.8.0", with: "0.7.0").utf8)

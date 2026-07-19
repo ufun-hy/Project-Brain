@@ -1,8 +1,9 @@
 {
-  "contract_version": "1.1.0",
+  "contract_version": "1.2.0",
   "core_version": "0.8.0",
   "operations": {
     "local_task": {
+      "confirmation_schema_version": 1,
       "request_schema_version": 1,
       "transport": "stdin_json",
       "plan_command_path": [
@@ -14,8 +15,7 @@
         "local-create"
       ],
       "options": {
-        "json": "--json",
-        "plan_token": "--plan-token"
+        "json": "--json"
       }
     },
     "native_onboarding": {

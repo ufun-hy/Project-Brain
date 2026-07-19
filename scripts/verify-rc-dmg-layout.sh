@@ -31,4 +31,4 @@ test -f "$APP/Contents/Resources/project-brain-cli-contract.json"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "8"
 test "$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' "$APP/Contents/Info.plist")" = "true"
 
-echo "Build 8 mounted DMG installation layout verification passed"
+echo "Build 9 mounted DMG installation layout verification passed"

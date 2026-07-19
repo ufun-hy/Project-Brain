@@ -28,18 +28,20 @@ acceptance remain separate Pending gates.
 
 The app embeds a self-contained Core helper and can import a user-downloaded,
 reviewed Tunnel Client into its private App Support directory. Both installers
-use atomic replacement and rollback. Build 8 also binds the App and helper
+use atomic replacement and rollback. Build 9 binds the App and helper
 to one immutable, versioned CLI contract, upgrades a stale same-version helper
-by SHA-256, and enforces one user process and one management window. Build 8
-adds the strict stdin JSON local-task contract, schema-v9 plan/execution
-snapshots, one-time guided first task, and persisted analysis results. Build 4
+by SHA-256, and enforces one user process and one management window. It uses a
+schema-v10 canonical plan record, stores only the plan-token SHA-256, and lets
+confirmation submit only the opaque token plus reviewed plan hash. Build 8
+introduced strict local-task intake, guided first run, and persisted analysis
+results. Build 4
 added an MCP transport-probe
 wizard with explicit external-acceptance Pending state. The optional fixed
 one-document Draft PR task remains locked because the current Tunnel contract
 does not provide trusted ChatGPT control-plane attestation. The unsigned
-internal Build 8 artifact, first-run guide, and current
+internal Build 9 artifact, first-run guide, and current
 external limits are documented in [`docs/product-shell.md`](docs/product-shell.md)
-and [`docs/product-shell-build8-local-task-verification.md`](docs/product-shell-build8-local-task-verification.md).
+and [`docs/product-shell-build9-plan-confirm-verification.md`](docs/product-shell-build9-plan-confirm-verification.md).
 
 ![Project Brain first-run welcome](docs/images/product-shell-onboarding.png)
 
@@ -277,11 +279,12 @@ scripts/verify-core.sh
 
 The same command runs in Linux CI. macOS CI additionally packages the frozen
 helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
-`Project Brain.app`, creates an unsigned internal Build 8 DMG/ZIP plus build
+`Project Brain.app`, creates an unsigned internal Build 9 DMG/ZIP plus build
 manifest, verifies all artifact hashes, verifies the embedded helper and static
 Tunnel compatibility manifest, executes existing-project onboarding through the
-final app's embedded helper, migrates a preserved schema-v8 database and runs a
-no-change Analyze task through the final DMG helper, launches the final DMG and Applications copies to
+final app's embedded helper, migrates a preserved schema-v9 database and runs a
+no-change exact-Chinese-goal Analyze task through the final DMG App/Core adapter,
+launches the final DMG and Applications copies to
 verify one process/window, and checks Gmail legacy isolation. Tests use temporary repositories,
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.

@@ -25,7 +25,7 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn('Button("Modify name")', onboarding)
         self.assertIn("model.onboarding.completed ? model.issue : nil", management)
 
-    def test_build8_artifact_names_cannot_overwrite_build7_names(self) -> None:
+    def test_build9_artifact_names_cannot_overwrite_build8_names(self) -> None:
         build = (self.root / "scripts/build-rc-artifact.sh").read_text(encoding="utf-8")
         verifier = (self.root / "scripts/verify-rc-artifact.py").read_text(
             encoding="utf-8"
@@ -34,10 +34,11 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         for source in (build, verifier, workflow):
-            self.assertIn("Project-Brain-Local-Tasks-Build8-arm64", source)
+            self.assertIn("Project-Brain-Local-Tasks-Build9-arm64", source)
+            self.assertNotIn("Project-Brain-Local-Tasks-Build8-arm64", source)
             self.assertNotIn("Project-Brain-RC1-Build7-arm64", source)
-        self.assertIn("APP_BUILD=8", build)
-        self.assertIn('manifest["app"]["build"] == "8"', verifier)
+        self.assertIn("APP_BUILD=9", build)
+        self.assertIn('manifest["app"]["build"] == "9"', verifier)
 
     def test_quit_is_visible_in_menu_bar_and_settings(self) -> None:
         menu = (
@@ -132,7 +133,16 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn("criteriaCharacterCount <= 8_000", form)
         self.assertIn("LocalTaskType.analysis", form)
         self.assertIn("LocalTaskType.implement", form)
-        self.assertIn("model.isBusy || !plan.plan.readiness.ready", form)
+        self.assertIn(
+            "model.localTaskPhase.isBusy || !plan.plan.readiness.ready", form
+        )
+        self.assertIn("LocalTaskOperationPhase", (
+            self.root / "apps/macos/ProjectBrain/ProjectBrainKit/CoreModels.swift"
+        ).read_text(encoding="utf-8"))
+        self.assertIn('DisclosureGroup("Technical details"', form)
+        self.assertIn('LabeledContent("Plan fingerprint"', form)
+        self.assertNotIn('LabeledContent("Plan token"', form)
+        self.assertNotIn("plan.planToken)", form)
         self.assertNotIn('TextField("Command', form)
         self.assertNotIn('TextField("argv', form)
         self.assertNotIn('TextField("cwd', form)
@@ -162,6 +172,16 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
             content = strings.read_text(encoding="utf-8")
             self.assertIn('"New Task…"', content)
             self.assertIn('"Your first project is ready"', content)
+            self.assertIn('"Check the task goal"', content)
+            self.assertIn('"Execution plan changed"', content)
+            self.assertIn('"Building execution plan…"', content)
+            self.assertIn('"Creating task record…"', content)
+        chinese = (
+            self.root
+            / "apps/macos/ProjectBrain/ProjectBrain/Resources/zh-Hans.lproj/Localizable.strings"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"Check the task goal" = "请检查任务目标";', chinese)
+        self.assertIn('"Execution plan changed" = "执行计划已变化";', chinese)
 
     def test_final_dmg_runs_embedded_helper_local_task_end_to_end(self) -> None:
         workflow = (self.root / ".github/workflows/core-tests.yml").read_text(
@@ -173,9 +193,44 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn("verify-bundled-helper-local-task.py", workflow)
         self.assertIn("tasks", verifier)
         self.assertIn("local-plan", verifier)
-        self.assertIn("local-create", verifier)
+        self.assertIn("PROJECT_BRAIN_BUILD9_PROBE_MODE", verifier)
+        self.assertIn("createLocalTask", (
+            self.root
+            / "apps/macos/ProjectBrain/ProjectBrain/Build9LocalTaskAppProbe.swift"
+        ).read_text(encoding="utf-8"))
+        self.assertIn("PROJECT_BRAIN_BUILD9_APP_PROBE", verifier)
+        self.assertIn("exact_goal", verifier)
+        self.assertIn('"expected_plan_hash"', (
+            self.root / "src/project_brain/local_tasks.py"
+        ).read_text(encoding="utf-8"))
         self.assertIn('task["status"] == "completed"', verifier)
         self.assertNotIn("tunnel", verifier.lower())
+
+    def test_create_closes_sheet_before_single_background_detail_refresh(self) -> None:
+        app_model = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/AppModel.swift"
+        ).read_text(encoding="utf-8")
+        create_flow = app_model.split("func createLocalTask()", 1)[1].split(
+            "func cancelLocalTaskSheet()", 1
+        )[0]
+        self.assertIn("isNewTaskPresented = false", create_flow)
+        self.assertIn("schedulePostCreateRefresh(", create_flow)
+        self.assertNotIn("backend.refresh", create_flow)
+        self.assertIn('localTaskTimingMS["create_click_feedback"]', create_flow)
+        self.assertIn('localTaskTimingMS["post_create_ui_update"]', create_flow)
+        refresh_flow = app_model.split("func schedulePostCreateRefresh", 1)[1]
+        self.assertEqual(refresh_flow.count("backend.task(taskID)"), 1)
+        self.assertNotIn("backend.refresh", refresh_flow)
+
+    def test_opening_task_sheet_resets_prior_timing_evidence(self) -> None:
+        app_model = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/AppModel.swift"
+        ).read_text(encoding="utf-8")
+        open_flow = app_model.split("func openNewTask", 1)[1].split(
+            "func updateLocalTaskType", 1
+        )[0]
+        self.assertLess(open_flow.index("localTaskTimingMS = [:]"), open_flow.index(".checkingProject"))
+        self.assertIn('localTaskTimingMS["open_sheet"]', open_flow)
 
     def test_dmg_contains_applications_link_and_visible_installation_guide(
         self,

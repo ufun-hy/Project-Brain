@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -467,6 +467,16 @@ CREATE INDEX local_task_plans_project_idx
     ON local_task_plans(project_id, created_at);
 """
 
+MIGRATION_10 = """
+ALTER TABLE local_task_plans RENAME COLUMN plan_token TO plan_token_sha256;
+ALTER TABLE local_task_plans RENAME COLUMN request_sha256 TO canonical_request_sha256;
+ALTER TABLE local_task_plans RENAME COLUMN request_json TO canonical_request_json;
+ALTER TABLE local_task_plans ADD COLUMN plan_sha256 TEXT;
+ALTER TABLE local_task_plans ADD COLUMN token_fingerprint TEXT;
+ALTER TABLE local_task_plans ADD COLUMN contract_version TEXT;
+ALTER TABLE local_task_plans ADD COLUMN superseded_at TEXT;
+"""
+
 MIGRATIONS = {
     1: MIGRATION_1,
     2: MIGRATION_2,
@@ -477,4 +487,5 @@ MIGRATIONS = {
     7: MIGRATION_7,
     8: MIGRATION_8,
     9: MIGRATION_9,
+    10: MIGRATION_10,
 }

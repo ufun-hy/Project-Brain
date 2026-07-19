@@ -15,15 +15,10 @@ public struct CoreCLIContract: Codable, Equatable, Sendable {
     public struct LocalTask: Codable, Equatable, Sendable {
         public struct Options: Codable, Equatable, Sendable {
             public let json: String
-            public let planToken: String
-
-            enum CodingKeys: String, CodingKey {
-                case json
-                case planToken = "plan_token"
-            }
         }
 
         public let requestSchemaVersion: Int
+        public let confirmationSchemaVersion: Int
         public let transport: String
         public let planCommandPath: [String]
         public let createCommandPath: [String]
@@ -31,6 +26,7 @@ public struct CoreCLIContract: Codable, Equatable, Sendable {
 
         enum CodingKeys: String, CodingKey {
             case requestSchemaVersion = "request_schema_version"
+            case confirmationSchemaVersion = "confirmation_schema_version"
             case transport
             case planCommandPath = "plan_command_path"
             case createCommandPath = "create_command_path"
@@ -107,7 +103,7 @@ public struct CoreCLIContract: Codable, Equatable, Sendable {
         guard schemaVersion == 1 else {
             throw CoreCLIContractError.invalid("Unsupported Core CLI contract schema")
         }
-        guard contractVersion == "1.1.0" else {
+        guard contractVersion == "1.2.0" else {
             throw CoreCLIContractError.invalid("Unsupported Core CLI contract version")
         }
         guard coreVersion == "0.8.0" else {
@@ -121,11 +117,11 @@ public struct CoreCLIContract: Codable, Equatable, Sendable {
         }
         let localTask = operations.localTask
         guard localTask.requestSchemaVersion == 1,
+              localTask.confirmationSchemaVersion == 1,
               localTask.transport == "stdin_json",
               localTask.planCommandPath == ["tasks", "local-plan"],
               localTask.createCommandPath == ["tasks", "local-create"],
-              localTask.options.json.hasPrefix("--"),
-              localTask.options.planToken.hasPrefix("--") else {
+              localTask.options.json.hasPrefix("--") else {
             throw CoreCLIContractError.invalid("Invalid local task stdin contract")
         }
     }

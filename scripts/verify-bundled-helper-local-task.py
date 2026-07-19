@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise an Analyze task through the helper inside the final mounted DMG."""
+"""Exercise Build 9 App plan/confirm and Analyze through the final mounted DMG."""
 
 from __future__ import annotations
 
@@ -111,23 +111,39 @@ def onboard(
     assert applied["action"] == "add"
 
 
-def downgrade_fixture_to_v8(runtime: Path) -> None:
+def downgrade_fixture_to_v9(runtime: Path) -> None:
     database = runtime / "project-brain.db"
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE tasks SET status = 'accepted' WHERE task_id = 'upgrade-sentinel'")
-        # Build a truthful pre-RFC-008 schema-v8 fixture. A real v8 database has
-        # neither the v9 structures nor a v9 migration-ledger entry; removing
-        # only the structures would create an impossible, internally
-        # inconsistent database and would correctly prevent migration replay.
-        connection.execute("DELETE FROM schema_migrations WHERE version = 9")
+        # Build a truthful Build 8 schema-v9 fixture. No local plan exists yet,
+        # so replacing the empty table preserves all project/task runtime data.
+        connection.execute("DELETE FROM schema_migrations WHERE version = 10")
         connection.execute("DROP TABLE local_task_plans")
-        connection.execute("ALTER TABLE tasks DROP COLUMN result_json")
-        connection.execute("ALTER TABLE tasks DROP COLUMN delivery_json")
-        connection.execute("ALTER TABLE tasks DROP COLUMN local_task_type")
-        connection.execute("PRAGMA user_version = 8")
+        connection.executescript("""
+            CREATE TABLE local_task_plans (
+                plan_token TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+                request_sha256 TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                project_config_revision INTEGER NOT NULL,
+                project_config_sha256 TEXT NOT NULL,
+                base_sha TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                task_id TEXT UNIQUE REFERENCES tasks(task_id)
+            );
+            CREATE INDEX local_task_plans_expiry_idx
+                ON local_task_plans(expires_at, consumed_at);
+            CREATE INDEX local_task_plans_project_idx
+                ON local_task_plans(project_id, created_at);
+            PRAGMA user_version = 9;
+        """)
 
 
-def verify(dmg: Path) -> None:
+def verify(dmg: Path, evidence_output: Path | None = None) -> None:
     if os.environ.get("CI") != "true":
         raise AssertionError("final DMG local-task verification is restricted to isolated CI")
     dmg = dmg.resolve(strict=True)
@@ -175,6 +191,8 @@ def verify(dmg: Path) -> None:
             contract_path = installed_app / "Contents/Resources/project-brain-cli-contract.json"
             contract = json.loads(contract_path.read_text(encoding="utf-8"))
             assert contract["operations"]["local_task"]["transport"] == "stdin_json"
+            assert contract["contract_version"] == "1.2.0"
+            assert contract["operations"]["local_task"]["confirmation_schema_version"] == 1
 
             managed_helper = (
                 home
@@ -218,7 +236,7 @@ def verify(dmg: Path) -> None:
             initialized = run_json(
                 helper, runtime, ["init", "--json"], environment=environment
             )
-            assert initialized["schema_version"] == 9
+            assert initialized["schema_version"] == 10
             onboard(helper, runtime, repository, analyzer, contract, environment)
 
             sentinel_file = root / "upgrade-sentinel.json"
@@ -246,11 +264,11 @@ def verify(dmg: Path) -> None:
                 ["tasks", "enqueue", "--file", str(sentinel_file), "--json"],
                 environment=environment,
             )
-            downgrade_fixture_to_v8(runtime)
+            downgrade_fixture_to_v9(runtime)
             migrated = run_json(
                 helper, runtime, ["init", "--json"], environment=environment
             )
-            assert migrated["schema_version"] == 9
+            assert migrated["schema_version"] == 10
             sentinel = run_json(
                 helper,
                 runtime,
@@ -296,38 +314,84 @@ def verify(dmg: Path) -> None:
                 "--untracked-files=all",
                 environment=environment,
             )
+            exact_goal = (
+                "分析当前项目的 README 和代码目录，说明项目用途、主要模块和当前风险。"
+                "不要修改任何文件。"
+            )
             request = {
                 "schema_version": 1,
                 "source": "local_app",
                 "project_id": "project-brain",
                 "task_type": "analysis",
-                "goal": "Review repository readiness and return an actionable summary.",
+                "goal": exact_goal,
                 "acceptance_criteria": ["Do not modify repository files"],
                 "delivery": {"commit": False, "push": False, "draft_pr": False},
             }
-            planned = run_json(
+            cold_started = time.monotonic()
+            cold_planned = run_json(
                 helper,
                 runtime,
                 ["tasks", "local-plan", "--json"],
                 environment=environment,
                 request=request,
             )
-            assert planned["plan"]["readiness"]["ready"] is True
-            assert planned["plan"]["external_chatgpt_acceptance"] == "pending"
-            created = run_json(
-                helper,
-                runtime,
-                [
-                    "tasks",
-                    "local-create",
-                    "--plan-token",
-                    planned["plan"]["plan_token"],
-                    "--json",
-                ],
-                environment=environment,
-                request=request,
+            cold_plan_ms = round((time.monotonic() - cold_started) * 1000, 3)
+            assert cold_planned["plan"]["readiness"]["ready"] is True
+            assert cold_planned["plan"]["canonical_goal"] == exact_goal
+            assert cold_planned["plan"]["external_chatgpt_acceptance"] == "pending"
+
+            request_path = root / "build9-request.json"
+            request_path.write_text(
+                json.dumps(request, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
             )
-            task_id = created["task"]["task_id"]
+            app_probe_output = root / "build9-app-create.json"
+            app_environment = {
+                **environment,
+                "CI": "true",
+                "PROJECT_BRAIN_BUILD9_APP_PROBE": "1",
+                "PROJECT_BRAIN_BUILD9_PROBE_MODE": "create",
+                "PROJECT_BRAIN_RUNTIME_ROOT": str(runtime),
+                "PROJECT_BRAIN_BUILD9_PROBE_REQUEST": str(request_path),
+                "PROJECT_BRAIN_BUILD9_PROBE_OUTPUT": str(app_probe_output),
+            }
+            run(
+                [str(installed_app / "Contents/MacOS/Project Brain")],
+                environment=app_environment,
+            )
+            created = json.loads(app_probe_output.read_text(encoding="utf-8"))
+            assert created["status"] == "created"
+            assert created["interactive_helper_invocations"] == 2
+            assert created["background_helper_invocations"] == 1
+            assert created["canonical_goal"] == exact_goal
+            assert created["summary"]["goal"] == exact_goal
+            assert created["summary"]["status"] == "pending"
+            assert created["creation_evidence"]["transaction"] == "committed"
+            assert created["phases"] == [
+                "idle", "buildingPlan", "idle", "creatingTask", "openingTask", "idle"
+            ]
+            task_id = created["summary"]["task_id"]
+
+            timing = created["timing_ms"]
+            budgets = {
+                "open_sheet": timing["open_sheet"] < 300,
+                "plan_click_feedback": timing["plan_click_feedback"] < 100,
+                "create_click_feedback": timing["create_click_feedback"] < 100,
+                "plan_cold": cold_plan_ms <= 5_000,
+                "plan_warm": timing["plan_wall"] <= 2_000,
+                "create_task": timing["create_wall"] <= 2_000,
+            }
+            assert all(budgets.values()), {"timing_ms": timing, "budgets": budgets}
+
+            cold_token = cold_planned["plan"]["plan_token"]
+            with sqlite3.connect(runtime / "project-brain.db") as connection:
+                rows = connection.execute(
+                    "SELECT plan_token_sha256, plan_json FROM local_task_plans"
+                ).fetchall()
+            assert len(rows) == 2
+            assert all(len(row[0]) == 64 for row in rows)
+            assert all(cold_token not in row[1] for row in rows)
+            assert cold_token.encode("utf-8") not in (runtime / "project-brain.db").read_bytes()
 
             deadline = time.monotonic() + 60
             task: dict[str, Any] = {}
@@ -347,17 +411,30 @@ def verify(dmg: Path) -> None:
             assert task["status"] == "completed"
             assert task["local_task_type"] == "analysis"
             assert task["source_type"] == "local_app"
+            assert task["goal"] == exact_goal
             assert task["result"]["kind"] == "analysis"
             assert "readiness analysis completed" in task["result"]["summary"]
             assert task["commit"] is None and task["pr_url"] is None
 
-            restarted_view = run_json(
-                helper,
-                runtime,
-                ["tasks", "show", task_id, "--json"],
-                environment=environment,
+            restart_output = root / "build9-app-restart.json"
+            restart_environment = {
+                **environment,
+                "CI": "true",
+                "PROJECT_BRAIN_BUILD9_APP_PROBE": "1",
+                "PROJECT_BRAIN_BUILD9_PROBE_MODE": "read",
+                "PROJECT_BRAIN_BUILD9_PROBE_TASK_ID": task_id,
+                "PROJECT_BRAIN_RUNTIME_ROOT": str(runtime),
+                "PROJECT_BRAIN_BUILD9_PROBE_OUTPUT": str(restart_output),
+            }
+            run(
+                [str(installed_app / "Contents/MacOS/Project Brain")],
+                environment=restart_environment,
             )
-            assert restarted_view["result"] == task["result"]
+            restarted = json.loads(restart_output.read_text(encoding="utf-8"))
+            assert restarted["status"] == "read"
+            assert restarted["helper_invocations"] == 1
+            assert restarted["task"]["goal"] == exact_goal
+            assert restarted["task"]["result"] == task["result"]
             assert git(repository, "rev-parse", "HEAD", environment=environment) == checkout_head
             assert (
                 git(
@@ -377,6 +454,32 @@ def verify(dmg: Path) -> None:
             )
             assert [item["project_id"] for item in projects] == ["project-brain"]
             assert not (home / "Library/Keychains").exists()
+            if evidence_output is not None:
+                evidence_output.parent.mkdir(parents=True, exist_ok=True)
+                evidence_output.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "app_version": "0.8.0",
+                            "app_build": "9",
+                            "exact_chinese_goal_preserved": True,
+                            "repository_unchanged": True,
+                            "restart_persistence": True,
+                            "interactive_helper_invocations": 2,
+                            "background_helper_invocations": 1,
+                            "timing_ms": {
+                                "plan_cold": cold_plan_ms,
+                                **timing,
+                            },
+                            "budgets_passed": budgets,
+                            "external_chatgpt_acceptance": "pending",
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
         finally:
             if services_installed and helper is not None:
                 run_json(
@@ -398,11 +501,12 @@ def verify(dmg: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("dmg", type=Path)
+    parser.add_argument("--evidence-output", type=Path)
     arguments = parser.parse_args()
-    verify(arguments.dmg)
+    verify(arguments.dmg, arguments.evidence_output)
     print(
-        "Final DMG embedded helper Analyze task passed with schema upgrade, "
-        "restart persistence, and unchanged main checkout"
+        "Final Build 9 DMG App/Core Analyze task passed with timing budgets, "
+        "schema upgrade, restart persistence, and unchanged main checkout"
     )
     return 0
 

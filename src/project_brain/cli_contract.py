@@ -22,15 +22,16 @@ def load_cli_contract() -> dict[str, Any]:
     value = json.loads(cli_contract_bytes())
     if value.get("schema_version") != 1:
         raise RuntimeError("unsupported Core CLI contract schema")
-    if value.get("contract_version") != "1.1.0":
+    if value.get("contract_version") != "1.2.0":
         raise RuntimeError("unsupported Core CLI contract version")
     local_task = value.get("operations", {}).get("local_task", {})
     if (
         local_task.get("request_schema_version") != 1
+        or local_task.get("confirmation_schema_version") != 1
         or local_task.get("transport") != "stdin_json"
         or local_task.get("plan_command_path") != ["tasks", "local-plan"]
         or local_task.get("create_command_path") != ["tasks", "local-create"]
-        or local_task.get("options") != {"json": "--json", "plan_token": "--plan-token"}
+        or local_task.get("options") != {"json": "--json"}
     ):
         raise RuntimeError("invalid local task stdin contract")
     onboarding = value.get("operations", {}).get("native_onboarding", {})

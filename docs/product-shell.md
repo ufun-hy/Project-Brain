@@ -60,7 +60,7 @@ xcodebuild \
 
 PyInstaller produces an architecture-specific `onefile` executable. The Xcode
 post-build phase copies it into `Project Brain.app/Contents/Resources/` and
-checks the executable bit. CI publishes an unsigned arm64 internal Build 8 DMG and
+checks the executable bit. CI publishes an unsigned arm64 internal Build 9 DMG and
 ZIP, build manifest, and SHA-256 values as a seven-day artifact. Signed,
 notarized, universal distribution is a separate release task.
 
@@ -119,14 +119,20 @@ schema-v1 JSON over stdin and are always treated as content: the App cannot
 provide command, argv, cwd, environment, SQL, executable, branch, worktree,
 credential, or sandbox controls.
 
-**Review Execution Plan** shows the canonical repository path, default branch,
-exact remote Base SHA, project execution revision/hash, adapter, worktree root,
-verification descriptions, delivery, expiration, and local readiness blockers.
-Confirmation presents the same request with a `local-v1:` plan token. Core
-rechecks the project, remote Base, policy, readiness, expiry, and single-use
-state under RuntimeLock and in the SQLite transaction. Any change requires a
-new plan. Repeated confirmation returns the same authoritative task rather
-than creating a duplicate.
+**Review Execution Plan** shows project, task type, the full canonical goal,
+file-modification and delivery effects, readiness, and primary risks. Repository
+path, exact Base SHA, execution revision/hash, adapter, worktree root, expiry,
+schema, and contract live in collapsed technical details. Only a short token
+fingerprint is visible; the replayable token is never displayed.
+
+Schema v10 stores the canonical request and plan hash but only the SHA-256 of
+the transient `local-v2:` token. Confirmation sends exactly `plan_token` and
+`expected_plan_hash` over stdin. Core rechecks the project, remote Base, policy,
+readiness, expiry, supersession, and single-use state under RuntimeLock; task
+creation and token consumption commit in one transaction. Expired, repeated,
+hash-mismatched, superseded, and concurrent second confirmations fail closed.
+After success the App closes the sheet from the minimal create response and
+refreshes only the selected task in the background.
 
 Task Center reads all list/detail/count state back from Core. It displays
 source, task type, status, phase, execution snapshot, result, changed files,
@@ -171,7 +177,8 @@ plists for an explicit retry.
 
 ## Helper upgrade and recovery
 
-The App and Core share a packaged schema-v1 document and contract version 1.1.0. The app validates the
+The App and Core share packaged request/confirmation schema-v1 documents and
+CLI contract version 1.2.0. The app validates the
 bundled helper with fixed `--version` and `cli-contract --json` argv, and checks
 the helper binary SHA-256 plus exact contract version/document SHA. A stale
 same-version helper is therefore upgraded rather than retained. The candidate

@@ -78,7 +78,16 @@ final class OnboardingDiagnosticsTests: XCTestCase {
     }
 
     func testErrorCategoriesProvideUserTitleAndNextAction() {
-        let error = CoreClientError.core(category: "service", message: "launchd stopped")
+        let error = CoreClientError.core(CoreFailure(
+            category: "service",
+            errorCode: "service_stopped",
+            field: nil,
+            constraints: [:],
+            retryable: true,
+            nextActionCode: "restart_service",
+            correlationID: "test-correlation",
+            diagnosticMessage: "launchd stopped"
+        ))
         XCTAssertEqual(error.userTitle, "Background service needs attention")
         XCTAssertTrue(error.nextAction.contains("Connection Center"))
     }

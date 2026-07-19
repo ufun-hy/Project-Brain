@@ -7,7 +7,7 @@ Last updated: 2026-07-19
 PR #17 / Build 7 was merged at exact base
 `main@7259acfa1c38e30f3f8c2126eb7c7c3f8c271e3f`. RFC-008 local task intake is
 implemented on the independent `codex/project-brain-local-task-intake-v1`
-branch for a new Draft PR and Project Brain 0.8.0 build 8. No historical PR or
+branch for Draft PR #18 and Project Brain 0.8.0 build 9. No historical PR or
 artifact is reused.
 
 ## Local task intake
@@ -17,10 +17,12 @@ artifact is reused.
 - Analyze/Review and Implement change use one schema-v1, source-neutral stdin
   JSON contract. Swift cannot supply command, argv, cwd, environment, SQL,
   paths, executables, branches, worktrees, credentials, or sandbox policy.
-- SQLite schema v9 persists local task plans, exact request hashes, execution
+- SQLite schema v10 persists canonical local-task requests, exact request and
+  plan hashes, execution
   snapshots, delivery, task type, and schema-v1 results while preserving old
   and external-source tasks.
-- The `local-v1:` token cryptographically binds the reviewed plan. RuntimeLock,
+- The transient `local-v2:` token is returned only to the App; SQLite stores its
+  SHA-256. Confirmation contains only token and expected plan hash. RuntimeLock,
   remote Base, project revision/hash/path, delivery policy, readiness, expiry,
   transaction, and dedupe checks fail closed at confirmation.
 - Analyze runs in a read-only isolated worktree, accepts no changes as normal
@@ -33,14 +35,15 @@ artifact is reused.
 
 ## Packaging and verification
 
-- App/Core are 0.8.0 with CLI contract 1.1.0, request/result schema 1, and
-  database schema 9.
+- App/Core are 0.8.0 with CLI contract 1.2.0, request/confirmation/result schema
+  1, and database schema 10.
 - English and Simplified Chinese strings are packaged by SwiftPM and Xcode.
-- Build 8 uses distinct `Project-Brain-Local-Tasks-Build8-arm64` DMG/ZIP names
-  and a schema-v3 manifest; Build 7 remains immutable history.
-- Final-DMG CI mounts and installs the App, invokes its embedded helper in an
-  isolated HOME, migrates a preserved schema-v8 database, creates and completes
-  a no-change Analyze task, reopens the result, and proves the main checkout is
+- Build 9 uses distinct `Project-Brain-Local-Tasks-Build9-arm64` DMG/ZIP names
+  and a schema-v4 manifest; Build 8 remains immutable history.
+- Final-DMG CI mounts and installs the App, invokes the App/Core typed adapter in
+  an isolated HOME, migrates a preserved schema-v9 database, creates and completes
+  the reported exact-Chinese-goal Analyze task, restarts the App, records timing
+  budgets, and proves the main checkout is
   unchanged. Implement worktree behavior is covered in Core integration tests;
   no unauthorized real GitHub PR is created.
 - Local Python and Swift compilation must pass before push. SwiftPM XCTest,
@@ -67,5 +70,5 @@ automatic updates are also outside RFC-008.
 
 - `docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md`
 - `docs/product-shell.md`
-- `docs/product-shell-build8-local-task-verification.md`
+- `docs/product-shell-build9-plan-confirm-verification.md`
 - `docs/troubleshooting-recovery.md`
