@@ -336,6 +336,14 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
                 request=request,
             )
             cold_plan_ms = round((time.monotonic() - cold_started) * 1000, 3)
+            helper_cold_start_ms = round(
+                max(
+                    0.0,
+                    cold_plan_ms
+                    - float(cold_planned["timing_ms"]["core_operation_total"]),
+                ),
+                3,
+            )
             assert cold_planned["plan"]["readiness"]["ready"] is True
             assert cold_planned["plan"]["canonical_goal"] == exact_goal
             assert cold_planned["plan"]["external_chatgpt_acceptance"] == "pending"
@@ -377,6 +385,7 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
                 "open_sheet": timing["open_sheet"] < 300,
                 "plan_click_feedback": timing["plan_click_feedback"] < 100,
                 "create_click_feedback": timing["create_click_feedback"] < 100,
+                "post_create_ui_update": timing["post_create_ui_update"] < 100,
                 "plan_cold": cold_plan_ms <= 5_000,
                 "plan_warm": timing["plan_wall"] <= 2_000,
                 "create_task": timing["create_wall"] <= 2_000,
@@ -469,6 +478,7 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
                             "background_helper_invocations": 1,
                             "timing_ms": {
                                 "plan_cold": cold_plan_ms,
+                                "helper_cold_start": helper_cold_start_ms,
                                 **timing,
                             },
                             "budgets_passed": budgets,

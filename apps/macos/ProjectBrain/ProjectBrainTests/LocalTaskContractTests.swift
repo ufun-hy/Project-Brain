@@ -90,6 +90,7 @@ final class LocalTaskContractTests: XCTestCase {
         XCTAssertTrue(create.contains("!localTaskPhase.isBusy"))
         XCTAssertTrue(create.contains("localTaskPhase = .creatingTask"))
         XCTAssertTrue(create.contains("isNewTaskPresented = false"))
+        XCTAssertTrue(create.contains("post_create_ui_update"))
         XCTAssertTrue(create.contains("schedulePostCreateRefresh("))
         XCTAssertFalse(create.contains("backend.refresh"))
 

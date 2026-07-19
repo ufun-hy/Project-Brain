@@ -94,8 +94,17 @@ enum Build9LocalTaskAppProbe {
             expectedPlanHash: planned.plan.planHash
         )
         let createWallMS = elapsedMilliseconds(since: createStarted)
+        let postCreateUIStarted = ContinuousClock.now
         phases.append(LocalTaskOperationPhase.openingTask.rawValue)
+        let immediateDetail = TaskDetail(summary: created.summary)
+        guard immediateDetail.taskID == created.summary.taskID,
+              immediateDetail.status == created.summary.status else {
+            throw CoreClientError.invalidResponse(
+                "Build 9 immediate task placeholder did not match the create response."
+            )
+        }
         phases.append(LocalTaskOperationPhase.idle.rawValue)
+        let postCreateUIUpdateMS = elapsedMilliseconds(since: postCreateUIStarted)
         Thread.sleep(forTimeInterval: Double(created.nextRefreshAfterMS) / 1_000)
         let backgroundStarted = ContinuousClock.now
         let refreshed = try client.task(created.summary.taskID)
@@ -117,6 +126,7 @@ enum Build9LocalTaskAppProbe {
                 "create_click_feedback": createFeedbackMS,
                 "plan_wall": planWallMS,
                 "create_wall": createWallMS,
+                "post_create_ui_update": postCreateUIUpdateMS,
                 "background_snapshot_refresh": backgroundRefreshMS,
                 "plan_core": planned.timingMS,
                 "create_core": created.timingMS,

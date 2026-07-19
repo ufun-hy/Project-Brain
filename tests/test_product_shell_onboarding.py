@@ -204,6 +204,8 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         self.assertIn("PROJECT_BRAIN_BUILD9_APP_PROBE", verifier)
         self.assertIn("exact_goal", verifier)
+        self.assertIn("helper_cold_start", verifier)
+        self.assertIn("post_create_ui_update", verifier)
         self.assertIn('"expected_plan_hash"', (
             self.root / "src/project_brain/local_tasks.py"
         ).read_text(encoding="utf-8"))
