@@ -18,6 +18,10 @@
 		118888888888888888888888 /* UserProcessLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 218888888888888888888888 /* UserProcessLock.swift */; };
 		119999999999999999999999 /* UserProcessLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219999999999999999999999 /* UserProcessLockTests.swift */; };
 		11AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift */; };
+		AA1111111111111111111111 /* FirstTaskGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1111111111111111111111 /* FirstTaskGuide.swift */; };
+		AA2222222222222222222222 /* NewTaskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA2222222222222222222222 /* NewTaskView.swift */; };
+		AA3333333333333333333333 /* FirstTaskGuideTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA3333333333333333333333 /* FirstTaskGuideTests.swift */; };
+		AA4444444444444444444444 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = BA6666666666666666666666 /* Localizable.strings */; };
 		0F1A71DC5B1EFEA227767E66 /* ProjectBrainKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A0AE9726341D630153857E89 /* ProjectBrainKit.framework */; };
 		144B51BBA191FFF89D33D238 /* ProjectBrainKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A0AE9726341D630153857E89 /* ProjectBrainKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2A4C3F35B0919A751D36D877 /* ConnectionCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3382C3F973ECDD34F66419A /* ConnectionCenterView.swift */; };
@@ -104,6 +108,11 @@
 		218888888888888888888888 /* UserProcessLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProcessLock.swift; sourceTree = "<group>"; };
 		219999999999999999999999 /* UserProcessLockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProcessLockTests.swift; sourceTree = "<group>"; };
 		21AAAAAAAAAAAAAAAAAAAAAA /* ApplicationInstanceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationInstanceCoordinator.swift; sourceTree = "<group>"; };
+		BA1111111111111111111111 /* FirstTaskGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstTaskGuide.swift; sourceTree = "<group>"; };
+		BA2222222222222222222222 /* NewTaskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTaskView.swift; sourceTree = "<group>"; };
+		BA3333333333333333333333 /* FirstTaskGuideTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstTaskGuideTests.swift; sourceTree = "<group>"; };
+		BA4444444444444444444444 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = Resources/en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		BA5555555555555555555555 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "Resources/zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		14FCAD15B7C524000B2925B8 /* ManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagementView.swift; sourceTree = "<group>"; };
 		266AF4ABF8DF229B7BAD02F5 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		36EE8A4AF87D2B60D7E34966 /* Diagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics.swift; sourceTree = "<group>"; };
@@ -177,6 +186,7 @@
 		4BD26A295035913FF73FAEC6 /* ProjectBrainTests */ = {
 			isa = PBXGroup;
 			children = (
+				BA3333333333333333333333 /* FirstTaskGuideTests.swift */,
 				217777777777777777777777 /* CoreCLIContractTests.swift */,
 				4595CA5CC38BED4393CD84DD /* CoreClientTests.swift */,
 				96D539B3B5F2AD0DBDE7E31F /* CoreModelsTests.swift */,
@@ -218,11 +228,13 @@
 				59DDBAFDFAC4CEAFEFF7CBE9 /* DiagnosticsView.swift */,
 				14FCAD15B7C524000B2925B8 /* ManagementView.swift */,
 				873E4D827FE101BC6F62D9C9 /* MenuBarView.swift */,
+				BA2222222222222222222222 /* NewTaskView.swift */,
 				D0478A89B42ADB5C00FD9FAE /* OnboardingView.swift */,
 				63C4C34FCF584219FE960E5E /* ProjectBrainApp.swift */,
 				A9FCF0D49478D167771F549F /* ProjectsView.swift */,
 				AE1BCD1E84388904E62F7B30 /* SettingsView.swift */,
 				ACBAC85D03E0116847C41375 /* TaskCenterView.swift */,
+				BA6666666666666666666666 /* Localizable.strings */,
 				214444444444444444444444 /* tunnel-client-compatibility.json */,
 			);
 			path = ProjectBrain;
@@ -238,6 +250,7 @@
 				36EE8A4AF87D2B60D7E34966 /* Diagnostics.swift */,
 				211111111111111111111111 /* ExternalAcceptancePresentation.swift */,
 				D041B09753695B3EF9BB5294 /* ExecutableDiscovery.swift */,
+				BA1111111111111111111111 /* FirstTaskGuide.swift */,
 				8D2D73135C583E1F105682D6 /* HelperInstaller.swift */,
 				60C9509B670A38FFA7F52F3C /* KeychainStore.swift */,
 				266AF4ABF8DF229B7BAD02F5 /* Onboarding.swift */,
@@ -250,6 +263,18 @@
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
+
+/* Begin PBXVariantGroup section */
+		BA6666666666666666666666 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				BA4444444444444444444444 /* en */,
+				BA5555555555555555555555 /* zh-Hans */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin PBXNativeTarget section */
 		31BC2F5BCB460BCEB9211ABF /* ProjectBrain */ = {
@@ -330,6 +355,7 @@
 			knownRegions = (
 				Base,
 				en,
+				"zh-Hans",
 			);
 			mainGroup = 27AE037EB7F8F296AED9414D;
 			minimizedProjectReferenceProxies = 1;
@@ -349,6 +375,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA4444444444444444444444 /* Localizable.strings in Resources */,
 				114444444444444444444444 /* tunnel-client-compatibility.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -389,6 +416,7 @@
 				FF57347E85F75709ACB7C86D /* Diagnostics.swift in Sources */,
 				111111111111111111111111 /* ExternalAcceptancePresentation.swift in Sources */,
 				8805E0F39415C29C6CB61F0C /* ExecutableDiscovery.swift in Sources */,
+				AA1111111111111111111111 /* FirstTaskGuide.swift in Sources */,
 				B68C0EA5D4DBDA9A3344A046 /* HelperInstaller.swift in Sources */,
 				7E4C26530FDC216393C8AC79 /* KeychainStore.swift in Sources */,
 				4B05A064187E86481CF09E12 /* Onboarding.swift in Sources */,
@@ -404,6 +432,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				117777777777777777777777 /* CoreCLIContractTests.swift in Sources */,
+				AA3333333333333333333333 /* FirstTaskGuideTests.swift in Sources */,
 				539C02D8B6142D426541586A /* CoreClientTests.swift in Sources */,
 				8F5DB383EB775761AB29F31D /* CoreModelsTests.swift in Sources */,
 				E335AD993BC2FD41B188BEA2 /* HelperInstallerTests.swift in Sources */,
@@ -426,6 +455,7 @@
 				56F2A1498E27C7C937EACE85 /* DiagnosticsView.swift in Sources */,
 				EAC61F0512C15EB4E5B7601E /* ManagementView.swift in Sources */,
 				3089FD28B0C0CA43664DA167 /* MenuBarView.swift in Sources */,
+				AA2222222222222222222222 /* NewTaskView.swift in Sources */,
 				C5916A800D90EBCA570E6A2F /* OnboardingView.swift in Sources */,
 				43447D33F338A871055A2E8C /* ProjectBrainApp.swift in Sources */,
 				049BA5A4A75E506CDDB6CFDB /* ProjectsView.swift in Sources */,
@@ -478,14 +508,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ProjectBrain/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.7.0;
+				MARKETING_VERSION = 0.8.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.projectbrain.ProductBrain;
 				PRODUCT_NAME = "Project Brain";
 				SDKROOT = macosx;
@@ -673,14 +703,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ProjectBrain/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.7.0;
+				MARKETING_VERSION = 0.8.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.projectbrain.ProductBrain;
 				PRODUCT_NAME = "Project Brain";
 				SDKROOT = macosx;

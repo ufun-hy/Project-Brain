@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .actions import run_named_command, write_files
-from .codex import CodexAdapter
+from .codex import AnalysisExecution, CodexAdapter
 from .errors import ProjectBrainError, RecoveryError, VerificationFailedError
 from .git_history import GitHistoryNormalizer, NormalizedHistory
 from .commands import git
@@ -51,9 +51,9 @@ class TaskEngine:
         recovery = RecoveryManager(self.store, self.worktrees).reconcile_for_claims(
             execute=True
         )
-        TerminalWorktreeReconciler(
-            self.store, self.runtime, self.worktrees
-        ).reconcile(execute=True)
+        TerminalWorktreeReconciler(self.store, self.runtime, self.worktrees).reconcile(
+            execute=True
+        )
         if not recovery.claim_safe:
             return {
                 "status": "blocked",
@@ -80,12 +80,43 @@ class TaskEngine:
                     expected_branch=worktree_record["branch"],
                     base_sha=worktree_record["base_sha"],
                 )
+                if task.get("local_task_type") == "analysis":
+                    analysis = self.codex.execute(
+                        task=task,
+                        project=project,
+                        worktree=worktree,
+                        snapshot=snapshot,
+                    )
+                    if not isinstance(analysis, AnalysisExecution):
+                        raise ProjectBrainError(
+                            "Analyze task did not return the required result schema"
+                        )
+                    self.store.heartbeat_worktree(task["task_id"])
+                    task = self.store.set_task_result(task["task_id"], analysis.result)
+                    task = self.store.transition(
+                        task["task_id"],
+                        TaskStatus.COMPLETED,
+                        event_type="analysis_completed",
+                        payload={
+                            "changed_files": [],
+                            "result_schema_version": analysis.result["schema_version"],
+                        },
+                    )
+                    self.store.finish_attempt(task["task_id"], status="completed")
+                    return {
+                        "status": task["status"],
+                        "task": task,
+                        "evidence": [],
+                        "worktree_release": None,
+                    }
                 history = self._execute_action(task, project, worktree, snapshot)
                 self.store.heartbeat_worktree(task["task_id"])
                 task = self.store.set_task_fields(
                     task["task_id"], head_sha=history.commit, commit=history.commit
                 )
-                task = self.store.set_attempt_phase(task["task_id"], AttemptPhase.VERIFICATION)
+                task = self.store.set_attempt_phase(
+                    task["task_id"], AttemptPhase.VERIFICATION
+                )
             else:
                 history = self._resume_canonical(task, worktree_record, worktree)
 
@@ -125,20 +156,40 @@ class TaskEngine:
                 self.store.finalize_verification_set(
                     verification_set["verification_set_id"], status="completed"
                 )
-                task = self.store.set_attempt_phase(task["task_id"], AttemptPhase.PUBLICATION)
+                task = self.store.set_attempt_phase(
+                    task["task_id"], AttemptPhase.PUBLICATION
+                )
             else:
                 evidence = self.store.publication_evidence(task["task_id"])
 
-            publication: dict[str, Any] = {"pushed": False, "pr_url": task.get("pr_url")}
-            if project.get("auto_push", True):
+            delivery = (
+                task.get("delivery")
+                if task.get("local_task_type") == "implement"
+                else None
+            )
+            should_push = (
+                bool(delivery.get("push"))
+                if isinstance(delivery, dict)
+                else bool(project.get("auto_push", True))
+            )
+            publication: dict[str, Any] = {
+                "pushed": False,
+                "pr_url": task.get("pr_url"),
+            }
+            if should_push:
                 publication_seal = RepositorySeal.capture(
                     worktree,
                     project=project,
                     expected_branch=worktree_record["branch"],
                     expected_head=history.commit,
                 )
+                publication_project = (
+                    {**project, "auto_pr": bool(delivery.get("draft_pr"))}
+                    if isinstance(delivery, dict)
+                    else project
+                )
                 publication = self.github.publish(
-                    task=task, project=project, worktree=worktree
+                    task=task, project=publication_project, worktree=worktree
                 )
                 self.store.heartbeat_worktree(task["task_id"])
                 publication_seal.verify(worktree, project=project)
@@ -147,6 +198,19 @@ class TaskEngine:
                         task["task_id"], pr_url=publication["pr_url"]
                     )
             self.store.heartbeat_worktree(task["task_id"])
+            if task.get("local_task_type") == "implement":
+                task = self.store.set_task_result(
+                    task["task_id"],
+                    {
+                        "schema_version": 1,
+                        "kind": "implementation",
+                        "changed_files": history.changed_files,
+                        "verification_count": len(evidence),
+                        "commit": history.commit,
+                        "branch": task.get("branch"),
+                        "draft_pr": publication.get("pr_url"),
+                    },
+                )
             self.store.set_attempt_phase(task["task_id"], AttemptPhase.REVIEW)
             task = self.store.transition(
                 task["task_id"],
@@ -218,7 +282,9 @@ class TaskEngine:
             run_named_command(worktree, task["payload"], project)
         else:
             raise ProjectBrainError(f"Unsupported task type: {task['task_type']}")
-        message = task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        message = (
+            task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        )
         return self.normalizer.normalize(worktree, snapshot, message=str(message))
 
     @staticmethod
@@ -248,9 +314,7 @@ class TaskEngine:
         retryable = bool(getattr(exc, "retryable", False))
         current = self.store.get_task(task["task_id"])
         if isinstance(exc, RecoveryError):
-            updated = self.store.block_running_task(
-                task["task_id"], reason=str(exc)
-            )
+            updated = self.store.block_running_task(task["task_id"], reason=str(exc))
             return {"status": updated["status"], "task": updated}
         if retryable and current["attempt_count"] < self.max_transient_attempts:
             target = TaskStatus.RETRY_PENDING

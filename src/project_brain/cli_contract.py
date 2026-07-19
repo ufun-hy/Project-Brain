@@ -7,7 +7,6 @@ import json
 from importlib.resources import files
 from typing import Any
 
-
 RESOURCE_NAME = "cli_contract.json"
 
 
@@ -23,8 +22,17 @@ def load_cli_contract() -> dict[str, Any]:
     value = json.loads(cli_contract_bytes())
     if value.get("schema_version") != 1:
         raise RuntimeError("unsupported Core CLI contract schema")
-    if value.get("contract_version") != "1.0.0":
+    if value.get("contract_version") != "1.1.0":
         raise RuntimeError("unsupported Core CLI contract version")
+    local_task = value.get("operations", {}).get("local_task", {})
+    if (
+        local_task.get("request_schema_version") != 1
+        or local_task.get("transport") != "stdin_json"
+        or local_task.get("plan_command_path") != ["tasks", "local-plan"]
+        or local_task.get("create_command_path") != ["tasks", "local-create"]
+        or local_task.get("options") != {"json": "--json", "plan_token": "--plan-token"}
+    ):
+        raise RuntimeError("invalid local task stdin contract")
     onboarding = value.get("operations", {}).get("native_onboarding", {})
     if onboarding.get("command_path") != ["projects", "add"]:
         raise RuntimeError("invalid native onboarding command path")
@@ -47,6 +55,9 @@ def load_cli_contract() -> dict[str, Any]:
     }
     if set(options) != required:
         raise RuntimeError("incomplete native onboarding option contract")
-    if any(not isinstance(item, str) or not item.startswith("--") for item in options.values()):
+    if any(
+        not isinstance(item, str) or not item.startswith("--")
+        for item in options.values()
+    ):
         raise RuntimeError("invalid native onboarding option contract")
     return value

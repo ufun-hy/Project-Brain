@@ -4,9 +4,37 @@ import Foundation
 public struct CoreCLIContract: Codable, Equatable, Sendable {
     public struct Operations: Codable, Equatable, Sendable {
         public let nativeOnboarding: NativeOnboarding
+        public let localTask: LocalTask
 
         enum CodingKeys: String, CodingKey {
             case nativeOnboarding = "native_onboarding"
+            case localTask = "local_task"
+        }
+    }
+
+    public struct LocalTask: Codable, Equatable, Sendable {
+        public struct Options: Codable, Equatable, Sendable {
+            public let json: String
+            public let planToken: String
+
+            enum CodingKeys: String, CodingKey {
+                case json
+                case planToken = "plan_token"
+            }
+        }
+
+        public let requestSchemaVersion: Int
+        public let transport: String
+        public let planCommandPath: [String]
+        public let createCommandPath: [String]
+        public let options: Options
+
+        enum CodingKeys: String, CodingKey {
+            case requestSchemaVersion = "request_schema_version"
+            case transport
+            case planCommandPath = "plan_command_path"
+            case createCommandPath = "create_command_path"
+            case options
         }
     }
 
@@ -79,23 +107,26 @@ public struct CoreCLIContract: Codable, Equatable, Sendable {
         guard schemaVersion == 1 else {
             throw CoreCLIContractError.invalid("Unsupported Core CLI contract schema")
         }
-        guard contractVersion.range(
-            of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#,
-            options: .regularExpression
-        ) != nil else {
-            throw CoreCLIContractError.invalid("Invalid Core CLI contract version")
+        guard contractVersion == "1.1.0" else {
+            throw CoreCLIContractError.invalid("Unsupported Core CLI contract version")
         }
-        guard coreVersion.range(
-            of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#,
-            options: .regularExpression
-        ) != nil else {
-            throw CoreCLIContractError.invalid("Invalid Core version in CLI contract")
+        guard coreVersion == "0.8.0" else {
+            throw CoreCLIContractError.invalid("Unsupported Core version in CLI contract")
         }
         let onboarding = operations.nativeOnboarding
         guard !onboarding.commandPath.isEmpty,
               onboarding.commandPath.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("-") }),
               onboarding.options.all.allSatisfy({ $0.hasPrefix("--") }) else {
             throw CoreCLIContractError.invalid("Invalid native onboarding CLI contract")
+        }
+        let localTask = operations.localTask
+        guard localTask.requestSchemaVersion == 1,
+              localTask.transport == "stdin_json",
+              localTask.planCommandPath == ["tasks", "local-plan"],
+              localTask.createCommandPath == ["tasks", "local-create"],
+              localTask.options.json.hasPrefix("--"),
+              localTask.options.planToken.hasPrefix("--") else {
+            throw CoreCLIContractError.invalid("Invalid local task stdin contract")
         }
     }
 }

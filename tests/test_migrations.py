@@ -19,6 +19,8 @@ from project_brain.schema import (
     MIGRATION_5,
     MIGRATION_6,
     MIGRATION_7,
+    MIGRATION_8,
+    MIGRATION_9,
     SCHEMA_VERSION,
 )
 from project_brain.store import TaskStore
@@ -52,15 +54,13 @@ class MigrationTests(unittest.TestCase):
                 """,
                 (json.dumps(codex_command),),
             )
-            connection.execute(
-                """
+            connection.execute("""
                 INSERT INTO tasks(
                     task_id,project_id,dedupe_key,revision,source_type,goal,
                     acceptance_criteria_json,task_type,payload_json,status,created_at,updated_at
                 ) VALUES('legacy-task','legacy','legacy-task',1,'test','goal','[]','codex','{}',
                     'pending','2026-01-01','2026-01-01')
-                """
-            )
+                """)
 
     def test_version_one_database_migrates_forward(self) -> None:
         TaskStore(
@@ -83,8 +83,7 @@ class MigrationTests(unittest.TestCase):
         ).initialize()
         with sqlite3.connect(self.database) as connection:
             connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(
-                """
+            connection.execute("""
                 INSERT INTO projects(
                     project_id, name, repo_path, remote_url, default_branch,
                     worktree_root, codex_command_json, verification_commands_json,
@@ -93,8 +92,7 @@ class MigrationTests(unittest.TestCase):
                     'project', 'project', '/tmp/project', '/tmp/remote.git', 'main',
                     '/tmp/worktrees', '["codex"]', '[]', '{}', '2026-01-01', '2026-01-01'
                 )
-                """
-            )
+                """)
             connection.execute(
                 """
                 INSERT INTO tasks(
@@ -121,8 +119,7 @@ class MigrationTests(unittest.TestCase):
                 """,
                 ("a" * 40,),
             )
-            connection.execute(
-                """
+            connection.execute("""
                 INSERT INTO verification_results(
                     task_id, criterion_id, criterion_text, status, evidence_type,
                     evidence_summary, attempt_number, created_at
@@ -130,8 +127,7 @@ class MigrationTests(unittest.TestCase):
                     'task', 'check', 'Check', 'passed', 'trusted_project_command',
                     'passed', 1, '2026-01-01'
                 )
-                """
-            )
+                """)
         store = TaskStore(self.database)
         store.initialize()
         task = store.get_task("task")
@@ -175,14 +171,17 @@ class MigrationTests(unittest.TestCase):
         store.initialize()
         with store.connect() as connection:
             columns = {
-                row["name"]: row for row in connection.execute("PRAGMA table_info(projects)")
+                row["name"]: row
+                for row in connection.execute("PRAGMA table_info(projects)")
             }
         self.assertIn("accepting_tasks", columns)
         self.assertIn("registered", columns)
         self.assertEqual(columns["accepting_tasks"]["dflt_value"], "1")
         self.assertEqual(columns["registered"]["dflt_value"], "1")
 
-    def test_version_six_migrates_through_v8_with_stable_installation_identity(self) -> None:
+    def test_version_six_migrates_through_v9_with_stable_installation_identity(
+        self,
+    ) -> None:
         TaskStore(
             self.database,
             migrations={
@@ -207,8 +206,9 @@ class MigrationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
             }
-        self.assertEqual(store.schema_version(), 8)
+        self.assertEqual(store.schema_version(), 9)
         self.assertIn("external_acceptance_runs", tables)
+        self.assertIn("local_task_plans", tables)
         store.initialize()
         with store.connect() as connection:
             self.assertEqual(
@@ -217,6 +217,55 @@ class MigrationTests(unittest.TestCase):
                 ).fetchone()[0],
                 identity,
             )
+
+    def test_v8_upgrade_preserves_old_tasks_and_is_idempotent(self) -> None:
+        self.create_v4_project_and_task([str(Path(sys.executable).resolve())])
+        migrations = {
+            1: MIGRATION_1,
+            2: MIGRATION_2,
+            3: MIGRATION_3,
+            4: MIGRATION_4,
+            5: MIGRATION_5,
+            6: MIGRATION_6,
+            7: MIGRATION_7,
+            8: MIGRATION_8,
+        }
+        TaskStore(self.database, migrations=migrations, schema_version=8).initialize()
+        upgraded = TaskStore(self.database)
+        upgraded.initialize()
+        old_task = upgraded.get_task("legacy-task")
+        self.assertIsNone(old_task["local_task_type"])
+        self.assertIsNone(old_task["delivery"])
+        self.assertIsNone(old_task["result"])
+        upgraded.initialize()
+        self.assertEqual(upgraded.schema_version(), 9)
+
+    def test_v9_sql_failure_rolls_back_columns_table_and_version(self) -> None:
+        migrations = {
+            1: MIGRATION_1,
+            2: MIGRATION_2,
+            3: MIGRATION_3,
+            4: MIGRATION_4,
+            5: MIGRATION_5,
+            6: MIGRATION_6,
+            7: MIGRATION_7,
+            8: MIGRATION_8,
+        }
+        TaskStore(self.database, migrations=migrations, schema_version=8).initialize()
+        broken = {**migrations, 9: MIGRATION_9 + "\nINVALID SQL;"}
+        with self.assertRaises(sqlite3.DatabaseError):
+            TaskStore(self.database, migrations=broken, schema_version=9).initialize()
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        self.assertNotIn("local_task_type", columns)
+        self.assertNotIn("local_task_plans", tables)
 
     def test_v7_data_hook_failure_rolls_back_and_restart_succeeds(self) -> None:
         TaskStore(
@@ -248,9 +297,11 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("external_acceptance_runs", tables)
         restarted = TaskStore(self.database)
         restarted.initialize()
-        self.assertEqual(restarted.schema_version(), 8)
+        self.assertEqual(restarted.schema_version(), 9)
 
-    def test_version_seven_pass_is_migrated_to_unattributed_transport_evidence(self) -> None:
+    def test_version_seven_pass_is_migrated_to_unattributed_transport_evidence(
+        self,
+    ) -> None:
         old = TaskStore(
             self.database,
             migrations={
@@ -310,7 +361,7 @@ class MigrationTests(unittest.TestCase):
             event = connection.execute(
                 "SELECT * FROM external_acceptance_events WHERE run_id = 'acceptance-v7'"
             ).fetchone()
-        self.assertEqual(upgraded.schema_version(), 8)
+        self.assertEqual(upgraded.schema_version(), 9)
         self.assertEqual(run["status"], "mcp_transport_probe_passed")
         self.assertEqual(run["acceptance_contract_version"], 1)
         self.assertEqual(run["ingress"], "local_or_tunneled_mcp_unattributed")
@@ -321,7 +372,10 @@ class MigrationTests(unittest.TestCase):
     def test_failed_migration_rolls_back_atomically(self) -> None:
         store = TaskStore(
             self.database,
-            migrations={1: MIGRATION_1, 2: "CREATE TABLE partial(value TEXT); INVALID SQL;"},
+            migrations={
+                1: MIGRATION_1,
+                2: "CREATE TABLE partial(value TEXT); INVALID SQL;",
+            },
             schema_version=2,
         )
         with self.assertRaises(sqlite3.DatabaseError):

@@ -44,6 +44,7 @@ from .project_plans import bind_project_plan, require_matching_project_plan
 from .acceptance import ExternalAcceptanceManager
 from .acceptance_tasks import acceptance_task_plan, create_acceptance_task
 from .cli_contract import cli_contract_sha256, load_cli_contract
+from .local_tasks import LocalTaskManager
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -52,7 +53,9 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="project-brain")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     parser.add_argument("--runtime-root", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -123,10 +126,23 @@ def build_parser() -> argparse.ArgumentParser:
     task_show = task_sub.add_parser("show")
     task_show.add_argument("task_id")
     _add_json(task_show)
-    task_enqueue = task_sub.add_parser("enqueue", help="Import a canonical task JSON file")
+    task_enqueue = task_sub.add_parser(
+        "enqueue", help="Import a canonical task JSON file"
+    )
     task_enqueue.add_argument("--file", type=Path, required=True)
     _add_json(task_enqueue)
-    task_review = task_sub.add_parser("review", help="Record commit-bound review findings")
+    local_plan = task_sub.add_parser(
+        "local-plan", help="Plan a strict local App task request from stdin"
+    )
+    _add_json(local_plan)
+    local_create = task_sub.add_parser(
+        "local-create", help="Create a reviewed local App task request from stdin"
+    )
+    local_create.add_argument("--plan-token", required=True)
+    _add_json(local_create)
+    task_review = task_sub.add_parser(
+        "review", help="Record commit-bound review findings"
+    )
     task_review.add_argument("task_id")
     task_review.add_argument("--file", type=Path, required=True)
     _add_json(task_review)
@@ -159,7 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(task_recover)
 
     acceptance = sub.add_parser(
-        "acceptance", help="Manage Product Shell external acceptance without a pass override"
+        "acceptance",
+        help="Manage Product Shell external acceptance without a pass override",
     )
     acceptance_sub = acceptance.add_subparsers(dest="acceptance_command", required=True)
     acceptance_status = acceptance_sub.add_parser("status")
@@ -204,7 +221,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=7677)
 
-    service = sub.add_parser("service", help="Manage fixed Product Brain launchd services")
+    service = sub.add_parser(
+        "service", help="Manage fixed Product Brain launchd services"
+    )
     service_sub = service.add_subparsers(dest="service_command", required=True)
     for name in ("plan", "install", "start", "stop", "restart", "status", "uninstall"):
         item = service_sub.add_parser(name)
@@ -214,15 +233,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _project_options(parser: argparse.ArgumentParser, *, include_identity: bool) -> None:
+def _project_options(
+    parser: argparse.ArgumentParser, *, include_identity: bool
+) -> None:
     if include_identity:
         parser.add_argument("--project-id")
     parser.add_argument("--name")
     parser.add_argument("--default-branch")
     parser.add_argument("--codex-path")
     parser.add_argument("--verification-file", type=Path)
-    parser.add_argument("--auto-push", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--auto-pr", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--auto-push", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument(
+        "--auto-pr", action=argparse.BooleanOptionalAction, default=None
+    )
     _project_plan_options(parser)
 
 
@@ -270,7 +295,10 @@ def _prepare_project_add(
     project_id = project_id_override or args.project_id or _derived_project_id(repo)
     values: dict[str, Any] = {
         "project_id": project_id,
-        "name": name_override or args.name or args.project_id or _derived_project_id(repo),
+        "name": name_override
+        or args.name
+        or args.project_id
+        or _derived_project_id(repo),
         "repo_path": str(repo),
         "default_branch": args.default_branch,
         "codex_path": args.codex_path,
@@ -318,7 +346,9 @@ def _use_existing_project_plan(
             "current_name": current["name"],
             "next_name": current["name"],
             "changed_fields": [],
-            "nonterminal_task_count": store.nonterminal_task_count(current["project_id"]),
+            "nonterminal_task_count": store.nonterminal_task_count(
+                current["project_id"]
+            ),
             "task_snapshot_effect": "existing and new tasks keep the active revision",
         }
     )
@@ -333,7 +363,11 @@ def _resolve_onboarding_add(
     existing = ProjectRegistry(store, runtime).resolve_onboarding_identity(requested)
     if existing is None:
         return requested, _add_project_plan(requested), None
-    values = {**existing, "repo_path": requested["repo_path"], "remote_url": requested["remote_url"]}
+    values = {
+        **existing,
+        "repo_path": requested["repo_path"],
+        "remote_url": requested["remote_url"],
+    }
     if args.default_branch is not None:
         values["default_branch"] = args.default_branch
     if args.codex_path is not None:
@@ -400,7 +434,9 @@ def _update_project_plan(
         else normalize_execution_profile(current)
     )
     changed = [
-        field for field in EXECUTION_FIELDS if prepared_profile[field] != current_profile[field]
+        field
+        for field in EXECUTION_FIELDS
+        if prepared_profile[field] != current_profile[field]
     ]
     if prepared["name"] != current["name"]:
         changed.append("name")
@@ -411,13 +447,16 @@ def _update_project_plan(
             "project_id": current["project_id"],
             "action": action,
             "current_revision": current["config_revision"],
-            "next_revision": current["config_revision"] + (1 if execution_changed else 0),
+            "next_revision": current["config_revision"]
+            + (1 if execution_changed else 0),
             "current_sha256": current["config_sha256"],
             "next_sha256": digest,
             "current_name": current["name"],
             "next_name": prepared["name"],
             "changed_fields": changed,
-            "nonterminal_task_count": store.nonterminal_task_count(current["project_id"]),
+            "nonterminal_task_count": store.nonterminal_task_count(
+                current["project_id"]
+            ),
             "task_snapshot_effect": (
                 "existing tasks keep their snapshot; new tasks bind next revision"
             ),
@@ -434,7 +473,12 @@ def _confirm(plan: dict[str, Any], *, non_interactive: bool, json_output: bool) 
             json.dumps(_safe_output(plan), ensure_ascii=False, indent=indent),
             file=sys.stderr,
         )
-        print("Apply this project configuration? [y/N] ", end="", flush=True, file=sys.stderr)
+        print(
+            "Apply this project configuration? [y/N] ",
+            end="",
+            flush=True,
+            file=sys.stderr,
+        )
         answer = input()
     else:
         _render(plan, json_output=False)
@@ -445,7 +489,10 @@ def _confirm(plan: dict[str, Any], *, non_interactive: bool, json_output: bool) 
 def _human_status(value: dict[str, Any]) -> str:
     lines = ["Project Brain status"]
     counts = value.get("counts", {})
-    lines.append("Tasks: " + (", ".join(f"{key}={count}" for key, count in counts.items()) or "none"))
+    lines.append(
+        "Tasks: "
+        + (", ".join(f"{key}={count}" for key, count in counts.items()) or "none")
+    )
     for task in value.get("tasks", []):
         lines.extend(
             [
@@ -472,15 +519,51 @@ def _render(value: Any, *, json_output: bool, human: str | None = None) -> None:
         print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _read_stdin_json(*, maximum_bytes: int = 64 * 1024) -> Any:
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    data = stream.read(maximum_bytes + 1)
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    if not data:
+        raise InvalidTaskError("Local task request stdin is empty")
+    if len(data) > maximum_bytes:
+        raise InvalidTaskError("Local task request exceeds the 64 KiB transport limit")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidTaskError(
+            "Local task request stdin must be one UTF-8 JSON document"
+        ) from exc
+
+
+def _render_local_task(value: Any) -> None:
+    """Keep reviewed local paths while emitting exactly one stdout JSON document."""
+    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
 def _safe_output(value: Any) -> Any:
     hidden = {
-        "argv", "command", "command_json", "codex_command", "execution_profile",
-        "execution_profile_json", "repo_path", "worktree_root", "allowed_commands",
-        "verification_commands", "runtime", "source", "path", "artifact_path",
-        "worktree_path", "config_file",
+        "argv",
+        "command",
+        "command_json",
+        "codex_command",
+        "execution_profile",
+        "execution_profile_json",
+        "repo_path",
+        "worktree_root",
+        "allowed_commands",
+        "verification_commands",
+        "runtime",
+        "source",
+        "path",
+        "artifact_path",
+        "worktree_path",
+        "config_file",
     }
     if isinstance(value, dict):
-        return {key: _safe_output(item) for key, item in value.items() if key not in hidden}
+        return {
+            key: _safe_output(item) for key, item in value.items() if key not in hidden
+        }
     if isinstance(value, list):
         return [_safe_output(item) for item in value]
     if isinstance(value, str):
@@ -571,13 +654,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             gh_authenticated = False
             if gh is not None:
                 try:
-                    gh_authenticated = subprocess.run(
-                        [gh, "auth", "status"],
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                        timeout=5,
-                    ).returncode == 0
+                    gh_authenticated = (
+                        subprocess.run(
+                            [gh, "auth", "status"],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                            timeout=5,
+                        ).returncode
+                        == 0
+                    )
                 except (OSError, subprocess.TimeoutExpired):
                     gh_authenticated = False
             checks = {
@@ -587,7 +673,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "gh_authenticated": gh_authenticated,
             }
             value = {
-                "status": "already_initialized" if runtime_preexisting else "initialized",
+                "status": (
+                    "already_initialized" if runtime_preexisting else "initialized"
+                ),
                 "schema_version": store.schema_version(),
                 "runtime": str(runtime.root),
                 "checks": checks,
@@ -600,7 +688,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             projects = [safe_project(item) for item in store.list_projects()]
             _render(projects, json_output=args.json_output)
         elif args.command == "projects" and args.projects_command == "show":
-            _render(safe_project(store.get_project(args.project_id)), json_output=args.json_output)
+            _render(
+                safe_project(store.get_project(args.project_id)),
+                json_output=args.json_output,
+            )
         elif args.command == "projects" and args.projects_command == "check":
             value = project_checks(store.get_project(args.project_id), runtime)
             _render(value, json_output=args.json_output)
@@ -632,7 +723,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             args.projects_command == "resume",
                         )
                 _render(
-                    {"status": "applied", "plan": plan, "project": safe_project(updated)},
+                    {
+                        "status": "applied",
+                        "plan": plan,
+                        "project": safe_project(updated),
+                    },
                     json_output=args.json_output,
                 )
         elif args.command == "projects" and args.projects_command == "add":
@@ -658,9 +753,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 plan = _add_project_plan(prepared)
                 existing = None
             if args.plan_only:
-                _render({"status": "planned", "plan": plan}, json_output=args.json_output)
-            elif not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
-                _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
+                _render(
+                    {"status": "planned", "plan": plan}, json_output=args.json_output
+                )
+            elif not _confirm(
+                plan, non_interactive=args.non_interactive, json_output=args.json_output
+            ):
+                _render(
+                    {"status": "cancelled", "plan": plan}, json_output=args.json_output
+                )
             else:
                 confirmed_token = args.plan_token or (
                     plan["plan_token"] if not args.non_interactive else None
@@ -701,9 +802,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             current = store.get_project(args.project_id)
             plan = _use_existing_project_plan(store, current)
             if args.plan_only:
-                _render({"status": "planned", "plan": plan}, json_output=args.json_output)
-            elif not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
-                _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
+                _render(
+                    {"status": "planned", "plan": plan}, json_output=args.json_output
+                )
+            elif not _confirm(
+                plan, non_interactive=args.non_interactive, json_output=args.json_output
+            ):
+                _render(
+                    {"status": "cancelled", "plan": plan}, json_output=args.json_output
+                )
             else:
                 confirmed_token = args.plan_token or (
                     plan["plan_token"] if not args.non_interactive else None
@@ -726,9 +833,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared = _prepare_project_update(args, current, store, runtime)
             plan = _update_project_plan(store, current, prepared)
             if args.plan_only:
-                _render({"status": "planned", "plan": plan}, json_output=args.json_output)
-            elif not _confirm(plan, non_interactive=args.non_interactive, json_output=args.json_output):
-                _render({"status": "cancelled", "plan": plan}, json_output=args.json_output)
+                _render(
+                    {"status": "planned", "plan": plan}, json_output=args.json_output
+                )
+            elif not _confirm(
+                plan, non_interactive=args.non_interactive, json_output=args.json_output
+            ):
+                _render(
+                    {"status": "cancelled", "plan": plan}, json_output=args.json_output
+                )
             else:
                 confirmed_token = args.plan_token or (
                     plan["plan_token"] if not args.non_interactive else None
@@ -803,9 +916,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {"status": "created" if created else "duplicate", "task": task},
                 json_output=args.json_output,
             )
+        elif args.command == "tasks" and args.tasks_command == "local-plan":
+            value = LocalTaskManager(store, runtime).plan(_read_stdin_json())
+            _render_local_task(value)
+        elif args.command == "tasks" and args.tasks_command == "local-create":
+            request = _read_stdin_json()
+            with RuntimeLock(runtime.lock_file):
+                value = LocalTaskManager(store, runtime).create(
+                    request, plan_token=args.plan_token
+                )
+            value["task"] = task_view(
+                value["task"],
+                {item["project_id"]: item for item in store.list_projects()},
+            )
+            _render_local_task(value)
         elif args.command == "tasks" and args.tasks_command == "review":
             try:
-                review_value = json.loads(args.file.expanduser().resolve().read_text(encoding="utf-8"))
+                review_value = json.loads(
+                    args.file.expanduser().resolve().read_text(encoding="utf-8")
+                )
             except (FileNotFoundError, json.JSONDecodeError) as exc:
                 raise ProjectBrainError(f"Invalid review file: {exc}") from exc
             if not isinstance(review_value, dict):
@@ -819,7 +948,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 review = applied["review"]
                 task = applied["task"]
-            _render({"status": task["status"], "task": task, "review": review}, json_output=args.json_output)
+            _render(
+                {"status": task["status"], "task": task, "review": review},
+                json_output=args.json_output,
+            )
         elif args.command == "tasks" and args.tasks_command == "recover":
             manager = WorktreeManager(store, runtime)
             with RuntimeLock(runtime.lock_file):
@@ -876,7 +1008,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             value = health_report(store, runtime)
             human = "\n".join(
                 [f"Project Brain health: {value['status']}"]
-                + [f"- {item['status'].upper()} {item['name']}: {item['detail']}" for item in value["checks"]]
+                + [
+                    f"- {item['status'].upper()} {item['name']}: {item['detail']}"
+                    for item in value["checks"]
+                ]
             )
             _render(value, json_output=args.json_output, human=human)
             return 0 if value["status"] == "healthy" else 1
@@ -890,7 +1025,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             manager = WorktreeManager(store, runtime)
             reconciler = TerminalWorktreeReconciler(store, runtime, manager)
             if not args.execute:
-                value = {"mode": "dry_run", "worktrees": reconciler.reconcile(execute=False)}
+                value = {
+                    "mode": "dry_run",
+                    "worktrees": reconciler.reconcile(execute=False),
+                }
             else:
                 with RuntimeLock(runtime.lock_file):
                     value = {
@@ -914,7 +1052,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_mcp_server(runtime, host=args.host, port=args.port)
         return 0
     except AlreadyRunningError:
-        _render({"status": "already_running"}, json_output=getattr(args, "json_output", False))
+        _render(
+            {"status": "already_running"},
+            json_output=getattr(args, "json_output", False),
+        )
         return 0
     except ProjectBrainError as exc:
         value = _error_payload(exc)

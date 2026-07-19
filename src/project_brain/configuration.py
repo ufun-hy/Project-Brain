@@ -281,11 +281,17 @@ def project_checks(project: dict[str, Any], runtime: RuntimePaths) -> dict[str, 
         origin_matches = ProjectRegistry._normalize_remote(actual_origin) == ProjectRegistry._normalize_remote(project["remote_url"])
     except ConfigurationError:
         origin_matches = False
-    remote_head = subprocess.run(
-        ["git", "-C", str(repo), "ls-remote", "--symref", "origin", "HEAD"],
-        text=True,
-        capture_output=True,
-    )
+    try:
+        remote_head = subprocess.run(
+            ["git", "-C", str(repo), "ls-remote", "--symref", "origin", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        remote_head = subprocess.CompletedProcess([], 1, "", "remote inspection failed")
     expected_ref = f"ref: refs/heads/{project['default_branch']}\tHEAD"
     default_matches = remote_head.returncode == 0 and expected_ref in remote_head.stdout.splitlines()
     checks = [

@@ -27,7 +27,7 @@ private final class VersionRunner: HelperCommandRunning, @unchecked Sendable {
                 stderr: ""
             )
         }
-        let version = try versions[executable.path]?.get() ?? "project-brain 0.7.0"
+        let version = try versions[executable.path]?.get() ?? "project-brain 0.8.0"
         return HelperCommandResult(exitCode: 0, stdout: version + "\n", stderr: "")
     }
 }
@@ -67,13 +67,13 @@ final class HelperInstallerTests: XCTestCase {
             cliContract: contractDocument
         )
         XCTAssertEqual(installed.action, .installed)
-        XCTAssertEqual(installed.version, "project-brain 0.7.0")
-        XCTAssertEqual(installed.cliContractVersion, "1.0.0")
+        XCTAssertEqual(installed.version, "project-brain 0.8.0")
+        XCTAssertEqual(installed.cliContractVersion, "1.1.0")
         XCTAssertEqual(installed.cliContractSHA256, contractDocument.sha256)
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: installed.destination.path))
         XCTAssertTrue(installed.destination.path.hasPrefix("/"))
 
-        runner.versions[installed.destination.path] = .success("project-brain 0.7.0")
+        runner.versions[installed.destination.path] = .success("project-brain 0.8.0")
         XCTAssertEqual(
             try installer.install(
                 bundledHelper: bundled,
@@ -100,7 +100,7 @@ final class HelperInstallerTests: XCTestCase {
             [.posixPermissions: 0o755],
             ofItemAtPath: first.destination.path
         )
-        runner.versions[first.destination.path] = .success("project-brain 0.7.0")
+        runner.versions[first.destination.path] = .success("project-brain 0.8.0")
 
         let upgraded = try installer.install(
             bundledHelper: bundled,
@@ -125,8 +125,8 @@ final class HelperInstallerTests: XCTestCase {
             [.posixPermissions: 0o755],
             ofItemAtPath: first.destination.path
         )
-        runner.versions[bundled.path] = .success("project-brain 0.7.0")
-        runner.versions[first.destination.path] = .success("project-brain 0.7.0")
+        runner.versions[bundled.path] = .success("project-brain 0.8.0")
+        runner.versions[first.destination.path] = .success("project-brain 0.8.0")
 
         let failing = FailingDestinationRunner(
             destination: first.destination.path,
@@ -224,7 +224,7 @@ private final class ActivationRunner: HelperCommandRunning, @unchecked Sendable 
                 stderr: ""
             )
         }
-        return HelperCommandResult(exitCode: 0, stdout: "project-brain 0.7.0\n", stderr: "")
+        return HelperCommandResult(exitCode: 0, stdout: "project-brain 0.8.0\n", stderr: "")
     }
 }
 
@@ -259,7 +259,7 @@ private final class FailingDestinationRunner: HelperCommandRunning, @unchecked S
         }
         return HelperCommandResult(
             exitCode: 0,
-            stdout: "project-brain 0.7.0\n",
+            stdout: "project-brain 0.8.0\n",
             stderr: ""
         )
     }

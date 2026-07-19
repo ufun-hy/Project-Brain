@@ -13,21 +13,41 @@ public struct CoreProcessResult: Equatable, Sendable {
 }
 
 public protocol CoreProcessRunning: Sendable {
-    func run(executable: URL, arguments: [String]) throws -> CoreProcessResult
+    func run(
+        executable: URL,
+        arguments: [String],
+        standardInput: Data?
+    ) throws -> CoreProcessResult
+}
+
+public extension CoreProcessRunning {
+    func run(executable: URL, arguments: [String]) throws -> CoreProcessResult {
+        try run(executable: executable, arguments: arguments, standardInput: nil)
+    }
 }
 
 public struct FoundationCoreProcessRunner: CoreProcessRunning {
     public init() {}
 
-    public func run(executable: URL, arguments: [String]) throws -> CoreProcessResult {
+    public func run(
+        executable: URL,
+        arguments: [String],
+        standardInput: Data?
+    ) throws -> CoreProcessResult {
         let process = Process()
         let output = Pipe()
         let error = Pipe()
+        let input = standardInput.map { _ in Pipe() }
         process.executableURL = executable
         process.arguments = arguments
         process.standardOutput = output
         process.standardError = error
+        process.standardInput = input
         try process.run()
+        if let standardInput, let input {
+            input.fileHandleForWriting.write(standardInput)
+            try? input.fileHandleForWriting.close()
+        }
 
         // Draining both handles concurrently avoids a child blocking on a full pipe.
         let group = DispatchGroup()
@@ -85,6 +105,7 @@ public enum CoreClientError: LocalizedError, Equatable, Sendable {
             case "service": "Background service needs attention"
             case "security": "A safety check blocked this action"
             case "state_conflict": "Project Brain state changed"
+            case "invalid_task": "Review the task details"
             default: "Project Brain needs attention"
             }
         case .projectConflict: "Project registration conflicts with existing data"
@@ -102,6 +123,7 @@ public enum CoreClientError: LocalizedError, Equatable, Sendable {
             case "service": "Use Connection Center to reinstall or restart services."
             case "security": "Choose a validated repository or trusted executable."
             case "state_conflict": "Refresh and review the latest state before retrying."
+            case "invalid_task": "Correct the highlighted fields, then review a new plan."
             default: "Open Diagnostics for a safe, detailed check."
             }
         case .projectConflict:
@@ -153,9 +175,19 @@ public final class CoreClient: @unchecked Sendable {
 
     public func execute<T: Decodable>(_ command: CoreCommand, as type: T.Type = T.self) throws -> T {
         let arguments = command.arguments(runtimeRoot: runtimeRoot, cliContract: cliContract)
+        let standardInput: Data?
+        do {
+            standardInput = try command.standardInput()
+        } catch {
+            throw CoreClientError.invalidResponse("The local task request could not be encoded.")
+        }
         let result: CoreProcessResult
         do {
-            result = try runner.run(executable: executable, arguments: arguments)
+            result = try runner.run(
+                executable: executable,
+                arguments: arguments,
+                standardInput: standardInput
+            )
         } catch let error as CoreClientError {
             throw error
         } catch {
@@ -277,5 +309,14 @@ public final class CoreClient: @unchecked Sendable {
         planToken: String
     ) throws -> AcceptanceTaskCreateResponse {
         try execute(.acceptanceTaskCreate(projectID, planToken: planToken))
+    }
+    public func planLocalTask(_ request: LocalTaskRequest) throws -> LocalTaskPlanResponse {
+        try execute(.localTaskPlan(request))
+    }
+    public func createLocalTask(
+        _ request: LocalTaskRequest,
+        planToken: String
+    ) throws -> LocalTaskCreateResponse {
+        try execute(.localTaskCreate(request, planToken: planToken))
     }
 }

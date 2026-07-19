@@ -15,25 +15,47 @@ struct TaskCenterView: View {
             }
             .overlay {
                 if model.tasks.isEmpty {
-                    ContentUnavailableView(
-                        "No tasks",
-                        systemImage: "checklist",
-                        description: Text("Project Brain is ready for a new task.")
-                    )
+                    VStack(spacing: 12) {
+                        Image(systemName: "checklist").font(.largeTitle)
+                        Text("No tasks yet").font(.title2.bold())
+                        Text("Project Brain is ready for a new task.")
+                            .foregroundStyle(.secondary)
+                        Button("Create Task") { model.openNewTask() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.projects.isEmpty)
+                            .accessibilityIdentifier("task-center-empty-create-task")
+                    }
                 }
             }
             .navigationTitle("Task Center")
             .navigationSplitViewColumnWidth(min: 320, ideal: 380)
+            .toolbar {
+                Button("New Task", systemImage: "plus") { model.openNewTask() }
+                    .disabled(model.projects.isEmpty)
+                    .accessibilityIdentifier("task-center-new-task")
+            }
         } detail: {
             if let detail = model.selectedTask {
                 TaskDetailView(task: detail)
             } else {
-                ContentUnavailableView(
-                    "Select a task",
-                    systemImage: "sidebar.left",
-                    description: Text("Choose a task to inspect reliable state and evidence.")
-                )
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Create and follow a task").font(.title2.bold())
+                    Label("Describe the outcome.", systemImage: "1.circle")
+                    Label("Review the execution plan.", systemImage: "2.circle")
+                    Label("Follow progress and review the result.", systemImage: "3.circle")
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .sheet(isPresented: $model.isNewTaskPresented) {
+            NewTaskView(model: model)
+        }
+        .alert("Your first project is ready", isPresented: $model.shouldShowFirstTaskGuide) {
+            Button("Create First Task") { model.createFirstTaskFromGuide() }
+            Button("Not now", role: .cancel) { model.skipFirstTaskGuide() }
+        } message: {
+            Text("Project Brain works in an isolated Git worktree and keeps your main checkout untouched.")
         }
     }
 }
@@ -48,13 +70,30 @@ private struct TaskRow: View {
                 Spacer()
                 StatusBadge(status: task.status, text: task.presentedStatus)
             }
-            Text("\(task.project) · attempt \(task.attemptCount)")
+            Text("\(task.project) · \(source) · \(task.localTaskType?.title ?? String(localized: "Task"))")
                 .font(.caption).foregroundStyle(.secondary)
+            Text(String(
+                format: String(localized: "Task row metadata format"),
+                task.attemptPhase?.rawValue.capitalized ?? "—",
+                task.createdAt ?? "—",
+                task.updatedAt ?? "—"
+            ))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
             if let next = task.nextAction {
                 Text(next).font(.caption).lineLimit(2)
             }
         }
         .padding(.vertical, 5)
+    }
+
+    private var source: String {
+        switch task.sourceType {
+        case "local_app": String(localized: "App")
+        case "mcp", "chatgpt": String(localized: "ChatGPT")
+        case .some(let value): value
+        case .none: String(localized: "Existing source")
+        }
     }
 }
 
@@ -74,15 +113,51 @@ private struct TaskDetailView: View {
                 }
 
                 GroupBox("Execution") {
+                    LabeledContent("Source", value: source)
+                    LabeledContent(
+                        "Task type",
+                        value: task.localTaskType?.title ?? String(localized: "Existing task")
+                    )
                     LabeledContent("Phase", value: task.attemptPhase?.rawValue.capitalized ?? "—")
                     LabeledContent("Attempt", value: String(task.attemptCount))
+                    LabeledContent("Created", value: task.createdAt ?? "—")
+                    LabeledContent("Updated", value: task.updatedAt ?? "—")
                     LabeledContent("Branch", value: task.branch ?? "—")
-                    LabeledContent("Canonical commit", value: short(task.commit ?? task.headSHA))
+                    LabeledContent("Canonical commit", value: task.commit ?? task.headSHA ?? "—")
+                    LabeledContent("Base SHA", value: task.baseSHA ?? "—")
+                    if let revision = task.projectConfigRevision {
+                        LabeledContent(
+                            "Execution profile",
+                            value: "revision \(revision) · \(task.projectConfigSHA256 ?? "—")"
+                        )
+                    }
                     if let url = task.prURL, let destination = URL(string: url) {
                         LabeledContent("Draft PR") {
                             Button(url) { NSWorkspace.shared.open(destination) }
                                 .buttonStyle(.link)
                         }
+                    }
+                }
+
+                if let result = task.result {
+                    GroupBox(task.localTaskType == .analysis ? "Analysis result" : "Execution result") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let summary = result["summary"] {
+                                Text(summary.displayText).textSelection(.enabled)
+                            }
+                            if let kind = result["kind"] {
+                                LabeledContent("Result type", value: kind.displayText)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if let delivery = task.delivery {
+                    GroupBox("Delivery snapshot") {
+                        LabeledContent("Commit", value: yesNo(delivery.commit))
+                        LabeledContent("Push", value: yesNo(delivery.push))
+                        LabeledContent("Draft PR", value: yesNo(delivery.draftPR))
                     }
                 }
 
@@ -165,6 +240,23 @@ private struct TaskDetailView: View {
                 if let next = task.nextAction {
                     GroupBox("Next action") { Text(next) }
                 }
+
+                if !task.events.isEmpty {
+                    GroupBox("Phase timeline") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(task.events) { event in
+                                HStack(alignment: .top) {
+                                    Image(systemName: "circle.fill").font(.system(size: 6))
+                                    VStack(alignment: .leading) {
+                                        Text(event.eventType.replacingOccurrences(of: "_", with: " ").capitalized)
+                                        Text(event.createdAt).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
             .padding(28)
         }
@@ -172,6 +264,19 @@ private struct TaskDetailView: View {
 
     private func short(_ value: String?) -> String {
         value.map { String($0.prefix(12)) } ?? "—"
+    }
+
+    private var source: String {
+        switch task.sourceType {
+        case "local_app": String(localized: "App")
+        case "mcp", "chatgpt": String(localized: "ChatGPT")
+        case .some(let value): value
+        case .none: String(localized: "Existing source")
+        }
+    }
+
+    private func yesNo(_ value: Bool) -> String {
+        value ? String(localized: "Yes") : String(localized: "No")
     }
 }
 
@@ -191,7 +296,7 @@ struct StatusBadge: View {
     private var color: Color {
         if status.needsAttention { return .orange }
         if status.isActive { return .blue }
-        if status == .accepted { return .green }
+        if status == .accepted || status == .completed { return .green }
         return .secondary
     }
 }

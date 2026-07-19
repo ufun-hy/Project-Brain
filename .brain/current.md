@@ -1,107 +1,71 @@
 # Current State
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Current stage
 
-Product Shell RC1 Build 6 installation-experience hotfix is implemented on the independent
-`codex/project-brain-product-shell-hotfix-onboarding` branch from exact merged
-base `main@7a8275289ac949f418d60a7d20cca14a8ae728f9`. The delivery target is Draft
-PR #17. It must not be marked Ready or merged while external acceptance is
-pending.
+PR #17 / Build 7 was merged at exact base
+`main@7259acfa1c38e30f3f8c2126eb7c7c3f8c271e3f`. RFC-008 local task intake is
+implemented on the independent `codex/project-brain-local-task-intake-v1`
+branch for a new Draft PR and Project Brain 0.8.0 build 8. No historical PR or
+artifact is reused.
 
-## Implemented Build 6 hotfix
+## Local task intake
 
-- Project Brain 0.7.0 build 6 prohibits multiple instances through the macOS
-  Launch Services bundle contract. Release packaging and mounted-DMG
-  verification assert the emitted Boolean key in the final app bundle.
-- The menu-bar panel and Settings each expose a direct Quit Project Brain
-  action. Quit stops only the UI process and preserves projects, tasks,
-  services, Keychain entries, and runtime data.
-- The DMG includes an `/Applications` symlink beside the app and a visible
-  bilingual drag-to-install guide. CI mounts the completed DMG and verifies the
-  app, link target, guide, build number, and single-instance key.
-- Build 6 uses distinct DMG/ZIP/workflow artifact names and manifest build
-  metadata. Builds 4 and 5 remain immutable history and are superseded, not
-  replaced.
+- Menu bar and Task Center expose review-first New Task actions; the empty
+  state and one-time guided first run lead to the same sheet.
+- Analyze/Review and Implement change use one schema-v1, source-neutral stdin
+  JSON contract. Swift cannot supply command, argv, cwd, environment, SQL,
+  paths, executables, branches, worktrees, credentials, or sandbox policy.
+- SQLite schema v9 persists local task plans, exact request hashes, execution
+  snapshots, delivery, task type, and schema-v1 results while preserving old
+  and external-source tasks.
+- The `local-v1:` token cryptographically binds the reviewed plan. RuntimeLock,
+  remote Base, project revision/hash/path, delivery policy, readiness, expiry,
+  transaction, and dedupe checks fail closed at confirmation.
+- Analyze runs in a read-only isolated worktree, accepts no changes as normal
+  success, records `completed`, and cannot commit, push, or create a PR.
+- Implement retains the canonical commit, verification seal, bounded project
+  push/Draft PR policy, review, retry, recovery, and worktree safety model.
+- Task Center displays authoritative source/type/status/phase, execution
+  snapshot, results, files, verification, publication, errors, recovery, and
+  events. Menu counts update from the same Core observation stream.
 
-## Preserved Build 5 onboarding hotfix
+## Packaging and verification
 
-- Project Brain 0.7.0 build 5 resolves an onboarding repository against the
-  preserved SQLite registrations using canonical real path, normalized origin,
-  stable ID, and display name. Existing registrations produce `use_existing`
-  or `update`, never a duplicate `add`.
-- Project ID, name, and path conflicts are returned during planning with
-  structured existing-project metadata and bounded recovery actions. Apply
-  re-plans under RuntimeLock and SQLite keeps final transactional collision,
-  revision, hash, and action checks.
-- Onboarding errors render inside the active sheet with actions to use the
-  existing project, select another directory, or edit the name.
-- DMG and other non-Applications launches are explicitly not installed. Local
-  readiness and onboarding completion require the exact
-  `/Applications/Project Brain.app` bundle location.
-- Build 5 uses distinct DMG/ZIP/workflow artifact names and manifest build
-  metadata. Build 4 remains immutable history and is superseded, not replaced.
-
-## Preserved RC1 implementation
-
-- Project Brain schema v8 migration with stable
-  installation identity, one-time transport-probe runs, append-only events, and
-  safe downgrade of legacy v7 `passed` rows to unattributed evidence.
-- A strict `project_brain_acceptance_probe` MCP tool. Core has no pass CLI and
-  Swift has no pass command; MCP ingress records transport evidence only and
-  never authenticates ChatGPT or marks external acceptance complete.
-- 256-bit, ten-minute, hash-only, one-use challenges with mismatch, replay,
-  concurrent-consumption, expiry, supersede, and restart recovery gates.
-- The future fixed real-project acceptance task is locked until Core can supply
-  applicable trusted ChatGPT control-plane attestation; unattributed current or
-  historical transport evidence fails closed.
-- Native Tunnel Client import with zero-execution static file/Mach-O/size/hash/
-  quarantine/signing preflight, separate execution authorization, bundled
-  schema-v1 compatibility manifest for 0.0.10 arm64, bounded fixed-argv version
-  check, isolated read-only runtime-contract probe, atomic install, rollback,
-  and fail-closed removal after confirmed stop.
-- Connection Center transport-probe guidance with automatic waiting refresh,
-  memory-only prompt, full current-binding applicability, explicit external
-  Pending state, and a locked project-task preview.
-- Redacted diagnostics with Tunnel fingerprint, not raw ID, and no challenge or
-  credentials.
-- CI Release DMG/ZIP, manifest, artifact hashes, unsigned/internal-RC labels,
-  helper/resource checks, real launchd, SwiftPM/Xcode, and Gmail isolation.
+- App/Core are 0.8.0 with CLI contract 1.1.0, request/result schema 1, and
+  database schema 9.
+- English and Simplified Chinese strings are packaged by SwiftPM and Xcode.
+- Build 8 uses distinct `Project-Brain-Local-Tasks-Build8-arm64` DMG/ZIP names
+  and a schema-v3 manifest; Build 7 remains immutable history.
+- Final-DMG CI mounts and installs the App, invokes its embedded helper in an
+  isolated HOME, migrates a preserved schema-v8 database, creates and completes
+  a no-change Analyze task, reopens the result, and proves the main checkout is
+  unchanged. Implement worktree behavior is covered in Core integration tests;
+  no unauthorized real GitHub PR is created.
+- Local Python and Swift compilation must pass before push. SwiftPM XCTest,
+  Xcode, real launchd, final DMG, and artifact hashes are authoritative on the
+  exact-head macOS GitHub Actions run.
 
 ## Preserved guarantees
 
-- SQLite remains authoritative for task execution snapshots, canonical-head
-  verification sets, review, recovery, forensics, and publication retry.
-- All runtime subprocesses use absolute executable paths and typed fixed argv;
-  no user command, shell, cwd, environment, SQL, or URL reaches execution.
-- Runtime API keys remain Keychain-only. Tunnel Client is not committed or
-  bundled, and the app never bypasses quarantine or Gatekeeper.
-- Default checkouts and human changes are never reset or cleaned. Managed
-  worktree cleanup retains existing forensic and ownership gates.
-- No UI path accepts, merges, or manually marks external verification passed.
-- Gmail legacy remains frozen and outside Product Shell.
-
-## Verification status
-
-Build 6 local and CI verification evidence is recorded in
-`docs/product-shell-build6-installation-hotfix-verification.md`. The local
-Core/MCP suite passes 220 tests and Swift app compilation passes. Exact-head
-macOS CI remains required for XCTest, Xcode, launchd, Release packaging,
-mounted-DMG layout, and artifact hashes. A CI probe remains transport evidence,
-not external ChatGPT acceptance.
+- The registered main checkout is never switched, reset, cleaned, or used as
+  an agent working directory.
+- Existing SQLite, projects, tasks, Keychain, Tunnel state, and user untracked
+  files are not cleared, migrated outside schema rules, or altered for tests.
+- Gmail legacy remains frozen and has zero tracked diff from the exact base.
+- Core never merges automatically. Draft PR and review boundaries remain.
 
 ## External acceptance
 
-Secure MCP Tunnel, real credentials, ChatGPT connector discovery, trusted
-control-plane attestation, real-project Draft PR closure, Apple signing, and
-notarization remain Pending. No local or CI result closes these gates.
+Secure MCP Tunnel, real credentials, ChatGPT connector discovery and trusted
+control-plane attribution remain **Pending**. Local task and artifact tests do
+not satisfy or replace external ChatGPT acceptance. Signing, notarization, and
+automatic updates are also outside RFC-008.
 
 ## Read next
 
+- `docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md`
 - `docs/product-shell.md`
-- `docs/product-shell-build6-installation-hotfix-verification.md`
-- `docs/product-shell-build5-hotfix-verification.md`
-- `docs/product-shell-rc1-verification.md`
-- `docs/rfc/RFC-007-zero-cli-rc1.md`
-- `docs/mcp-adapter.md`
+- `docs/product-shell-build8-local-task-verification.md`
+- `docs/troubleshooting-recovery.md`

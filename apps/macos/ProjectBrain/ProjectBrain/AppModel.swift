@@ -54,7 +54,6 @@ private struct ProductSnapshot: Sendable {
     var serviceOnline: Bool {
         let states = Dictionary(uniqueKeysWithValues: services.services.map { ($0.name, $0.state) })
         return ["healthy", "running"].contains(states["worker"])
-            && states["mcp"] == "running"
     }
 }
 
@@ -244,6 +243,22 @@ private actor ProductShellBackend {
         try requireClient().createAcceptanceTask(projectID, planToken: planToken)
     }
 
+    func planLocalTask(_ request: LocalTaskRequest) throws -> LocalTaskPlanResponse {
+        try requireClient().planLocalTask(request)
+    }
+
+    func createLocalTask(
+        _ request: LocalTaskRequest,
+        planToken: String
+    ) throws -> (LocalTaskCreateResponse, ProductSnapshot) {
+        let client = try requireClient()
+        let response = try client.createLocalTask(request, planToken: planToken)
+        return (
+            response,
+            try loadSnapshot(client: client, selectedTaskID: response.task.taskID)
+        )
+    }
+
     private func requireClient() throws -> CoreClient {
         guard let client else {
             throw CoreClientError.invalidInstallation("The managed Core helper is not ready.")
@@ -307,6 +322,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var acceptanceStatus: ExternalAcceptanceStatusResponse?
     @Published private(set) var acceptanceChallenge: String?
     @Published var acceptanceTaskPlan: AcceptanceTaskPlanResponse?
+    @Published var selectedProjectID: String?
+    @Published var localTaskRequest = LocalTaskRequest(projectID: "")
+    @Published var localTaskPlan: LocalTaskPlanResponse?
+    @Published var localTaskIssue: UserFacingIssue?
+    @Published var isNewTaskPresented = false
+    @Published var shouldShowFirstTaskGuide = false
     @Published private(set) var isBusy = false
     @Published var issue: UserFacingIssue?
 
@@ -314,6 +335,7 @@ final class AppModel: ObservableObject {
     private let onboardingStore: OnboardingStore
     private let connectionStore: ConnectionStore
     private let keychain: KeychainStore
+    private let firstTaskGuideStore: FirstTaskGuideStore
     private let observation: StateObservationLoop<ProductSnapshot>
     private var didBootstrap = false
     private var tunnelStatusTask: Task<Void, Never>?
@@ -326,6 +348,7 @@ final class AppModel: ObservableObject {
         onboardingStore: OnboardingStore = OnboardingStore(),
         connectionStore: ConnectionStore = ConnectionStore(),
         keychain: KeychainStore = KeychainStore(),
+        firstTaskGuideStore: FirstTaskGuideStore = FirstTaskGuideStore(),
         applicationBundleURL: URL = Bundle.main.bundleURL,
         cliContractURL: URL? = Bundle.main.url(
             forResource: "project-brain-cli-contract",
@@ -341,6 +364,7 @@ final class AppModel: ObservableObject {
         self.onboardingStore = onboardingStore
         self.connectionStore = connectionStore
         self.keychain = keychain
+        self.firstTaskGuideStore = firstTaskGuideStore
         self.observation = StateObservationLoop()
         self.onboarding = onboardingStore.load()
         self.installationStatus = ApplicationInstallationStatus(bundleURL: applicationBundleURL)
@@ -603,6 +627,7 @@ final class AppModel: ObservableObject {
         onboarding.lastError = nil
         persistOnboarding()
         startObservation()
+        offerFirstTaskGuideIfNeeded()
     }
 
     func goBackOnboarding() {
@@ -629,6 +654,85 @@ final class AppModel: ObservableObject {
         runOperation {
             try await self.backend.task(task.taskID)
         } onSuccess: { self.selectedTask = $0 }
+    }
+
+    func openNewTask(defaultProjectID: String? = nil) {
+        guard let project = projects.first(where: {
+            $0.projectID == (defaultProjectID ?? selectedProjectID)
+        }) ?? projects.first(where: { $0.acceptingTasks }) else { return }
+        selectedProjectID = project.projectID
+        localTaskRequest = LocalTaskRequest(
+            projectID: project.projectID,
+            taskType: .analysis,
+            delivery: .init(commit: false, push: false, draftPR: false)
+        )
+        localTaskPlan = nil
+        localTaskIssue = nil
+        isNewTaskPresented = true
+    }
+
+    func updateLocalTaskType(_ type: LocalTaskType) {
+        localTaskRequest.taskType = type
+        guard let project = projects.first(where: {
+            $0.projectID == localTaskRequest.projectID
+        }) else { return }
+        localTaskRequest.delivery = type == .analysis
+            ? .init(commit: false, push: false, draftPR: false)
+            : .init(
+                commit: true,
+                push: project.autoPush,
+                draftPR: project.autoPush && project.autoPR
+            )
+        localTaskPlan = nil
+    }
+
+    func selectLocalTaskProject(_ projectID: String) {
+        localTaskRequest.projectID = projectID
+        selectedProjectID = projectID
+        updateLocalTaskType(localTaskRequest.taskType)
+    }
+
+    func planLocalTask() {
+        localTaskPlan = nil
+        localTaskIssue = nil
+        runLocalTaskOperation {
+            try await self.backend.planLocalTask(self.localTaskRequest)
+        } onSuccess: { self.localTaskPlan = $0 }
+    }
+
+    func createLocalTask() {
+        guard let plan = localTaskPlan else { return }
+        localTaskIssue = nil
+        runLocalTaskOperation {
+            try await self.backend.createLocalTask(
+                self.localTaskRequest,
+                planToken: plan.plan.planToken
+            )
+        } onSuccess: { _, snapshot in
+            self.apply(snapshot)
+            self.selectedSection = .tasks
+            self.localTaskPlan = nil
+            self.isNewTaskPresented = false
+        }
+    }
+
+    func reviewNewLocalTaskPlan() {
+        localTaskPlan = nil
+        localTaskIssue = nil
+    }
+
+    func openDiagnosticsFromLocalTask() {
+        isNewTaskPresented = false
+        selectedSection = .diagnostics
+    }
+
+    func createFirstTaskFromGuide() {
+        shouldShowFirstTaskGuide = false
+        openNewTask()
+    }
+
+    func skipFirstTaskGuide() {
+        shouldShowFirstTaskGuide = false
     }
 
     func performService(_ action: ServiceAction, completion: (() -> Void)? = nil) {
@@ -936,6 +1040,10 @@ final class AppModel: ObservableObject {
         health = snapshot.health
         acceptanceStatus = snapshot.acceptance
         installedTunnelClient = snapshot.tunnelInstallation
+        if selectedProjectID == nil
+            || !snapshot.projects.contains(where: { $0.projectID == selectedProjectID }) {
+            selectedProjectID = snapshot.projects.first?.projectID
+        }
         if snapshot.selectedTask != nil { selectedTask = snapshot.selectedTask }
         connection.localMCPStatus = snapshot.services.services
             .first(where: { $0.name == "mcp" })?.state ?? "unknown"
@@ -953,6 +1061,7 @@ final class AppModel: ObservableObject {
         applyExternalVerificationAuthority()
         connectionStore.save(connection)
         refreshTunnelStatus(silent: true)
+        if onboarding.completed { offerFirstTaskGuideIfNeeded() }
     }
 
     private func startObservation() {
@@ -1026,7 +1135,7 @@ final class AppModel: ObservableObject {
 
     private static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
-            as? String ?? "0.7.0"
+            as? String ?? "0.8.0"
     }
 
     private static func makeTunnelInstaller() -> TunnelClientInstaller? {
@@ -1058,6 +1167,48 @@ final class AppModel: ObservableObject {
                 present(error)
             }
             isBusy = false
+        }
+    }
+
+    private func runLocalTaskOperation<Value: Sendable>(
+        _ operation: @escaping () async throws -> Value,
+        onSuccess: @escaping @MainActor (Value) -> Void
+    ) {
+        guard !isBusy else { return }
+        isBusy = true
+        Task {
+            do {
+                let value = try await operation()
+                onSuccess(value)
+            } catch {
+                presentLocalTask(error)
+            }
+            isBusy = false
+        }
+    }
+
+    private func offerFirstTaskGuideIfNeeded() {
+        guard onboarding.completed,
+              firstTaskGuideStore.shouldPresent(taskCount: tasks.count) else { return }
+        firstTaskGuideStore.markPresented()
+        shouldShowFirstTaskGuide = true
+    }
+
+    private func presentLocalTask(_ error: Error) {
+        if let core = error as? CoreClientError {
+            localTaskIssue = UserFacingIssue(
+                title: core.userTitle,
+                message: core.localizedDescription,
+                nextAction: core.nextAction
+            )
+        } else {
+            localTaskIssue = UserFacingIssue(
+                title: String(localized: "Review task details"),
+                message: SecretRedactor.redact(error.localizedDescription),
+                nextAction: String(
+                    localized: "Correct the fields or open Diagnostics, then review a new plan."
+                )
+            )
         }
     }
 

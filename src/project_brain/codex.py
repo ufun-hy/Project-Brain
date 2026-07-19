@@ -8,13 +8,24 @@ import threading
 import uuid
 from pathlib import Path
 import json
+from dataclasses import dataclass
 from typing import Any
 
-from .errors import ExternalCommandError, InvalidTaskError, RecoveryError, TransientTaskError
+from .errors import (
+    ExternalCommandError,
+    InvalidTaskError,
+    RecoveryError,
+    TransientTaskError,
+)
 from .git_history import GitHistoryNormalizer, GitSnapshot, NormalizedHistory
 from .process_supervision import capture_process_identity, terminate_process_group
 from .store import TaskStore
 from .security import redact_text
+
+
+@dataclass(frozen=True)
+class AnalysisExecution:
+    result: dict[str, Any]
 
 
 class CodexAdapter:
@@ -38,7 +49,7 @@ class CodexAdapter:
         project: dict[str, Any],
         worktree: str | Path,
         snapshot: GitSnapshot,
-    ) -> NormalizedHistory:
+    ) -> NormalizedHistory | AnalysisExecution:
         prompt = task["payload"].get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             raise InvalidTaskError("codex task requires a non-empty prompt")
@@ -62,10 +73,19 @@ class CodexAdapter:
                 )
             )
         command = project.get("codex_command")
-        if not isinstance(command, list) or not command or not all(
-            isinstance(item, str) and item for item in command
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(item, str) and item for item in command)
         ):
             raise InvalidTaskError("codex_command must be a non-empty array of strings")
+        command = list(command)
+        is_analysis = task.get("local_task_type") == "analysis"
+        if is_analysis and "--sandbox" in command:
+            sandbox_index = command.index("--sandbox")
+            if sandbox_index + 1 >= len(command):
+                raise InvalidTaskError("codex_command has an incomplete sandbox option")
+            command[sandbox_index + 1] = "read-only"
         session_id = str(uuid.uuid4())
         self.store.record_agent_session(
             session_id=session_id,
@@ -209,7 +229,9 @@ class CodexAdapter:
         finally:
             stop_heartbeat.set()
             if heartbeat_thread is not None:
-                heartbeat_thread.join(timeout=max(1.0, self.heartbeat_interval_seconds * 2))
+                heartbeat_thread.join(
+                    timeout=max(1.0, self.heartbeat_interval_seconds * 2)
+                )
         assert process is not None
         summary = redact_text((stdout + "\n" + stderr).strip())[-4000:]
         self.store.finish_agent_session(
@@ -223,7 +245,24 @@ class CodexAdapter:
                 f"Codex failed with exit code {process.returncode}: {summary}",
                 returncode=process.returncode,
             )
-        message = task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        if is_analysis:
+            self.normalizer.assert_unchanged(worktree, snapshot)
+            result_text = redact_text(stdout.strip())[-20000:]
+            if not result_text:
+                result_text = "Analysis completed without a textual result."
+            from .models import utc_now
+
+            return AnalysisExecution(
+                result={
+                    "schema_version": 1,
+                    "kind": "analysis",
+                    "summary": result_text,
+                    "completed_at": utc_now(),
+                }
+            )
+        message = (
+            task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        )
         if not isinstance(message, str) or not message.strip():
             raise InvalidTaskError("commit_message must be a non-empty string")
         return self.normalizer.normalize(worktree, snapshot, message=message)

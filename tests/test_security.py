@@ -141,6 +141,15 @@ class SecurityTests(unittest.TestCase):
         self.assertNotIn("github_pat_", value)
         self.assertIn("[REDACTED]", value)
 
+    def test_email_and_user_home_are_redacted_from_presented_text(self) -> None:
+        rendered = redact_text(
+            "Contact engineer@example.com at /Users/alice/private-repository"
+        )
+        self.assertNotIn("engineer@example.com", rendered)
+        self.assertNotIn("/Users/alice", rendered)
+        self.assertIn("[REDACTED_EMAIL]", rendered)
+        self.assertIn("/Users/[REDACTED_USER]/private-repository", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

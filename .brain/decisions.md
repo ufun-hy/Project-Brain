@@ -203,3 +203,20 @@ The internal RC DMG contains `Project Brain.app`, an `Applications` symlink to
 to drag the app onto that folder. CI mounts the completed image and validates
 the visible install components. Build 6 supersedes immutable Builds 4 and 5
 using new artifact names; it never overwrites either historical build.
+
+## D-024: Treat the native App as a source-neutral, review-first task ingress
+
+The macOS App sends only a strict schema-v1 local task document over stdin to
+fixed Core commands. Goal and criteria are content, never command, argv, cwd,
+environment, path, SQL, executable, branch, worktree, credential, or sandbox
+authority. Core, not Swift, creates task/dedupe identities and binds the exact
+remote Base, project revision/hash, execution profile, delivery policy,
+readiness, expiry, and single-use plan token in SQLite schema v9.
+
+Analyze and Implement share the authoritative task engine and isolated
+worktrees. Analyze runs read-only, treats no changes as success, persists a
+structured result, and never publishes. Implement keeps canonical commit,
+verification seal, optional bounded push/Draft PR, review, recovery, and
+cleanup rules. ChatGPT, Secure MCP Tunnel, and Gmail are optional or separate
+ingresses; local success never changes external ChatGPT acceptance from
+Pending.

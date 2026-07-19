@@ -30,6 +30,9 @@ targets:
       - path: ProjectBrain
         excludes:
           - Info.plist
+          - Resources
+    resources:
+      - path: ProjectBrain/Resources
     dependencies:
       - target: ProjectBrainKit
     postBuildScripts:
@@ -56,8 +59,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.projectbrain.ProductBrain
         PRODUCT_NAME: Project Brain
-        MARKETING_VERSION: 0.7.0
-        CURRENT_PROJECT_VERSION: 7
+        MARKETING_VERSION: 0.8.0
+        CURRENT_PROJECT_VERSION: 8
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: ProjectBrain/Info.plist
   ProjectBrainTests:

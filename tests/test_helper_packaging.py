@@ -21,7 +21,7 @@ class HelperPackagingTests(unittest.TestCase):
     def test_build_script_validates_executable_and_exact_version(self) -> None:
         script = (self.root / "scripts/build-macos-helper.sh").read_text(encoding="utf-8")
         self.assertIn('test -x "$HELPER"', script)
-        self.assertIn('"project-brain 0.7.0"', script)
+        self.assertIn('"project-brain 0.8.0"', script)
         self.assertIn('"$HELPER" projects add --help', script)
         self.assertIn("cli-contract --json", script)
         self.assertNotIn("zsh -lc", script)

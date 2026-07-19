@@ -53,6 +53,26 @@ class CLIContractTests(unittest.TestCase):
         self.assertTrue(parsed.plan_only)
         self.assertTrue(parsed.json_output)
 
+    def test_python_parser_accepts_only_fixed_local_task_command_paths(self) -> None:
+        operation = load_cli_contract()["operations"]["local_task"]
+        planned = build_parser().parse_args(
+            [*operation["plan_command_path"], operation["options"]["json"]]
+        )
+        self.assertEqual(planned.tasks_command, "local-plan")
+        self.assertTrue(planned.json_output)
+
+        created = build_parser().parse_args(
+            [
+                *operation["create_command_path"],
+                operation["options"]["plan_token"],
+                "local-v1:reviewed",
+                operation["options"]["json"],
+            ]
+        )
+        self.assertEqual(created.tasks_command, "local-create")
+        self.assertEqual(created.plan_token, "local-v1:reviewed")
+        self.assertFalse(hasattr(created, "command_argv"))
+
 
 if __name__ == "__main__":
     unittest.main()
