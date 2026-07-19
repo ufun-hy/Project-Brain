@@ -113,6 +113,11 @@ def downgrade_fixture_to_v8(runtime: Path) -> None:
     database = runtime / "project-brain.db"
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE tasks SET status = 'accepted' WHERE task_id = 'upgrade-sentinel'")
+        # Build a truthful pre-RFC-008 schema-v8 fixture. A real v8 database has
+        # neither the v9 structures nor a v9 migration-ledger entry; removing
+        # only the structures would create an impossible, internally
+        # inconsistent database and would correctly prevent migration replay.
+        connection.execute("DELETE FROM schema_migrations WHERE version = 9")
         connection.execute("DROP TABLE local_task_plans")
         connection.execute("ALTER TABLE tasks DROP COLUMN result_json")
         connection.execute("ALTER TABLE tasks DROP COLUMN delivery_json")
