@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -440,6 +440,43 @@ CREATE INDEX external_acceptance_events_run_idx
     ON external_acceptance_events(run_id, event_id);
 """
 
+MIGRATION_9 = """
+ALTER TABLE tasks ADD COLUMN local_task_type TEXT;
+ALTER TABLE tasks ADD COLUMN delivery_json TEXT;
+ALTER TABLE tasks ADD COLUMN result_json TEXT;
+
+CREATE TABLE local_task_plans (
+    plan_token TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+    request_sha256 TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    project_config_revision INTEGER NOT NULL,
+    project_config_sha256 TEXT NOT NULL,
+    base_sha TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    task_id TEXT UNIQUE REFERENCES tasks(task_id)
+);
+
+CREATE INDEX local_task_plans_expiry_idx
+    ON local_task_plans(expires_at, consumed_at);
+CREATE INDEX local_task_plans_project_idx
+    ON local_task_plans(project_id, created_at);
+"""
+
+MIGRATION_10 = """
+ALTER TABLE local_task_plans RENAME COLUMN plan_token TO plan_token_sha256;
+ALTER TABLE local_task_plans RENAME COLUMN request_sha256 TO canonical_request_sha256;
+ALTER TABLE local_task_plans RENAME COLUMN request_json TO canonical_request_json;
+ALTER TABLE local_task_plans ADD COLUMN plan_sha256 TEXT;
+ALTER TABLE local_task_plans ADD COLUMN token_fingerprint TEXT;
+ALTER TABLE local_task_plans ADD COLUMN contract_version TEXT;
+ALTER TABLE local_task_plans ADD COLUMN superseded_at TEXT;
+"""
+
 MIGRATIONS = {
     1: MIGRATION_1,
     2: MIGRATION_2,
@@ -449,4 +486,6 @@ MIGRATIONS = {
     6: MIGRATION_6,
     7: MIGRATION_7,
     8: MIGRATION_8,
+    9: MIGRATION_9,
+    10: MIGRATION_10,
 }

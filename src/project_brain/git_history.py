@@ -44,7 +44,9 @@ class GitHistoryNormalizer:
         if status.strip():
             raise TaskHistoryError("Task worktree was not clean before agent execution")
         if not self._is_ancestor(path, base_sha, head):
-            raise TaskHistoryError("Initial task HEAD does not descend from the recorded base")
+            raise TaskHistoryError(
+                "Initial task HEAD does not descend from the recorded base"
+            )
         return GitSnapshot(
             expected_branch=expected_branch,
             base_sha=base_sha,
@@ -69,7 +71,9 @@ class GitHistoryNormalizer:
         head = git(path, "rev-parse", "HEAD").stdout.strip()
         status = git(path, "status", "--porcelain=v1", "--untracked-files=all").stdout
         if not self._is_ancestor(path, snapshot.base_sha, head):
-            raise TaskHistoryError("Recorded base is no longer an ancestor of task HEAD")
+            raise TaskHistoryError(
+                "Recorded base is no longer an ancestor of task HEAD"
+            )
         if not self._is_ancestor(path, snapshot.initial_head, head):
             raise TaskHistoryError("Agent rewrote or reset the task's initial history")
         if head == snapshot.initial_head and status == snapshot.initial_status:
@@ -97,26 +101,57 @@ class GitHistoryNormalizer:
             changed_files=changed,
         )
 
+    def assert_unchanged(self, repo: str | Path, snapshot: GitSnapshot) -> None:
+        """Fail closed if a read-only analysis changed files, refs, or Git state."""
+        path = Path(repo).resolve()
+        branch = self._branch(path)
+        if branch != snapshot.expected_branch:
+            raise TaskHistoryError(
+                f"Analysis changed branch to {branch or 'detached HEAD'}; "
+                f"expected {snapshot.expected_branch}"
+            )
+        self._reject_in_progress_state(path)
+        head = git(path, "rev-parse", "HEAD").stdout.strip()
+        status = git(path, "status", "--porcelain=v1", "--untracked-files=all").stdout
+        if head != snapshot.initial_head or status != snapshot.initial_status:
+            raise TaskHistoryError(
+                "Analyze task modified repository files or Git history"
+            )
+
     @staticmethod
     def _branch(repo: Path) -> str:
-        return git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", check=False).stdout.strip()
+        return git(
+            repo, "symbolic-ref", "--quiet", "--short", "HEAD", check=False
+        ).stdout.strip()
 
     @staticmethod
     def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
-        return git(
-            repo,
-            "merge-base",
-            "--is-ancestor",
-            ancestor,
-            descendant,
-            check=False,
-        ).returncode == 0
+        return (
+            git(
+                repo,
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+                check=False,
+            ).returncode
+            == 0
+        )
 
     @staticmethod
     def _reject_in_progress_state(repo: Path) -> None:
         unmerged = git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
         if unmerged:
-            raise TaskHistoryError(f"Task worktree has unresolved conflicts: {unmerged}")
+            raise TaskHistoryError(
+                f"Task worktree has unresolved conflicts: {unmerged}"
+            )
         for ref in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"):
-            if git(repo, "rev-parse", "--verify", "--quiet", ref, check=False).returncode == 0:
-                raise TaskHistoryError(f"Task worktree has in-progress Git state: {ref}")
+            if (
+                git(
+                    repo, "rev-parse", "--verify", "--quiet", ref, check=False
+                ).returncode
+                == 0
+            ):
+                raise TaskHistoryError(
+                    f"Task worktree has in-progress Git state: {ref}"
+                )

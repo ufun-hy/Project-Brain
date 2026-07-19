@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify an RFC-007 RC artifact manifest without trusting paths from it."""
+"""Verify the RFC-008 Build 9 artifact without trusting manifest paths."""
 
 from __future__ import annotations
 
@@ -22,28 +22,38 @@ def verify(directory: Path) -> None:
     directory = directory.resolve(strict=True)
     manifest_path = directory / "build-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 4
     assert manifest["artifact_classification"] == "unsigned_internal_rc"
     assert manifest["signing_status"] == "unsigned_internal_rc"
     assert manifest["notarization_status"] == "not_notarized"
     assert manifest["external_acceptance"] == "pending_user_credentials_and_actions"
-    assert manifest["app"]["build"] == "7"
-    assert manifest["app"]["version"] == "0.7.0"
+    assert manifest["app"]["build"] == "9"
+    assert manifest["app"]["version"] == "0.8.0"
     assert len(manifest["app"]["executable_sha256"]) == 64
-    assert manifest["core_helper"]["version"] == "0.7.0"
+    assert manifest["core_helper"]["version"] == "0.8.0"
     assert len(manifest["core_helper"]["sha256"]) == 64
     assert manifest["core_cli_contract"]["schema_version"] == 1
-    assert manifest["core_cli_contract"]["contract_version"] == "1.0.0"
-    assert manifest["core_cli_contract"]["core_version"] == "0.7.0"
+    assert manifest["core_cli_contract"]["contract_version"] == "1.2.0"
+    assert manifest["core_cli_contract"]["core_version"] == "0.8.0"
     assert len(manifest["core_cli_contract"]["document_sha256"]) == 64
+    assert manifest["local_task_contract"] == {
+        "task_request_schema_version": 1,
+        "confirmation_schema_version": 1,
+        "result_schema_version": 1,
+        "database_schema_version": 10,
+        "transport": "stdin_json",
+        "plan_token_prefix": "local-v2:",
+        "plan_token_storage": "sha256_only",
+        "confirm_fields": ["expected_plan_hash", "plan_token"],
+    }
     assert manifest["tunnel_compatibility_manifest_version"] == 1
     assert manifest["supported_tunnel_client_versions"] == ["0.0.10"]
     assert manifest["target_architecture"] == "arm64"
     assert len(manifest["git_head_sha"]) == 40
     assert manifest["ci_run_url"].startswith("https://github.com/")
     assert {entry["name"] for entry in manifest["artifacts"]} == {
-        "Project-Brain-RC1-Build7-arm64.dmg",
-        "Project-Brain-RC1-Build7-arm64.zip",
+        "Project-Brain-Local-Tasks-Build9-arm64.dmg",
+        "Project-Brain-Local-Tasks-Build9-arm64.zip",
     }
     for entry in manifest["artifacts"]:
         name = entry["name"]
@@ -52,7 +62,7 @@ def verify(directory: Path) -> None:
         assert artifact.parent == directory
         assert sha256(artifact) == entry["sha256"]
 
-    archive = directory / "Project-Brain-RC1-Build7-arm64.zip"
+    archive = directory / "Project-Brain-Local-Tasks-Build9-arm64.zip"
     with zipfile.ZipFile(archive) as app_zip:
         app_prefix = "Project Brain.app/Contents/"
         executable = app_zip.read(app_prefix + "MacOS/Project Brain")
@@ -80,7 +90,7 @@ def main() -> int:
     parser.add_argument("directory", type=Path)
     arguments = parser.parse_args()
     verify(arguments.directory)
-    print("RC1 artifact manifest and SHA-256 verification passed")
+    print("Build 9 artifact manifest and SHA-256 verification passed")
     return 0
 
 

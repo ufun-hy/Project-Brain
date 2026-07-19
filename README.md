@@ -7,7 +7,7 @@ them.
 
 The existing live Gmail Bridge under `experiments/gmail-inbox/` is frozen legacy
 behavior and is not part of the Core architecture. This change does not modify,
-migrate, launch, or replace it. Project Brain 0.7.0 adds a native macOS menu bar
+migrate, launch, or replace it. Project Brain 0.8.0 adds a native macOS menu bar
 and management app over the versioned Core configuration and controlled MCP
 adapter; it does not copy DevSpace's arbitrary file or terminal authority.
 
@@ -19,18 +19,29 @@ service management, automatic task/evidence observation, unified readiness,
 Keychain-backed managed Tunnel connection, and redacted diagnostic export
 without asking the user to run a CLI or maintain Python.
 
+The App can create tasks directly from the menu bar or Task Center. A user
+selects a registered project, chooses read-only **Analyze / Review** or
+worktree-based **Implement change**, reviews the exact Base SHA and execution
+snapshot, and confirms a token-bound plan. ChatGPT is an optional ingress, not
+a prerequisite for local tasks; Secure MCP Tunnel and external ChatGPT
+acceptance remain separate Pending gates.
+
 The app embeds a self-contained Core helper and can import a user-downloaded,
 reviewed Tunnel Client into its private App Support directory. Both installers
-use atomic replacement and rollback. RC1 Build 7 also binds the App and helper
+use atomic replacement and rollback. Build 9 binds the App and helper
 to one immutable, versioned CLI contract, upgrades a stale same-version helper
-by SHA-256, and enforces one user process and one management window. Build 4
+by SHA-256, and enforces one user process and one management window. It uses a
+schema-v10 canonical plan record, stores only the plan-token SHA-256, and lets
+confirmation submit only the opaque token plus reviewed plan hash. Build 8
+introduced strict local-task intake, guided first run, and persisted analysis
+results. Build 4
 added an MCP transport-probe
 wizard with explicit external-acceptance Pending state. The optional fixed
 one-document Draft PR task remains locked because the current Tunnel contract
 does not provide trusted ChatGPT control-plane attestation. The unsigned
-internal RC artifact, first-run guide, and current
+internal Build 9 artifact, first-run guide, and current
 external limits are documented in [`docs/product-shell.md`](docs/product-shell.md)
-and [`docs/product-shell-rc1-verification.md`](docs/product-shell-rc1-verification.md).
+and [`docs/product-shell-build9-plan-confirm-verification.md`](docs/product-shell-build9-plan-confirm-verification.md).
 
 ![Project Brain first-run welcome](docs/images/product-shell-onboarding.png)
 
@@ -268,10 +279,12 @@ scripts/verify-core.sh
 
 The same command runs in Linux CI. macOS CI additionally packages the frozen
 helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
-`Project Brain.app`, creates an unsigned internal RC1 DMG/ZIP plus build
+`Project Brain.app`, creates an unsigned internal Build 9 DMG/ZIP plus build
 manifest, verifies all artifact hashes, verifies the embedded helper and static
 Tunnel compatibility manifest, executes existing-project onboarding through the
-final app's embedded helper, launches the final DMG and Applications copies to
+final app's embedded helper, migrates a preserved schema-v9 database and runs a
+no-change exact-Chinese-goal Analyze task through the final DMG App/Core adapter,
+launches the final DMG and Applications copies to
 verify one process/window, and checks Gmail legacy isolation. Tests use temporary repositories,
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.
@@ -287,3 +300,6 @@ Product Shell architecture and repository acceptance evidence are in
 and [`docs/product-shell-verification.md`](docs/product-shell-verification.md).
 RC1 installation, acceptance authority, artifact boundaries, and external
 Pending gates are in [`docs/rfc/RFC-007-zero-cli-rc1.md`](docs/rfc/RFC-007-zero-cli-rc1.md).
+Local App task intake, guided first run, plan snapshots, and Analyze/Implement
+semantics are in
+[`docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md`](docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md).

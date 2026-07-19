@@ -9,6 +9,10 @@ installs the Worker and MCP launchd services, and runs unified readiness checks.
 
 After onboarding, the app provides:
 
+- a primary **New Task…** action in the menu bar and Task Center, with a
+  one-time guided first-task prompt after successful onboarding;
+- review-first local task creation for read-only **Analyze / Review** and
+  isolated-worktree **Implement change** tasks;
 - a menu bar aggregate derived from durable Core task and service state;
 - Task Center status, phase, attempt, branch/commit, Draft PR, changed files,
   verification criteria/evidence, review findings, errors, and next actions;
@@ -56,7 +60,7 @@ xcodebuild \
 
 PyInstaller produces an architecture-specific `onefile` executable. The Xcode
 post-build phase copies it into `Project Brain.app/Contents/Resources/` and
-checks the executable bit. CI publishes an unsigned arm64 internal RC1 DMG and
+checks the executable bit. CI publishes an unsigned arm64 internal Build 9 DMG and
 ZIP, build manifest, and SHA-256 values as a seven-day artifact. Signed,
 notarized, universal distribution is a separate release task.
 
@@ -98,6 +102,47 @@ background. Returning to the foreground triggers an immediate refresh. If a
 task detail is open, that exact task is refreshed with the list. Failures use
 exponential backoff and offline services use a slower interval.
 
+## Create a local task
+
+Use **New Task…** in the menu bar or **Create Task** in Task Center. Select a
+registered project and choose:
+
+- **Analyze / Review** for a read-only Codex pass. No code change is required;
+  a structured result completes normally without commit, push, or PR.
+- **Implement change** for an isolated task worktree. A canonical commit is
+  required. Push and Draft PR can be disabled, but can never be enabled beyond
+  the registered project execution policy.
+
+Goal text must contain 10–8,000 Unicode characters. Acceptance criteria are
+optional and limited to 8,000 characters total. They are transmitted as strict
+schema-v1 JSON over stdin and are always treated as content: the App cannot
+provide command, argv, cwd, environment, SQL, executable, branch, worktree,
+credential, or sandbox controls.
+
+**Review Execution Plan** shows project, task type, the full canonical goal,
+file-modification and delivery effects, readiness, and primary risks. Repository
+path, exact Base SHA, execution revision/hash, adapter, worktree root, expiry,
+schema, and contract live in collapsed technical details. Only a short token
+fingerprint is visible; the replayable token is never displayed.
+
+Schema v10 stores the canonical request and plan hash but only the SHA-256 of
+the transient `local-v2:` token. Confirmation sends exactly `plan_token` and
+`expected_plan_hash` over stdin. Core rechecks the project, remote Base, policy,
+readiness, expiry, supersession, and single-use state under RuntimeLock; task
+creation and token consumption commit in one transaction. Expired, repeated,
+hash-mismatched, superseded, and concurrent second confirmations fail closed.
+After success the App closes the sheet from the minimal create response and
+refreshes only the selected task in the background.
+
+Task Center reads all list/detail/count state back from Core. It displays
+source, task type, status, phase, execution snapshot, result, changed files,
+verification, commit/branch/Draft PR, failure, recovery, and event timeline.
+Closing or restarting the App does not lose the task or analysis result.
+
+Local tasks require the managed Worker and registered project prerequisites.
+They do not require ChatGPT, Secure MCP Tunnel, Gmail, or external acceptance.
+External ChatGPT acceptance remains **Pending** even when a local task passes.
+
 ## Managed files and services
 
 The installed helper is:
@@ -132,7 +177,8 @@ plists for an explicit retry.
 
 ## Helper upgrade and recovery
 
-The App and Core share a packaged schema-v1 CLI contract. The app validates the
+The App and Core share packaged request/confirmation schema-v1 documents and
+CLI contract version 1.2.0. The app validates the
 bundled helper with fixed `--version` and `cli-contract --json` argv, and checks
 the helper binary SHA-256 plus exact contract version/document SHA. A stale
 same-version helper is therefore upgraded rather than retained. The candidate
@@ -205,6 +251,12 @@ revision/hash/name, next hash/name, and action again inside the write
 transaction. A concurrent change returns `state_conflict` and requires a fresh
 plan.
 
+Local task failures remain in the current task sheet. A stale plan offers
+**Review new plan**; failed readiness offers **Open Diagnostics**. The App does
+not show argparse usage or Python tracebacks. Interrupted execution continues
+to use the common process identity, recovery-block, retry-limit, forensic, and
+safe worktree cleanup rules.
+
 These remain pending and cannot be replaced by local mocks:
 
 - OpenAI Secure MCP Tunnel acceptance;
@@ -220,9 +272,15 @@ These remain pending and cannot be replaced by local mocks:
   with an origin, and select an absolute executable Codex installation.
 - **Task recovery blocked:** inspect Diagnostics and task evidence. The app does
   not expose blind worktree cleanup or process termination.
+- **Local plan changed or expired:** return to the task form, select **Review
+  new plan**, and confirm the newly displayed Base/profile/readiness snapshot.
+- **Analyze produced no files:** this is expected; inspect the structured
+  analysis result in Task Center. It is not an implementation failure.
 - **External connection pending:** finish tunnel and ChatGPT configuration, then
   execute the real acceptance flow; local MCP health is not external success.
 
 Technical decisions and threat boundaries are in
 [`rfc/RFC-006-product-shell-v1.md`](rfc/RFC-006-product-shell-v1.md) and
 [`rfc/RFC-007-zero-cli-rc1.md`](rfc/RFC-007-zero-cli-rc1.md).
+Local task behavior and acceptance constraints are in
+[`rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md`](rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md).

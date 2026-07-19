@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ProjectBrain",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "ProjectBrainKit", targets: ["ProjectBrainKit"]),
@@ -19,7 +20,7 @@ let package = Package(
             dependencies: ["ProjectBrainKit"],
             path: "ProjectBrain",
             exclude: ["Info.plist"],
-            resources: [.copy("Resources/tunnel-client-compatibility.json")]
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "ProjectBrainTests",

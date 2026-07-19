@@ -10,6 +10,29 @@ project-brain tasks recover <task-id> --dry-run --json
 project-brain cleanup --dry-run --json
 ```
 
+Ordinary App users should open **Diagnostics** or the task detail instead of
+running these developer/operator commands manually.
+
+## Local task planning and creation
+
+The local task sheet keeps errors visible and offers a recovery action. If the
+project revision/hash, remote Base SHA, readiness, delivery policy, plan hash,
+supersession state, or ten-minute expiry changed after review, select **Review
+new plan**. Core will not apply a stale token. A repeated or concurrent second
+confirmation fails closed; open Task Center to inspect the authoritative task.
+Never work around a conflict by deleting SQLite state.
+
+If readiness is blocked, use **Open Diagnostics** and repair the managed helper,
+Worker, project intake, Git repository, Codex executable, or GitHub publication
+prerequisite named by the plan. MCP, Tunnel, Gmail, and external ChatGPT
+acceptance are not local-task readiness conditions.
+
+An Analyze task may complete with no changed files. Its authoritative terminal
+state is `completed`, with a schema-v1 `analysis` result in Task Center. Do not
+reinterpret a clean worktree as `Task produced no changes` failure. Implement
+tasks retain the existing verification, publication, review, and recovery
+states.
+
 ## Interrupted `running` tasks
 
 Startup `apply` performs reconciliation while holding the runtime flock. To run

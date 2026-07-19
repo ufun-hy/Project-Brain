@@ -8,6 +8,10 @@ struct ProjectBrainApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
 
+    init() {
+        _ = Build9LocalTaskAppProbe.runIfRequested()
+    }
+
     var body: some Scene {
         Window("Project Brain", id: "management") {
             ManagementView(model: model)

@@ -27,7 +27,6 @@ from project_brain.verification import VerificationRunner
 
 from tests.helpers import CoreFixture, create_remote_clone, git
 
-
 TUNNEL_FINGERPRINT = "a" * 64
 
 
@@ -68,7 +67,9 @@ class ExternalAcceptanceTests(unittest.TestCase):
             tunnel_fingerprint=TUNNEL_FINGERPRINT,
         )
 
-    def test_challenge_plaintext_is_returned_once_and_only_hash_is_persisted(self) -> None:
+    def test_challenge_plaintext_is_returned_once_and_only_hash_is_persisted(
+        self,
+    ) -> None:
         created = self.create()
         challenge = created["challenge"]
         with self.fixture.store.connect() as connection:
@@ -78,8 +79,11 @@ class ExternalAcceptanceTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["challenge_sha256"], challenge_sha256(challenge))
         self.assertNotIn(challenge, json.dumps(created["run"]))
-        self.assertNotIn(challenge, self.fixture.runtime.database.read_bytes().decode(errors="ignore"))
-        self.assertEqual(created["run"]["core_version"], "0.7.0")
+        self.assertNotIn(
+            challenge,
+            self.fixture.runtime.database.read_bytes().decode(errors="ignore"),
+        )
+        self.assertEqual(created["run"]["core_version"], "0.8.0")
         self.assertEqual(created["run"]["app_version"], "0.7.0")
         self.assertEqual(
             created["run"]["acceptance_contract_version"],
@@ -92,7 +96,9 @@ class ExternalAcceptanceTests(unittest.TestCase):
         self.manager.mark_waiting(created["run"]["run_id"])
         with self.assertRaisesRegex(InvalidTaskError, "did not match"):
             self.manager._complete_from_mcp_ingress("wrong_" + "z" * 32)
-        self.assertEqual(self.manager.status()["current"]["status"], "waiting_for_chatgpt")
+        self.assertEqual(
+            self.manager.status()["current"]["status"], "waiting_for_chatgpt"
+        )
 
     def test_expired_challenge_cannot_pass(self) -> None:
         created = self.create()
@@ -102,7 +108,9 @@ class ExternalAcceptanceTests(unittest.TestCase):
             self.manager._complete_from_mcp_ingress(created["challenge"])
         self.assertEqual(self.manager.status()["current"]["status"], "expired")
 
-    def test_replay_is_rejected_and_historical_transport_probe_survives_new_run(self) -> None:
+    def test_replay_is_rejected_and_historical_transport_probe_survives_new_run(
+        self,
+    ) -> None:
         created = self.create()
         self.manager.mark_waiting(created["run"]["run_id"])
         passed = self.manager._complete_from_mcp_ingress(created["challenge"])
@@ -124,7 +132,9 @@ class ExternalAcceptanceTests(unittest.TestCase):
 
         def invoke() -> str:
             try:
-                return self.manager._complete_from_mcp_ingress(created["challenge"])["status"]
+                return self.manager._complete_from_mcp_ingress(created["challenge"])[
+                    "status"
+                ]
             except StateConflictError:
                 return "rejected"
 
@@ -134,9 +144,10 @@ class ExternalAcceptanceTests(unittest.TestCase):
         current = self.manager.status()["current"]
         self.assertEqual(current["probe_count"], 1)
         self.assertEqual(
-            [event["event_type"] for event in self.manager.list_events(current["run_id"])].count(
-                "mcp_transport_probe_recorded"
-            ),
+            [
+                event["event_type"]
+                for event in self.manager.list_events(current["run_id"])
+            ].count("mcp_transport_probe_recorded"),
             1,
         )
 
@@ -164,7 +175,9 @@ class ExternalAcceptanceTests(unittest.TestCase):
             connection.commit()
         with self.assertRaisesRegex(StateConflictError, "installation contract"):
             self.manager._complete_from_mcp_ingress(created["challenge"])
-        self.assertEqual(self.manager.status()["current"]["status"], "waiting_for_chatgpt")
+        self.assertEqual(
+            self.manager.status()["current"]["status"], "waiting_for_chatgpt"
+        )
 
     def test_completion_fails_closed_when_acceptance_contract_changed(self) -> None:
         created = self.create()
@@ -177,7 +190,9 @@ class ExternalAcceptanceTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(StateConflictError, "installation contract"):
             self.manager._complete_from_mcp_ingress(created["challenge"])
-        self.assertEqual(self.manager.status()["current"]["status"], "waiting_for_chatgpt")
+        self.assertEqual(
+            self.manager.status()["current"]["status"], "waiting_for_chatgpt"
+        )
 
     def test_restart_recovers_waiting_state_without_recovering_plaintext(self) -> None:
         created = self.create()
@@ -186,7 +201,10 @@ class ExternalAcceptanceTests(unittest.TestCase):
         status = reopened.status()
         self.assertEqual(status["current"]["status"], "waiting_for_chatgpt")
         self.assertNotIn("challenge", status["current"])
-        self.assertEqual(status["installation_fingerprint"], status["current"]["installation_fingerprint"])
+        self.assertEqual(
+            status["installation_fingerprint"],
+            status["current"]["installation_fingerprint"],
+        )
 
     def test_events_contain_no_challenge_plaintext_or_hash(self) -> None:
         created = self.create()
@@ -208,7 +226,9 @@ class ExternalAcceptanceTests(unittest.TestCase):
 class AcceptanceTaskTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = CoreFixture()
-        self.repo, self.remote = create_remote_clone(self.fixture.root, "acceptance-target")
+        self.repo, self.remote = create_remote_clone(
+            self.fixture.root, "acceptance-target"
+        )
         self.fixture.add_project(
             repo_path=str(self.repo),
             remote_url=str(self.remote),

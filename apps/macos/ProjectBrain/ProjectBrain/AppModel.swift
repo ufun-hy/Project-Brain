@@ -28,17 +28,23 @@ struct UserFacingIssue: Identifiable, Equatable {
     let message: String
     let nextAction: String
     let conflict: ProjectConflict?
+    let field: String?
+    let errorCode: String?
 
     init(
         title: String,
         message: String,
         nextAction: String,
-        conflict: ProjectConflict? = nil
+        conflict: ProjectConflict? = nil,
+        field: String? = nil,
+        errorCode: String? = nil
     ) {
         self.title = title
         self.message = message
         self.nextAction = nextAction
         self.conflict = conflict
+        self.field = field
+        self.errorCode = errorCode
     }
 }
 
@@ -54,7 +60,6 @@ private struct ProductSnapshot: Sendable {
     var serviceOnline: Bool {
         let states = Dictionary(uniqueKeysWithValues: services.services.map { ($0.name, $0.state) })
         return ["healthy", "running"].contains(states["worker"])
-            && states["mcp"] == "running"
     }
 }
 
@@ -244,6 +249,20 @@ private actor ProductShellBackend {
         try requireClient().createAcceptanceTask(projectID, planToken: planToken)
     }
 
+    func planLocalTask(_ request: LocalTaskRequest) throws -> LocalTaskPlanResponse {
+        try requireClient().planLocalTask(request)
+    }
+
+    func createLocalTask(
+        planToken: String,
+        expectedPlanHash: String
+    ) throws -> LocalTaskCreateResponse {
+        try requireClient().createLocalTask(
+            planToken: planToken,
+            expectedPlanHash: expectedPlanHash
+        )
+    }
+
     private func requireClient() throws -> CoreClient {
         guard let client else {
             throw CoreClientError.invalidInstallation("The managed Core helper is not ready.")
@@ -307,6 +326,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var acceptanceStatus: ExternalAcceptanceStatusResponse?
     @Published private(set) var acceptanceChallenge: String?
     @Published var acceptanceTaskPlan: AcceptanceTaskPlanResponse?
+    @Published var selectedProjectID: String?
+    @Published var localTaskRequest = LocalTaskRequest(projectID: "")
+    @Published var localTaskPlan: LocalTaskPlanResponse?
+    @Published var localTaskIssue: UserFacingIssue?
+    @Published private(set) var localTaskPhase: LocalTaskOperationPhase = .idle
+    @Published private(set) var localTaskTimingMS: [String: Double] = [:]
+    @Published var isNewTaskPresented = false
+    @Published var shouldShowFirstTaskGuide = false
     @Published private(set) var isBusy = false
     @Published var issue: UserFacingIssue?
 
@@ -314,11 +341,14 @@ final class AppModel: ObservableObject {
     private let onboardingStore: OnboardingStore
     private let connectionStore: ConnectionStore
     private let keychain: KeychainStore
+    private let firstTaskGuideStore: FirstTaskGuideStore
     private let observation: StateObservationLoop<ProductSnapshot>
     private var didBootstrap = false
     private var tunnelStatusTask: Task<Void, Never>?
     private var acceptanceChallengeRunID: String?
     private var onboardingExistingProjectID: String?
+    private var localTaskOperation: Task<Void, Never>?
+    private var localTaskOperationID = UUID()
 
     init(
         installer: HelperInstaller = HelperInstaller(),
@@ -326,6 +356,7 @@ final class AppModel: ObservableObject {
         onboardingStore: OnboardingStore = OnboardingStore(),
         connectionStore: ConnectionStore = ConnectionStore(),
         keychain: KeychainStore = KeychainStore(),
+        firstTaskGuideStore: FirstTaskGuideStore = FirstTaskGuideStore(),
         applicationBundleURL: URL = Bundle.main.bundleURL,
         cliContractURL: URL? = Bundle.main.url(
             forResource: "project-brain-cli-contract",
@@ -341,6 +372,7 @@ final class AppModel: ObservableObject {
         self.onboardingStore = onboardingStore
         self.connectionStore = connectionStore
         self.keychain = keychain
+        self.firstTaskGuideStore = firstTaskGuideStore
         self.observation = StateObservationLoop()
         self.onboarding = onboardingStore.load()
         self.installationStatus = ApplicationInstallationStatus(bundleURL: applicationBundleURL)
@@ -603,6 +635,7 @@ final class AppModel: ObservableObject {
         onboarding.lastError = nil
         persistOnboarding()
         startObservation()
+        offerFirstTaskGuideIfNeeded()
     }
 
     func goBackOnboarding() {
@@ -629,6 +662,167 @@ final class AppModel: ObservableObject {
         runOperation {
             try await self.backend.task(task.taskID)
         } onSuccess: { self.selectedTask = $0 }
+    }
+
+    func openNewTask(defaultProjectID: String? = nil) {
+        let started = ContinuousClock.now
+        localTaskTimingMS = [:]
+        localTaskPhase = .checkingProject
+        guard let project = projects.first(where: {
+            $0.projectID == (defaultProjectID ?? selectedProjectID)
+        }) ?? projects.first(where: { $0.acceptingTasks }) else {
+            localTaskPhase = .failed
+            return
+        }
+        selectedProjectID = project.projectID
+        localTaskRequest = LocalTaskRequest(
+            projectID: project.projectID,
+            taskType: .analysis,
+            delivery: .init(commit: false, push: false, draftPR: false)
+        )
+        localTaskPlan = nil
+        localTaskIssue = nil
+        isNewTaskPresented = true
+        localTaskPhase = .idle
+        localTaskTimingMS["open_sheet"] = Self.elapsedMilliseconds(since: started)
+    }
+
+    func updateLocalTaskType(_ type: LocalTaskType) {
+        localTaskRequest.taskType = type
+        guard let project = projects.first(where: {
+            $0.projectID == localTaskRequest.projectID
+        }) else { return }
+        localTaskRequest.delivery = type == .analysis
+            ? .init(commit: false, push: false, draftPR: false)
+            : .init(
+                commit: true,
+                push: project.autoPush,
+                draftPR: project.autoPush && project.autoPR
+            )
+        localTaskPlan = nil
+    }
+
+    func selectLocalTaskProject(_ projectID: String) {
+        localTaskRequest.projectID = projectID
+        selectedProjectID = projectID
+        updateLocalTaskType(localTaskRequest.taskType)
+    }
+
+    func planLocalTask() {
+        guard !localTaskPhase.isBusy else { return }
+        let requestSnapshot = localTaskRequest
+        let operationID = UUID()
+        localTaskOperationID = operationID
+        localTaskPlan = nil
+        localTaskIssue = nil
+        let feedbackStarted = ContinuousClock.now
+        localTaskPhase = .buildingPlan
+        localTaskTimingMS["plan_click_feedback"] = Self.elapsedMilliseconds(
+            since: feedbackStarted
+        )
+        localTaskOperation = Task {
+            do {
+                let response = try await backend.planLocalTask(requestSnapshot)
+                guard !Task.isCancelled, localTaskOperationID == operationID else { return }
+                localTaskPlan = response
+                localTaskTimingMS.merge(response.timingMS) { _, latest in latest }
+                localTaskPhase = .idle
+            } catch {
+                guard !Task.isCancelled, localTaskOperationID == operationID else { return }
+                presentLocalTask(error)
+                localTaskPhase = .failed
+            }
+            localTaskOperation = nil
+        }
+    }
+
+    func createLocalTask() {
+        guard let plan = localTaskPlan, !localTaskPhase.isBusy else { return }
+        let operationID = UUID()
+        localTaskOperationID = operationID
+        let token = plan.plan.planToken
+        let expectedHash = plan.plan.planHash
+        localTaskIssue = nil
+        let feedbackStarted = ContinuousClock.now
+        localTaskPhase = .creatingTask
+        localTaskTimingMS["create_click_feedback"] = Self.elapsedMilliseconds(
+            since: feedbackStarted
+        )
+        localTaskOperation = Task {
+            do {
+                let response = try await backend.createLocalTask(
+                    planToken: token,
+                    expectedPlanHash: expectedHash
+                )
+                guard localTaskOperationID == operationID else { return }
+                localTaskPhase = .openingTask
+                let updateStarted = ContinuousClock.now
+                tasks.removeAll { $0.taskID == response.summary.taskID }
+                tasks.insert(response.summary, at: 0)
+                if let index = projects.firstIndex(where: {
+                    $0.projectID == response.project.projectID
+                }) {
+                    projects[index] = response.project
+                }
+                selectedTask = TaskDetail(summary: response.summary)
+                selectedProjectID = response.project.projectID
+                selectedSection = .tasks
+                localTaskPlan = nil
+                isNewTaskPresented = false
+                localTaskTimingMS.merge(response.timingMS) { _, latest in latest }
+                localTaskTimingMS["post_create_ui_update"] = Self.elapsedMilliseconds(
+                    since: updateStarted
+                )
+                localTaskPhase = .idle
+                localTaskOperation = nil
+                schedulePostCreateRefresh(
+                    taskID: response.summary.taskID,
+                    after: response.nextRefreshAfterMS
+                )
+            } catch {
+                guard localTaskOperationID == operationID else { return }
+                presentLocalTask(error)
+                localTaskPhase = .failed
+                localTaskOperation = nil
+            }
+        }
+    }
+
+    func cancelLocalTaskSheet() {
+        if localTaskPhase.canCancel {
+            localTaskOperationID = UUID()
+            localTaskOperation?.cancel()
+            localTaskOperation = nil
+            localTaskPhase = .idle
+            isNewTaskPresented = false
+        } else if !localTaskPhase.isBusy {
+            isNewTaskPresented = false
+        }
+    }
+
+    func reviewNewLocalTaskPlan() {
+        localTaskPlan = nil
+        localTaskIssue = nil
+        localTaskPhase = .idle
+    }
+
+    func openDiagnosticsFromLocalTask() {
+        isNewTaskPresented = false
+        selectedSection = .diagnostics
+    }
+
+    func openTaskCenterFromLocalTask() {
+        isNewTaskPresented = false
+        selectedSection = .tasks
+    }
+
+    func createFirstTaskFromGuide() {
+        shouldShowFirstTaskGuide = false
+        openNewTask()
+    }
+
+    func skipFirstTaskGuide() {
+        shouldShowFirstTaskGuide = false
     }
 
     func performService(_ action: ServiceAction, completion: (() -> Void)? = nil) {
@@ -936,6 +1130,10 @@ final class AppModel: ObservableObject {
         health = snapshot.health
         acceptanceStatus = snapshot.acceptance
         installedTunnelClient = snapshot.tunnelInstallation
+        if selectedProjectID == nil
+            || !snapshot.projects.contains(where: { $0.projectID == selectedProjectID }) {
+            selectedProjectID = snapshot.projects.first?.projectID
+        }
         if snapshot.selectedTask != nil { selectedTask = snapshot.selectedTask }
         connection.localMCPStatus = snapshot.services.services
             .first(where: { $0.name == "mcp" })?.state ?? "unknown"
@@ -953,6 +1151,7 @@ final class AppModel: ObservableObject {
         applyExternalVerificationAuthority()
         connectionStore.save(connection)
         refreshTunnelStatus(silent: true)
+        if onboarding.completed { offerFirstTaskGuideIfNeeded() }
     }
 
     private func startObservation() {
@@ -1026,7 +1225,7 @@ final class AppModel: ObservableObject {
 
     private static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
-            as? String ?? "0.7.0"
+            as? String ?? "0.8.0"
     }
 
     private static func makeTunnelInstaller() -> TunnelClientInstaller? {
@@ -1059,6 +1258,103 @@ final class AppModel: ObservableObject {
             }
             isBusy = false
         }
+    }
+
+    private func offerFirstTaskGuideIfNeeded() {
+        guard onboarding.completed,
+              firstTaskGuideStore.shouldPresent(taskCount: tasks.count) else { return }
+        firstTaskGuideStore.markPresented()
+        shouldShowFirstTaskGuide = true
+    }
+
+    private func presentLocalTask(_ error: Error) {
+        if let core = error as? CoreClientError, case .core(let failure) = core {
+            let copy = localTaskErrorCopy(for: failure)
+            if failure.field == "goal" || failure.nextActionCode == "edit_goal" {
+                localTaskPlan = nil
+            } else if failure.nextActionCode == "review_new_plan" {
+                localTaskPlan = nil
+            }
+            localTaskIssue = UserFacingIssue(
+                title: copy.title,
+                message: copy.message,
+                nextAction: copy.nextAction,
+                field: failure.field,
+                errorCode: failure.errorCode
+            )
+        } else {
+            localTaskIssue = UserFacingIssue(
+                title: String(localized: "Task could not be created"),
+                message: String(localized: "Project Brain could not complete this task action."),
+                nextAction: String(
+                    localized: "Open Diagnostics, then try the task action again."
+                )
+            )
+        }
+    }
+
+    private func localTaskErrorCopy(
+        for failure: CoreFailure
+    ) -> (title: String, message: String, nextAction: String) {
+        switch failure.errorCode {
+        case "task_goal_invalid":
+            let minimum = failure.constraints["minimum"] ?? 10
+            let maximum = failure.constraints["maximum"] ?? 8_000
+            let actual = failure.constraints["actual"] ?? 0
+            return (
+                String(localized: "Check the task goal"),
+                String(
+                    format: String(localized: "Goal length constraint format"),
+                    minimum,
+                    maximum,
+                    actual
+                ),
+                String(localized: "Edit the goal, then review a new plan.")
+            )
+        case "local_task_plan_expired", "local_task_plan_superseded",
+             "local_task_plan_hash_mismatch", "local_task_plan_snapshot_invalid",
+             "local_task_project_changed", "local_task_base_changed",
+             "local_task_readiness_changed", "local_task_plan_unknown":
+            return (
+                String(localized: "Execution plan changed"),
+                String(localized: "The reviewed plan is no longer current."),
+                String(localized: "Review a new execution plan before creating the task.")
+            )
+        case "local_task_plan_consumed":
+            return (
+                String(localized: "Task was already created"),
+                String(localized: "This execution plan has already been used."),
+                String(localized: "Open Task Center to view the created task.")
+            )
+        default:
+            return (
+                String(localized: "Task needs attention"),
+                String(localized: "Project Brain safely blocked this task action."),
+                String(localized: "Open Diagnostics, then review a new plan.")
+            )
+        }
+    }
+
+    private func schedulePostCreateRefresh(taskID: String, after milliseconds: Int) {
+        localTaskTimingMS["background_refresh_delay"] = Double(max(0, milliseconds))
+        Task {
+            try? await Task.sleep(for: .milliseconds(max(0, milliseconds)))
+            let started = ContinuousClock.now
+            do {
+                selectedTask = try await backend.task(taskID)
+                localTaskTimingMS["background_refresh"] = Self.elapsedMilliseconds(
+                    since: started
+                )
+            } catch { /* the observation loop remains the recovery authority */ }
+        }
+    }
+
+    private static func elapsedMilliseconds(
+        since started: ContinuousClock.Instant
+    ) -> Double {
+        let duration = started.duration(to: .now)
+        return Double(duration.components.seconds) * 1_000
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000
     }
 
     private func present(_ error: Error) {

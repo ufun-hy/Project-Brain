@@ -11,6 +11,7 @@ public enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case readyToMerge = "ready_to_merge"
     case merging
     case accepted
+    case completed
     case mergeFailed = "merge_failed"
     case failed
     case superseded
@@ -28,6 +29,7 @@ public enum TaskStatus: String, Codable, CaseIterable, Sendable {
         case .readyToMerge: "Ready to merge"
         case .merging: "Merging"
         case .accepted: "Succeeded"
+        case .completed: "Completed"
         case .mergeFailed: "Merge failed"
         case .failed: "Failed"
         case .superseded: "Superseded"
@@ -66,6 +68,8 @@ public struct TaskSummary: Codable, Identifiable, Equatable, Sendable {
     public let projectID: String
     public let project: String
     public let goal: String?
+    public let sourceType: String?
+    public let localTaskType: LocalTaskType?
     public let status: TaskStatus
     public let attemptPhase: AttemptPhase?
     public let attemptCount: Int
@@ -91,6 +95,8 @@ public struct TaskSummary: Codable, Identifiable, Equatable, Sendable {
         case taskID = "task_id"
         case projectID = "project_id"
         case project, goal, status
+        case sourceType = "source_type"
+        case localTaskType = "local_task_type"
         case attemptPhase = "attempt_phase"
         case attemptCount = "attempt_count"
         case createdAt = "created_at"
@@ -110,6 +116,8 @@ public struct TaskSummary: Codable, Identifiable, Equatable, Sendable {
         projectID: String,
         project: String,
         goal: String? = nil,
+        sourceType: String? = nil,
+        localTaskType: LocalTaskType? = nil,
         status: TaskStatus,
         attemptPhase: AttemptPhase? = nil,
         attemptCount: Int = 0,
@@ -129,6 +137,8 @@ public struct TaskSummary: Codable, Identifiable, Equatable, Sendable {
         self.projectID = projectID
         self.project = project
         self.goal = goal
+        self.sourceType = sourceType
+        self.localTaskType = localTaskType
         self.status = status
         self.attemptPhase = attemptPhase
         self.attemptCount = attemptCount
@@ -143,6 +153,260 @@ public struct TaskSummary: Codable, Identifiable, Equatable, Sendable {
         self.nextAction = nextAction
         self.projectConfigRevision = projectConfigRevision
         self.projectConfigSHA256 = projectConfigSHA256
+    }
+}
+
+public enum LocalTaskType: String, Codable, CaseIterable, Sendable {
+    case analysis
+    case implement
+
+    public var title: String {
+        switch self {
+        case .analysis: String(localized: "Analyze / Review")
+        case .implement: String(localized: "Implement change")
+        }
+    }
+}
+
+public enum LocalTaskOperationPhase: String, Equatable, Sendable {
+    case idle
+    case checkingProject
+    case buildingPlan
+    case creatingTask
+    case openingTask
+    case failed
+
+    public var isBusy: Bool {
+        switch self {
+        case .checkingProject, .buildingPlan, .creatingTask, .openingTask: true
+        case .idle, .failed: false
+        }
+    }
+
+    public var canCancel: Bool {
+        self == .checkingProject || self == .buildingPlan
+    }
+
+    public var titleKey: String {
+        switch self {
+        case .idle: "Ready"
+        case .checkingProject: "Checking project…"
+        case .buildingPlan: "Building execution plan…"
+        case .creatingTask: "Creating task record…"
+        case .openingTask: "Opening Task Center…"
+        case .failed: "Needs attention"
+        }
+    }
+}
+
+public struct LocalTaskDelivery: Codable, Equatable, Sendable {
+    public var commit: Bool
+    public var push: Bool
+    public var draftPR: Bool
+
+    public init(commit: Bool, push: Bool, draftPR: Bool) {
+        self.commit = commit
+        self.push = push
+        self.draftPR = draftPR
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case commit, push
+        case draftPR = "draft_pr"
+    }
+}
+
+public struct LocalTaskRequest: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let source: String
+    public var projectID: String
+    public var taskType: LocalTaskType
+    public var goal: String
+    public var acceptanceCriteria: [String]
+    public var delivery: LocalTaskDelivery
+
+    public init(
+        projectID: String,
+        taskType: LocalTaskType = .analysis,
+        goal: String = "",
+        acceptanceCriteria: [String] = [],
+        delivery: LocalTaskDelivery = .init(commit: false, push: false, draftPR: false)
+    ) {
+        self.schemaVersion = 1
+        self.source = "local_app"
+        self.projectID = projectID
+        self.taskType = taskType
+        self.goal = goal
+        self.acceptanceCriteria = acceptanceCriteria
+        self.delivery = delivery
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case source, goal, delivery
+        case schemaVersion = "schema_version"
+        case projectID = "project_id"
+        case taskType = "task_type"
+        case acceptanceCriteria = "acceptance_criteria"
+    }
+}
+
+public struct LocalTaskConfirmation: Codable, Equatable, Sendable {
+    public let planToken: String
+    public let expectedPlanHash: String
+
+    public init(planToken: String, expectedPlanHash: String) {
+        self.planToken = planToken
+        self.expectedPlanHash = expectedPlanHash
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case planToken = "plan_token"
+        case expectedPlanHash = "expected_plan_hash"
+    }
+}
+
+public struct LocalTaskGoalConstraints: Codable, Equatable, Sendable {
+    public let minimum: Int
+    public let maximum: Int
+}
+
+public struct LocalTaskPlanCheck: Codable, Identifiable, Equatable, Sendable {
+    public let name: String
+    public let status: String
+    public let detail: String
+    public let blocking: Bool
+    public let nextAction: String
+
+    public var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name, status, detail, blocking
+        case nextAction = "next_action"
+    }
+}
+
+public struct LocalTaskPlanReadiness: Codable, Equatable, Sendable {
+    public let status: String
+    public let ready: Bool
+    public let checks: [LocalTaskPlanCheck]
+    public let blockers: [LocalTaskPlanCheck]
+    public let externalChatGPTAcceptance: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status, ready, checks, blockers
+        case externalChatGPTAcceptance = "external_chatgpt_acceptance"
+    }
+}
+
+public struct LocalTaskVerificationDescription: Codable, Identifiable, Equatable, Sendable {
+    public let id: String
+    public let description: String
+    public let alwaysRun: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, description
+        case alwaysRun = "always_run"
+    }
+}
+
+public struct LocalTaskPlan: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let contractVersion: String
+    public let planID: String
+    public let planToken: String
+    public let planHash: String
+    public let tokenFingerprint: String
+    public let projectID: String
+    public let projectName: String
+    public let repositoryPath: String
+    public let defaultBranch: String
+    public let baseSHA: String?
+    public let taskType: LocalTaskType
+    public let canonicalGoal: String
+    public let canonicalGoalLength: Int
+    public let goalConstraints: LocalTaskGoalConstraints
+    public let goalSummary: String
+    public let acceptanceCriteria: [String]
+    public let executionProfileRevision: Int
+    public let executionProfileSHA256: String
+    public let codexAdapter: String
+    public let codexExecutable: String
+    public let worktreeRoot: String
+    public let verification: [LocalTaskVerificationDescription]
+    public let delivery: LocalTaskDelivery
+    public let readiness: LocalTaskPlanReadiness
+    public let createdAt: String
+    public let expiresAt: String
+    public let externalChatGPTAcceptance: String
+
+    enum CodingKeys: String, CodingKey {
+        case verification, delivery, readiness
+        case schemaVersion = "schema_version"
+        case contractVersion = "contract_version"
+        case planID = "plan_id"
+        case planToken = "plan_token"
+        case planHash = "plan_hash"
+        case tokenFingerprint = "token_fingerprint"
+        case projectID = "project_id"
+        case projectName = "project_name"
+        case repositoryPath = "repository_path"
+        case defaultBranch = "default_branch"
+        case baseSHA = "base_sha"
+        case taskType = "task_type"
+        case canonicalGoal = "canonical_goal"
+        case canonicalGoalLength = "canonical_goal_length"
+        case goalConstraints = "goal_constraints"
+        case goalSummary = "goal_summary"
+        case acceptanceCriteria = "acceptance_criteria"
+        case executionProfileRevision = "execution_profile_revision"
+        case executionProfileSHA256 = "execution_profile_sha256"
+        case codexAdapter = "codex_adapter"
+        case codexExecutable = "codex_executable"
+        case worktreeRoot = "worktree_root"
+        case createdAt = "created_at"
+        case expiresAt = "expires_at"
+        case externalChatGPTAcceptance = "external_chatgpt_acceptance"
+    }
+}
+
+public struct LocalTaskPlanResponse: Codable, Equatable, Sendable {
+    public let status: String
+    public let plan: LocalTaskPlan
+    public let timingMS: [String: Double]
+
+    enum CodingKeys: String, CodingKey {
+        case status, plan
+        case timingMS = "timing_ms"
+    }
+}
+
+public struct LocalTaskCreationEvidence: Codable, Equatable, Sendable {
+    public let planSHA256: String
+    public let canonicalRequestSHA256: String
+    public let createdAt: String?
+    public let transaction: String
+
+    enum CodingKeys: String, CodingKey {
+        case transaction
+        case planSHA256 = "plan_sha256"
+        case canonicalRequestSHA256 = "canonical_request_sha256"
+        case createdAt = "created_at"
+    }
+}
+
+public struct LocalTaskCreateResponse: Codable, Equatable, Sendable {
+    public let status: String
+    public let summary: TaskSummary
+    public let project: ProjectSummary
+    public let creationEvidence: LocalTaskCreationEvidence
+    public let nextRefreshAfterMS: Int
+    public let timingMS: [String: Double]
+
+    enum CodingKeys: String, CodingKey {
+        case status, summary, project
+        case creationEvidence = "creation_evidence"
+        case nextRefreshAfterMS = "next_refresh_after_ms"
+        case timingMS = "timing_ms"
     }
 }
 
@@ -602,6 +866,8 @@ public struct TaskDetail: Codable, Equatable, Sendable {
     public let projectID: String
     public let project: String
     public let goal: String?
+    public let sourceType: String?
+    public let localTaskType: LocalTaskType?
     public let status: TaskStatus
     public let attemptPhase: AttemptPhase?
     public let attemptCount: Int
@@ -611,11 +877,48 @@ public struct TaskDetail: Codable, Equatable, Sendable {
     public let prURL: String?
     public let lastError: String?
     public let nextAction: String?
+    public let baseSHA: String?
+    public let projectConfigRevision: Int?
+    public let projectConfigSHA256: String?
+    public let delivery: LocalTaskDelivery?
+    public let result: [String: JSONValue]?
+    public let createdAt: String?
+    public let updatedAt: String?
     public let acceptanceCriteria: [JSONValue]
     public let verification: [VerificationEvidence]
     public let verificationSet: VerificationSetSummary?
     public let reviews: [ReviewSummary]
     public let events: [TaskEvent]
+
+    public init(summary: TaskSummary) {
+        self.taskID = summary.taskID
+        self.projectID = summary.projectID
+        self.project = summary.project
+        self.goal = summary.goal
+        self.sourceType = summary.sourceType
+        self.localTaskType = summary.localTaskType
+        self.status = summary.status
+        self.attemptPhase = summary.attemptPhase
+        self.attemptCount = summary.attemptCount
+        self.branch = summary.branch
+        self.commit = summary.commit
+        self.headSHA = summary.headSHA
+        self.prURL = summary.prURL
+        self.lastError = summary.lastError
+        self.nextAction = summary.nextAction
+        self.baseSHA = nil
+        self.projectConfigRevision = summary.projectConfigRevision
+        self.projectConfigSHA256 = summary.projectConfigSHA256
+        self.delivery = nil
+        self.result = nil
+        self.createdAt = summary.createdAt
+        self.updatedAt = summary.updatedAt
+        self.acceptanceCriteria = []
+        self.verification = []
+        self.verificationSet = nil
+        self.reviews = []
+        self.events = []
+    }
 
     public var changedFiles: [String] {
         for event in events.reversed() {
@@ -629,7 +932,9 @@ public struct TaskDetail: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case taskID = "task_id"
         case projectID = "project_id"
-        case project, goal, status
+        case project, goal, status, delivery, result
+        case sourceType = "source_type"
+        case localTaskType = "local_task_type"
         case attemptPhase = "attempt_phase"
         case attemptCount = "attempt_count"
         case branch, commit
@@ -637,6 +942,11 @@ public struct TaskDetail: Codable, Equatable, Sendable {
         case prURL = "pr_url"
         case lastError = "last_error"
         case nextAction = "next_action"
+        case baseSHA = "base_sha"
+        case projectConfigRevision = "project_config_revision"
+        case projectConfigSHA256 = "project_config_sha256"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
         case acceptanceCriteria = "acceptance_criteria"
         case verification
         case verificationSet = "verification_set"

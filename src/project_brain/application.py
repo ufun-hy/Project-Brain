@@ -16,7 +16,6 @@ from .security import redact_text
 from .store import SCHEMA_VERSION, TaskStore
 from .project_config import executable_available
 
-
 NEXT_ACTION = {
     TaskStatus.PENDING.value: "Run project-brain apply.",
     TaskStatus.RUNNING.value: "Wait for the active process; inspect health if its deadline expires.",
@@ -30,6 +29,7 @@ NEXT_ACTION = {
     TaskStatus.READY_TO_MERGE.value: "Await explicit user merge authorization.",
     TaskStatus.MERGING.value: "Wait for the authorized merge operation.",
     TaskStatus.ACCEPTED.value: "No automatic action; terminal accepted task.",
+    TaskStatus.COMPLETED.value: "Review the completed local analysis result.",
     TaskStatus.MERGE_FAILED.value: "Inspect merge failure and choose retry or needs_changes.",
     TaskStatus.FAILED.value: "Inspect the permanent error; create a new revision if needed.",
     TaskStatus.SUPERSEDED.value: "Follow the replacement task revision.",
@@ -37,13 +37,19 @@ NEXT_ACTION = {
 }
 
 
-def task_view(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def task_view(
+    task: dict[str, Any], projects: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     """Add derived, source-neutral fields to a stored task."""
     updated = parse_timestamp(task.get("updated_at"))
     elapsed = None
     if updated:
         elapsed = max(0, int((datetime.now(timezone.utc) - updated).total_seconds()))
-    safe_task = {key: value for key, value in task.items() if key != "execution_profile"}
+    safe_task = {
+        key: value
+        for key, value in task.items()
+        if key not in {"execution_profile", "payload"}
+    }
     return {
         **safe_task,
         "project": projects.get(task["project_id"], {}).get("name", task["project_id"]),
@@ -68,9 +74,15 @@ def health_report(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
     def check(name: str, passed: bool, detail: str) -> None:
-        checks.append({"name": name, "status": "passed" if passed else "failed", "detail": detail})
+        checks.append(
+            {"name": name, "status": "passed" if passed else "failed", "detail": detail}
+        )
 
-    check("runtime_root", runtime.root.is_dir() and os.access(runtime.root, os.W_OK), str(runtime.root))
+    check(
+        "runtime_root",
+        runtime.root.is_dir() and os.access(runtime.root, os.W_OK),
+        str(runtime.root),
+    )
     check(
         "database_schema",
         store.schema_version() == SCHEMA_VERSION,
@@ -93,7 +105,11 @@ def health_report(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
             repo.exists() and (repo / ".git").exists(),
             str(repo),
         )
-        executable = project.get("codex_command", [""])[0] if project.get("codex_command") else ""
+        executable = (
+            project.get("codex_command", [""])[0]
+            if project.get("codex_command")
+            else ""
+        )
         available = bool(executable) and executable_available(executable)
         check(
             f"codex:{project['project_id']}",
@@ -101,7 +117,11 @@ def health_report(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
             executable or "not configured",
         )
     return {
-        "status": "healthy" if all(item["status"] == "passed" for item in checks) else "unhealthy",
+        "status": (
+            "healthy"
+            if all(item["status"] == "passed" for item in checks)
+            else "unhealthy"
+        ),
         "checks": checks,
     }
 
