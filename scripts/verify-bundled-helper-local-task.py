@@ -44,7 +44,7 @@ def run_json(
     *,
     environment: dict[str, str],
     request: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | list[Any]:
     completed = run(
         [str(helper), "--runtime-root", str(runtime), *arguments],
         environment=environment,
@@ -55,7 +55,9 @@ def run_json(
         ),
     )
     value = json.loads(completed.stdout)
-    assert isinstance(value, dict), "embedded helper stdout must be one JSON document"
+    assert isinstance(value, (dict, list)), (
+        "embedded helper stdout must be one JSON object or array document"
+    )
     return value
 
 
