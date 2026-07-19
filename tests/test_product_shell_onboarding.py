@@ -30,6 +30,9 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         verifier = (self.root / "scripts/verify-rc-artifact.py").read_text(
             encoding="utf-8"
         )
+        layout_verifier = (
+            self.root / "scripts/verify-rc-dmg-layout.sh"
+        ).read_text(encoding="utf-8")
         workflow = (self.root / ".github/workflows/core-tests.yml").read_text(
             encoding="utf-8"
         )
@@ -39,6 +42,7 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
             self.assertNotIn("Project-Brain-RC1-Build7-arm64", source)
         self.assertIn("APP_BUILD=9", build)
         self.assertIn('manifest["app"]["build"] == "9"', verifier)
+        self.assertIn('Info.plist\")" = "9"', layout_verifier)
 
     def test_quit_is_visible_in_menu_bar_and_settings(self) -> None:
         menu = (

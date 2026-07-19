@@ -28,7 +28,7 @@ test -f "$GUIDE"
 /usr/bin/grep -Fq "拖到旁边的“Applications”文件夹" "$GUIDE"
 test -x "$APP/Contents/Resources/project-brain"
 test -f "$APP/Contents/Resources/project-brain-cli-contract.json"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "8"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "9"
 test "$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' "$APP/Contents/Info.plist")" = "true"
 
 echo "Build 9 mounted DMG installation layout verification passed"
