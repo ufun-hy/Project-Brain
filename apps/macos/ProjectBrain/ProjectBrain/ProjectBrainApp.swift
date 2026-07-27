@@ -9,7 +9,7 @@ struct ProjectBrainApp: App {
     @StateObject private var model = AppModel()
 
     init() {
-        _ = Build9LocalTaskAppProbe.runIfRequested()
+        _ = ReleaseLocalTaskAppProbe.runIfRequested()
     }
 
     var body: some Scene {

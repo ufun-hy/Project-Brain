@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import plistlib
+import re
 import unittest
 from pathlib import Path
 
@@ -25,7 +26,7 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn('Button("Modify name")', onboarding)
         self.assertIn("model.onboarding.completed ? model.issue : nil", management)
 
-    def test_build9_artifact_names_cannot_overwrite_build8_names(self) -> None:
+    def test_build10_preflight_cannot_be_mistaken_for_distribution(self) -> None:
         build = (self.root / "scripts/build-rc-artifact.sh").read_text(encoding="utf-8")
         verifier = (self.root / "scripts/verify-rc-artifact.py").read_text(
             encoding="utf-8"
@@ -37,12 +38,121 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         for source in (build, verifier, workflow):
-            self.assertIn("Project-Brain-Local-Tasks-Build9-arm64", source)
+            self.assertIn("Project-Brain-Build10-Preflight-Unsigned-arm64", source)
             self.assertNotIn("Project-Brain-Local-Tasks-Build8-arm64", source)
             self.assertNotIn("Project-Brain-RC1-Build7-arm64", source)
-        self.assertIn("APP_BUILD=9", build)
-        self.assertIn('manifest["app"]["build"] == "9"', verifier)
-        self.assertIn('Info.plist\")" = "9"', layout_verifier)
+        self.assertIn("APP_BUILD=10", build)
+        self.assertIn('"distribution_eligible": False', build)
+        self.assertIn('manifest["app"]["build"] == "10"', verifier)
+        self.assertIn('Info.plist\")" = "10"', layout_verifier)
+        self.assertNotIn("actions/upload-artifact", workflow)
+
+    def test_build10_release_is_manual_exact_sha_and_fail_closed_on_secrets(
+        self,
+    ) -> None:
+        workflow = (self.root / ".github/workflows/macos-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertIn("release_sha:", workflow)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$RELEASE_SHA"', workflow)
+        self.assertIn("environment: macos-release", workflow)
+        for secret in (
+            "DEVELOPER_ID_APPLICATION_P12_BASE64",
+            "DEVELOPER_ID_APPLICATION_P12_PASSWORD",
+            "DEVELOPER_ID_APPLICATION_IDENTITY",
+            "APPLE_TEAM_ID",
+            "APPLE_NOTARY_KEY_P8_BASE64",
+            "APPLE_NOTARY_KEY_ID",
+            "APPLE_NOTARY_ISSUER_ID",
+        ):
+            self.assertIn(f"secrets.{secret}", workflow)
+        self.assertIn("scripts/build-notarized-release-artifact.sh", workflow)
+        self.assertIn("scripts/verify-notarized-release-artifact.py", workflow)
+        self.assertIn("scripts/verify-notarized-gatekeeper.sh", workflow)
+        self.assertIn("name: Project-Brain-Build10-arm64", workflow)
+        self.assertNotIn("Project-Brain-Build9", workflow)
+
+    def test_build10_signs_inside_out_and_notarizes_app_and_dmg(self) -> None:
+        release = (
+            self.root / "scripts/build-notarized-release-artifact.sh"
+        ).read_text(encoding="utf-8")
+        helper_sign = release.index('"$APP_HELPER"\n\nAPP_MAIN=')
+        app_sign = release.index('"$APP"\n\n/usr/bin/codesign --verify')
+        app_notary = release.index(
+            '/usr/bin/xcrun notarytool submit "$APP_NOTARY_ZIP"'
+        )
+        app_staple = release.index('/usr/bin/xcrun stapler staple "$APP"')
+        dmg_create = release.index("/usr/bin/hdiutil create")
+        dmg_sign = release.index('"$DMG"\n/usr/bin/codesign --verify')
+        dmg_notary = release.index('/usr/bin/xcrun notarytool submit "$DMG"')
+        dmg_staple = release.index('/usr/bin/xcrun stapler staple "$DMG"')
+        self.assertLess(
+            helper_sign,
+            app_sign,
+        )
+        self.assertLess(app_sign, app_notary)
+        self.assertLess(app_notary, app_staple)
+        self.assertLess(app_staple, dmg_create)
+        self.assertLess(dmg_create, dmg_sign)
+        self.assertLess(dmg_sign, dmg_notary)
+        self.assertLess(dmg_notary, dmg_staple)
+        self.assertGreaterEqual(release.count("--options runtime"), 2)
+        self.assertGreaterEqual(release.count("--timestamp"), 3)
+        self.assertIn('/usr/bin/file -b "$NESTED_EXECUTABLE"', release)
+        self.assertIn('-name "*.framework"', release)
+        self.assertIn('-name "*.xpc"', release)
+        self.assertIn('-name "*.appex"', release)
+        self.assertNotRegex(
+            release,
+            re.compile(r"codesign\s+\\\\\n(?:.*\\\\\n){0,8}\s+--deep", re.MULTILINE),
+        )
+        self.assertIn("refusing to overwrite immutable artifacts", release)
+        self.assertNotIn("spctl --master-disable", release)
+        self.assertNotIn("xattr -dr", release)
+
+    def test_build10_manifest_keeps_fresh_mac_and_external_acceptance_pending(
+        self,
+    ) -> None:
+        release = (
+            self.root / "scripts/build-notarized-release-artifact.sh"
+        ).read_text(encoding="utf-8")
+        verifier = (
+            self.root / "scripts/verify-notarized-release-artifact.py"
+        ).read_text(encoding="utf-8")
+        gatekeeper = (
+            self.root / "scripts/verify-notarized-gatekeeper.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"artifact_classification": '
+            '"developer_id_notarized_release_candidate"',
+            release,
+        )
+        self.assertIn("developer_id_notarized_release_candidate", verifier)
+        self.assertIn('"distribution_eligible": False', release)
+        self.assertIn('manifest["distribution_eligible"] is False', verifier)
+        for source in (release, verifier):
+            self.assertIn('"fresh_mac_quarantine_acceptance": "pending_manual"', source)
+            self.assertIn("pending_user_credentials_and_actions", source)
+        self.assertIn("xattr -w", gatekeeper)
+        self.assertNotIn("xattr -dr", gatekeeper)
+        self.assertIn("Fresh-Mac browser-download GUI acceptance remains pending", gatekeeper)
+
+    def test_build10_enables_hardened_runtime_and_version_is_distinct(self) -> None:
+        project = (self.root / "apps/macos/ProjectBrain/project.yml").read_text(
+            encoding="utf-8"
+        )
+        xcode_project = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain.xcodeproj/project.pbxproj"
+        ).read_text(encoding="utf-8")
+        self.assertIn("MARKETING_VERSION: 0.8.0", project)
+        self.assertIn("CURRENT_PROJECT_VERSION: 10", project)
+        self.assertIn("ENABLE_HARDENED_RUNTIME: YES", project)
+        self.assertEqual(xcode_project.count("CURRENT_PROJECT_VERSION = 10;"), 2)
+        self.assertEqual(xcode_project.count("MARKETING_VERSION = 0.8.0;"), 2)
+        self.assertEqual(xcode_project.count("ENABLE_HARDENED_RUNTIME = YES;"), 2)
 
     def test_quit_is_visible_in_menu_bar_and_settings(self) -> None:
         menu = (
@@ -197,12 +307,12 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn("verify-bundled-helper-local-task.py", workflow)
         self.assertIn("tasks", verifier)
         self.assertIn("local-plan", verifier)
-        self.assertIn("PROJECT_BRAIN_BUILD9_PROBE_MODE", verifier)
+        self.assertIn("PROJECT_BRAIN_RELEASE_PROBE_MODE", verifier)
         self.assertIn("createLocalTask", (
             self.root
-            / "apps/macos/ProjectBrain/ProjectBrain/Build9LocalTaskAppProbe.swift"
+            / "apps/macos/ProjectBrain/ProjectBrain/ReleaseLocalTaskAppProbe.swift"
         ).read_text(encoding="utf-8"))
-        self.assertIn("PROJECT_BRAIN_BUILD9_APP_PROBE", verifier)
+        self.assertIn("PROJECT_BRAIN_RELEASE_APP_PROBE", verifier)
         self.assertIn("exact_goal", verifier)
         self.assertIn("helper_cold_start", verifier)
         self.assertIn("post_create_ui_update", verifier)

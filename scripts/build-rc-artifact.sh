@@ -8,9 +8,9 @@ DERIVED_DATA=${PROJECT_BRAIN_RC_DERIVED_DATA:?PROJECT_BRAIN_RC_DERIVED_DATA is r
 HELPER=${PROJECT_BRAIN_BUNDLED_HELPER:?PROJECT_BRAIN_BUNDLED_HELPER is required}
 CI_RUN_URL=${PROJECT_BRAIN_CI_RUN_URL:-local_unpublished_build}
 APP_VERSION=0.8.0
-APP_BUILD=9
+APP_BUILD=10
 ARCHITECTURE=arm64
-ARTIFACT_BASE=Project-Brain-Local-Tasks-Build9-arm64
+ARTIFACT_BASE=Project-Brain-Build10-Preflight-Unsigned-arm64
 INSTALL_GUIDE_NAME="把 Project Brain.app 拖到 Applications 安装.txt"
 INSTALL_GUIDE="$ROOT/packaging/dmg/$INSTALL_GUIDE_NAME"
 
@@ -19,7 +19,7 @@ if [ ! -x "$HELPER" ]; then
   exit 1
 fi
 if [ "$("$HELPER" --version)" != "project-brain 0.8.0" ]; then
-  echo "error: self-contained Core helper version does not match Build 9" >&2
+  echo "error: self-contained Core helper version does not match Build 10" >&2
   exit 1
 fi
 
@@ -126,7 +126,7 @@ DMG="$OUTPUT_DIR/$ARTIFACT_BASE.dmg"
 ZIP="$OUTPUT_DIR/$ARTIFACT_BASE.zip"
 /usr/bin/hdiutil create \
   -quiet \
-  -volname "Project Brain Local Tasks Build 9" \
+  -volname "Project Brain Build 10 Preflight" \
   -srcfolder "$TEMP_ROOT/dmg" \
   -format UDZO \
   -ov \
@@ -160,8 +160,9 @@ import json
 import os
 
 manifest = {
-    "schema_version": 4,
-    "artifact_classification": "unsigned_internal_rc",
+    "schema_version": 5,
+    "artifact_classification": "unsigned_release_preflight",
+    "distribution_eligible": False,
     "app": {
         "version": os.environ["APP_VERSION"],
         "build": os.environ["APP_BUILD"],
@@ -191,8 +192,16 @@ manifest = {
     "tunnel_compatibility_manifest_version": int(os.environ["MANIFEST_VERSION"]),
     "supported_tunnel_client_versions": ["0.0.10"],
     "target_architecture": os.environ["ARCHITECTURE"],
-    "signing_status": "unsigned_internal_rc",
-    "notarization_status": "not_notarized",
+    "signing_status": "unsigned_preflight",
+    "notarization_status": "not_submitted_no_credentials",
+    "release_gate": {
+        "developer_id_signature": "pending",
+        "hardened_runtime_build_setting": "enabled",
+        "apple_notarization": "pending",
+        "app_ticket_stapled": "pending",
+        "dmg_ticket_stapled": "pending",
+        "fresh_mac_quarantine_acceptance": "pending_manual",
+    },
     "ci_run_url": os.environ["CI_RUN_URL"],
     "external_acceptance": "pending_user_credentials_and_actions",
     "artifacts": [
@@ -211,7 +220,7 @@ PY
   /usr/bin/shasum -a 256 "$MANIFEST"
 } | /usr/bin/sed "s|$OUTPUT_DIR/||" > "$OUTPUT_DIR/SHA256SUMS"
 
-echo "Build 9 artifact directory: $OUTPUT_DIR"
-echo "Build 9 DMG SHA-256: $DMG_SHA"
-echo "Build 9 classification: unsigned_internal_rc; not notarized"
+echo "Build 10 unsigned preflight directory: $OUTPUT_DIR"
+echo "Build 10 unsigned preflight DMG SHA-256: $DMG_SHA"
+echo "Distribution eligibility: false; Developer ID and notarization are required"
 echo "External acceptance: pending; this build did not use real ChatGPT ingress"

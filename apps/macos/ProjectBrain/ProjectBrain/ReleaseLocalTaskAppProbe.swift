@@ -3,11 +3,11 @@ import ProjectBrainKit
 
 /// Final-bundle CI probe for the same typed App/Core adapter used by New Task.
 /// It is unavailable outside an explicitly isolated CI environment.
-enum Build9LocalTaskAppProbe {
+enum ReleaseLocalTaskAppProbe {
     static func runIfRequested() -> Never? {
         let environment = ProcessInfo.processInfo.environment
         guard environment["CI"] == "true",
-              environment["PROJECT_BRAIN_BUILD9_APP_PROBE"] == "1" else {
+              environment["PROJECT_BRAIN_RELEASE_APP_PROBE"] == "1" else {
             return nil
         }
         let status: Int32
@@ -15,7 +15,7 @@ enum Build9LocalTaskAppProbe {
             try run(environment: environment)
             status = EXIT_SUCCESS
         } catch {
-            if let output = environment["PROJECT_BRAIN_BUILD9_PROBE_OUTPUT"] {
+            if let output = environment["PROJECT_BRAIN_RELEASE_PROBE_OUTPUT"] {
                 let failure: [String: Any] = [
                     "status": "error",
                     "error": SecretRedactor.redact(error.localizedDescription),
@@ -30,14 +30,14 @@ enum Build9LocalTaskAppProbe {
 
     private static func run(environment: [String: String]) throws {
         guard let runtimePath = environment["PROJECT_BRAIN_RUNTIME_ROOT"],
-              let outputPath = environment["PROJECT_BRAIN_BUILD9_PROBE_OUTPUT"],
+              let outputPath = environment["PROJECT_BRAIN_RELEASE_PROBE_OUTPUT"],
               let helper = Bundle.main.url(forResource: "project-brain", withExtension: nil),
               let contractURL = Bundle.main.url(
                 forResource: "project-brain-cli-contract",
                 withExtension: "json"
               ) else {
             throw CoreClientError.invalidInstallation(
-                "Build 9 App probe is missing an isolated runtime, output, helper, or contract."
+                "Release App probe is missing an isolated runtime, output, helper, or contract."
             )
         }
         let contract = try CoreCLIContractDocument(contentsOf: contractURL).contract
@@ -46,10 +46,10 @@ enum Build9LocalTaskAppProbe {
             runtimeRoot: URL(filePath: runtimePath),
             cliContract: contract
         )
-        let mode = environment["PROJECT_BRAIN_BUILD9_PROBE_MODE"] ?? "create"
+        let mode = environment["PROJECT_BRAIN_RELEASE_PROBE_MODE"] ?? "create"
         if mode == "read" {
-            guard let taskID = environment["PROJECT_BRAIN_BUILD9_PROBE_TASK_ID"] else {
-                throw CoreClientError.invalidResponse("Build 9 read probe requires a task ID.")
+            guard let taskID = environment["PROJECT_BRAIN_RELEASE_PROBE_TASK_ID"] else {
+                throw CoreClientError.invalidResponse("Release read probe requires a task ID.")
             }
             let task = try client.task(taskID)
             try write([
@@ -60,8 +60,8 @@ enum Build9LocalTaskAppProbe {
             return
         }
         guard mode == "create",
-              let requestPath = environment["PROJECT_BRAIN_BUILD9_PROBE_REQUEST"] else {
-            throw CoreClientError.invalidResponse("Build 9 create probe requires a request.")
+              let requestPath = environment["PROJECT_BRAIN_RELEASE_PROBE_REQUEST"] else {
+            throw CoreClientError.invalidResponse("Release create probe requires a request.")
         }
 
         let openStarted = ContinuousClock.now
@@ -100,7 +100,7 @@ enum Build9LocalTaskAppProbe {
         guard immediateDetail.taskID == created.summary.taskID,
               immediateDetail.status == created.summary.status else {
             throw CoreClientError.invalidResponse(
-                "Build 9 immediate task placeholder did not match the create response."
+                "Release immediate task placeholder did not match the create response."
             )
         }
         phases.append(LocalTaskOperationPhase.idle.rawValue)

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise Build 9 App plan/confirm and Analyze through the final mounted DMG."""
+"""Exercise release App plan/confirm and Analyze through the final mounted DMG."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import plistlib
 import shutil
 import sqlite3
 import subprocess
@@ -188,6 +189,11 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
             shutil.copytree(mount / "Project Brain.app", installed_app, copy_function=shutil.copy2)
             installed = True
             helper = installed_app / "Contents/Resources/project-brain"
+            info = plistlib.loads(
+                (installed_app / "Contents/Info.plist").read_bytes()
+            )
+            app_version = str(info["CFBundleShortVersionString"])
+            app_build = str(info["CFBundleVersion"])
             contract_path = installed_app / "Contents/Resources/project-brain-cli-contract.json"
             contract = json.loads(contract_path.read_text(encoding="utf-8"))
             assert contract["operations"]["local_task"]["transport"] == "stdin_json"
@@ -348,20 +354,20 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
             assert cold_planned["plan"]["canonical_goal"] == exact_goal
             assert cold_planned["plan"]["external_chatgpt_acceptance"] == "pending"
 
-            request_path = root / "build9-request.json"
+            request_path = root / "release-request.json"
             request_path.write_text(
                 json.dumps(request, ensure_ascii=False, sort_keys=True),
                 encoding="utf-8",
             )
-            app_probe_output = root / "build9-app-create.json"
+            app_probe_output = root / "release-app-create.json"
             app_environment = {
                 **environment,
                 "CI": "true",
-                "PROJECT_BRAIN_BUILD9_APP_PROBE": "1",
-                "PROJECT_BRAIN_BUILD9_PROBE_MODE": "create",
+                "PROJECT_BRAIN_RELEASE_APP_PROBE": "1",
+                "PROJECT_BRAIN_RELEASE_PROBE_MODE": "create",
                 "PROJECT_BRAIN_RUNTIME_ROOT": str(runtime),
-                "PROJECT_BRAIN_BUILD9_PROBE_REQUEST": str(request_path),
-                "PROJECT_BRAIN_BUILD9_PROBE_OUTPUT": str(app_probe_output),
+                "PROJECT_BRAIN_RELEASE_PROBE_REQUEST": str(request_path),
+                "PROJECT_BRAIN_RELEASE_PROBE_OUTPUT": str(app_probe_output),
             }
             run(
                 [str(installed_app / "Contents/MacOS/Project Brain")],
@@ -425,15 +431,15 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
             assert "readiness analysis completed" in task["result"]["summary"]
             assert task["commit"] is None and task["pr_url"] is None
 
-            restart_output = root / "build9-app-restart.json"
+            restart_output = root / "release-app-restart.json"
             restart_environment = {
                 **environment,
                 "CI": "true",
-                "PROJECT_BRAIN_BUILD9_APP_PROBE": "1",
-                "PROJECT_BRAIN_BUILD9_PROBE_MODE": "read",
-                "PROJECT_BRAIN_BUILD9_PROBE_TASK_ID": task_id,
+                "PROJECT_BRAIN_RELEASE_APP_PROBE": "1",
+                "PROJECT_BRAIN_RELEASE_PROBE_MODE": "read",
+                "PROJECT_BRAIN_RELEASE_PROBE_TASK_ID": task_id,
                 "PROJECT_BRAIN_RUNTIME_ROOT": str(runtime),
-                "PROJECT_BRAIN_BUILD9_PROBE_OUTPUT": str(restart_output),
+                "PROJECT_BRAIN_RELEASE_PROBE_OUTPUT": str(restart_output),
             }
             run(
                 [str(installed_app / "Contents/MacOS/Project Brain")],
@@ -469,8 +475,8 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
                     json.dumps(
                         {
                             "schema_version": 1,
-                            "app_version": "0.8.0",
-                            "app_build": "9",
+                            "app_version": app_version,
+                            "app_build": app_build,
                             "exact_chinese_goal_preserved": True,
                             "repository_unchanged": True,
                             "restart_persistence": True,
@@ -515,7 +521,7 @@ def main() -> int:
     arguments = parser.parse_args()
     verify(arguments.dmg, arguments.evidence_output)
     print(
-        "Final Build 9 DMG App/Core Analyze task passed with timing budgets, "
+        "Final release DMG App/Core Analyze task passed with timing budgets, "
         "schema upgrade, restart persistence, and unchanged main checkout"
     )
     return 0

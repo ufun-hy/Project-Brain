@@ -237,3 +237,31 @@ fail closed. The minimal create response opens Task Center immediately; one
 selected-task refresh runs in the background. CLI contract 1.2.0 makes this
 request/confirmation split explicit. External ChatGPT acceptance remains
 Pending and is not inferred from any Build 9 local or artifact test.
+
+## D-026: Fail closed between unsigned regression builds and distributable macOS bytes
+
+Build 9 is immutable internal-build history. Ordinary pull-request CI may build
+`Project-Brain-Build10-Preflight-Unsigned-arm64` to exercise the final DMG App,
+embedded helper, onboarding, local task, timing, lifecycle, and preserved-data
+flows. Its schema-v5 manifest says `distribution_eligible: false`, it uses a
+visibly unsigned name, and CI does not upload it.
+
+Only the manually triggered `macOS Developer ID release` workflow may create
+`Project-Brain-Build10-arm64`. It binds checkout to a caller-supplied exact
+40-character SHA and requires a protected release environment with a Developer
+ID Application identity and App Store Connect notary API key. Missing
+credentials fail before packaging. The workflow signs the embedded helper,
+other nested code, and App from the inside out using Hardened Runtime and secure timestamps, verifies
+that `get-task-allow` is absent, notarizes and staples the App, creates and
+signs the DMG, notarizes and staples the DMG, and verifies the final bytes with
+`codesign`, `spctl`, and `stapler`.
+
+Signed output paths refuse overwrite. The final schema-v5 manifest binds the
+App executable, Core helper, CLI contract, DMG, App ZIP, sanitized notarization
+receipts, exact source SHA, CI run, signing team, and Apple submission IDs.
+Automated Gatekeeper checks are evidence, not the final ordinary-user verdict.
+`distribution_eligible` remains false and
+`fresh_mac_quarantine_acceptance` remains `pending_manual` until a
+browser-downloaded quarantined DMG passes the drag-to-Applications and
+double-click flow on a Mac that has never trusted Project Brain. External
+ChatGPT acceptance remains independently Pending.

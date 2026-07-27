@@ -28,7 +28,7 @@ acceptance remain separate Pending gates.
 
 The app embeds a self-contained Core helper and can import a user-downloaded,
 reviewed Tunnel Client into its private App Support directory. Both installers
-use atomic replacement and rollback. Build 9 binds the App and helper
+use atomic replacement and rollback. Build 10 keeps the App and helper
 to one immutable, versioned CLI contract, upgrades a stale same-version helper
 by SHA-256, and enforces one user process and one management window. It uses a
 schema-v10 canonical plan record, stores only the plan-token SHA-256, and lets
@@ -39,9 +39,11 @@ added an MCP transport-probe
 wizard with explicit external-acceptance Pending state. The optional fixed
 one-document Draft PR task remains locked because the current Tunnel contract
 does not provide trusted ChatGPT control-plane attestation. The unsigned
-internal Build 9 artifact, first-run guide, and current
+Build 10 preflight, Developer ID release gate, first-run guide, and current
 external limits are documented in [`docs/product-shell.md`](docs/product-shell.md)
-and [`docs/product-shell-build9-plan-confirm-verification.md`](docs/product-shell-build9-plan-confirm-verification.md).
+and [`docs/product-shell-build10-signing-notarization.md`](docs/product-shell-build10-signing-notarization.md).
+Build 9 remains immutable internal-build history in
+[`docs/product-shell-build9-plan-confirm-verification.md`](docs/product-shell-build9-plan-confirm-verification.md).
 
 ![Project Brain first-run welcome](docs/images/product-shell-onboarding.png)
 
@@ -277,10 +279,10 @@ symlink escape.
 scripts/verify-core.sh
 ```
 
-The same command runs in Linux CI. macOS CI additionally packages the frozen
+The same command runs in Linux CI. macOS PR CI additionally packages the frozen
 helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
-`Project Brain.app`, creates an unsigned internal Build 9 DMG/ZIP plus build
-manifest, verifies all artifact hashes, verifies the embedded helper and static
+`Project Brain.app`, creates a clearly non-distributable Build 10 unsigned
+preflight without uploading it, verifies all preflight hashes, verifies the embedded helper and static
 Tunnel compatibility manifest, executes existing-project onboarding through the
 final app's embedded helper, migrates a preserved schema-v9 database and runs a
 no-change exact-Chinese-goal Analyze task through the final DMG App/Core adapter,
@@ -288,6 +290,15 @@ launches the final DMG and Applications copies to
 verify one process/window, and checks Gmail legacy isolation. Tests use temporary repositories,
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.
+
+The separate `macOS Developer ID release` workflow is manual and exact-SHA
+bound. It fails closed unless the protected `macos-release` environment
+provides a Developer ID Application identity and App Store Connect notary API
+key. It signs the embedded helper, other nested code, and App from the inside
+out with Hardened Runtime and secure timestamps, notarizes and staples the App and DMG, runs
+`codesign`, `spctl`, and `stapler` verification, and uploads only the signed
+`Project-Brain-Build10-arm64` result. A browser-downloaded DMG test on a Mac
+that has never trusted Project Brain remains a manual Pending release gate.
 
 Architecture and recovery details are in
 [`docs/rfc/RFC-003-core-v3.md`](docs/rfc/RFC-003-core-v3.md) and

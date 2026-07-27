@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the RFC-008 Build 9 artifact without trusting manifest paths."""
+"""Verify the Build 10 unsigned preflight without trusting manifest paths."""
 
 from __future__ import annotations
 
@@ -22,12 +22,13 @@ def verify(directory: Path) -> None:
     directory = directory.resolve(strict=True)
     manifest_path = directory / "build-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 4
-    assert manifest["artifact_classification"] == "unsigned_internal_rc"
-    assert manifest["signing_status"] == "unsigned_internal_rc"
-    assert manifest["notarization_status"] == "not_notarized"
+    assert manifest["schema_version"] == 5
+    assert manifest["artifact_classification"] == "unsigned_release_preflight"
+    assert manifest["distribution_eligible"] is False
+    assert manifest["signing_status"] == "unsigned_preflight"
+    assert manifest["notarization_status"] == "not_submitted_no_credentials"
     assert manifest["external_acceptance"] == "pending_user_credentials_and_actions"
-    assert manifest["app"]["build"] == "9"
+    assert manifest["app"]["build"] == "10"
     assert manifest["app"]["version"] == "0.8.0"
     assert len(manifest["app"]["executable_sha256"]) == 64
     assert manifest["core_helper"]["version"] == "0.8.0"
@@ -48,12 +49,20 @@ def verify(directory: Path) -> None:
     }
     assert manifest["tunnel_compatibility_manifest_version"] == 1
     assert manifest["supported_tunnel_client_versions"] == ["0.0.10"]
+    assert manifest["release_gate"] == {
+        "developer_id_signature": "pending",
+        "hardened_runtime_build_setting": "enabled",
+        "apple_notarization": "pending",
+        "app_ticket_stapled": "pending",
+        "dmg_ticket_stapled": "pending",
+        "fresh_mac_quarantine_acceptance": "pending_manual",
+    }
     assert manifest["target_architecture"] == "arm64"
     assert len(manifest["git_head_sha"]) == 40
     assert manifest["ci_run_url"].startswith("https://github.com/")
     assert {entry["name"] for entry in manifest["artifacts"]} == {
-        "Project-Brain-Local-Tasks-Build9-arm64.dmg",
-        "Project-Brain-Local-Tasks-Build9-arm64.zip",
+        "Project-Brain-Build10-Preflight-Unsigned-arm64.dmg",
+        "Project-Brain-Build10-Preflight-Unsigned-arm64.zip",
     }
     for entry in manifest["artifacts"]:
         name = entry["name"]
@@ -62,7 +71,23 @@ def verify(directory: Path) -> None:
         assert artifact.parent == directory
         assert sha256(artifact) == entry["sha256"]
 
-    archive = directory / "Project-Brain-Local-Tasks-Build9-arm64.zip"
+    checksum_lines = (directory / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    checksums = {}
+    for line in checksum_lines:
+        checksum, name = line.split(maxsplit=1)
+        name = name.lstrip("*")
+        assert name == Path(name).name
+        assert name not in checksums
+        checksums[name] = checksum
+    assert set(checksums) == {
+        "Project-Brain-Build10-Preflight-Unsigned-arm64.dmg",
+        "Project-Brain-Build10-Preflight-Unsigned-arm64.zip",
+        "build-manifest.json",
+    }
+    for name, checksum in checksums.items():
+        assert sha256(directory / name) == checksum
+
+    archive = directory / "Project-Brain-Build10-Preflight-Unsigned-arm64.zip"
     with zipfile.ZipFile(archive) as app_zip:
         app_prefix = "Project Brain.app/Contents/"
         executable = app_zip.read(app_prefix + "MacOS/Project Brain")
@@ -90,7 +115,7 @@ def main() -> int:
     parser.add_argument("directory", type=Path)
     arguments = parser.parse_args()
     verify(arguments.directory)
-    print("Build 9 artifact manifest and SHA-256 verification passed")
+    print("Build 10 unsigned preflight manifest and SHA-256 verification passed")
     return 0
 
 

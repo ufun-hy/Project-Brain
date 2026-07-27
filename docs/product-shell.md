@@ -60,11 +60,22 @@ xcodebuild \
 
 PyInstaller produces an architecture-specific `onefile` executable. The Xcode
 post-build phase copies it into `Project Brain.app/Contents/Resources/` and
-checks the executable bit. CI publishes an unsigned arm64 internal Build 9 DMG and
-ZIP, build manifest, and SHA-256 values as a seven-day artifact. Signed,
-notarized, universal distribution is a separate release task.
+checks the executable bit. Pull-request CI builds
+`Project-Brain-Build10-Preflight-Unsigned-arm64` only for repository regression
+tests. Its manifest states `distribution_eligible: false`, and CI never uploads
+it as a downloadable artifact.
 
-## Install the internal RC
+The manual `macOS Developer ID release` workflow packages
+`Project-Brain-Build10-arm64` only when a protected environment supplies the
+Developer ID and App Store Connect credentials. It signs the embedded helper,
+other nested executables/frameworks, the App, and then the DMG; enables Hardened Runtime and secure timestamps;
+notarizes and staples both the App and DMG; and verifies them with `codesign`,
+`spctl`, and `stapler`. See
+[`product-shell-build10-signing-notarization.md`](product-shell-build10-signing-notarization.md).
+Fresh-Mac browser-download acceptance and External ChatGPT acceptance remain
+manual Pending gates.
+
+## Install a signed and notarized release candidate
 
 1. Open the downloaded DMG.
 2. Drag `Project Brain.app` onto the adjacent `Applications` folder icon. A
@@ -72,6 +83,12 @@ notarized, universal distribution is a separate release task.
 3. Eject the DMG, then open `/Applications/Project Brain.app` from Finder's
    Applications folder. Do not run the copy inside the mounted DMG for formal
    acceptance.
+
+An unsigned preflight is for CI only. It is not an ordinary-user installer and
+must never be presented as one. The signed Build 10 candidate is still not
+distribution-eligible until a Mac that has never installed or trusted Project
+Brain downloads the DMG through a browser, preserves the quarantine attribute,
+and completes the drag-install-launch flow without a Gatekeeper override.
 
 The app combines the macOS single-instance Launch Services key with a user-level
 non-blocking process lock, and uses one unique management `Window`. Starting the

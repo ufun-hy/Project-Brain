@@ -13,6 +13,33 @@ project-brain cleanup --dry-run --json
 Ordinary App users should open **Diagnostics** or the task detail instead of
 running these developer/operator commands manually.
 
+## Gatekeeper blocks the App
+
+Build 9 and the Build 10 unsigned preflight are internal artifacts. macOS can
+show “Apple could not verify Project Brain” because those bytes do not carry a
+Developer ID signature and stapled Apple notarization ticket. That message is a
+release-gate failure, not evidence that local task creation changed user data.
+Do not delete `~/.project-brain/` to address it.
+
+Do not disable Gatekeeper globally with `spctl --master-disable`, and do not
+recursively remove quarantine attributes. Those actions weaken the Mac-wide
+security boundary and cannot satisfy product acceptance. Ordinary-user testing
+must use the new, exact-hash `Project-Brain-Build10-arm64.dmg` produced by the
+protected release workflow. It must be dragged to `/Applications`, ejected,
+and launched from Applications.
+
+Release engineering should first verify the final bytes:
+
+```bash
+codesign --verify --deep --strict --verbose=2 "/Applications/Project Brain.app"
+spctl --assess --type execute --verbose=4 "/Applications/Project Brain.app"
+xcrun stapler validate "Project-Brain-Build10-arm64.dmg"
+```
+
+These checks do not replace the final browser-download test on a Mac that has
+never trusted Project Brain. Until that GUI flow passes without an override,
+`fresh_mac_quarantine_acceptance` remains `pending_manual`.
+
 ## Local task planning and creation
 
 The local task sheet keeps errors visible and offers a recovery action. If the
