@@ -60,10 +60,13 @@ xcodebuild \
 
 PyInstaller produces an architecture-specific `onefile` executable. The Xcode
 post-build phase copies it into `Project Brain.app/Contents/Resources/` and
-checks the executable bit. Pull-request CI builds
-`Project-Brain-Build10-Preflight-Unsigned-arm64` only for repository regression
-tests. Its manifest states `distribution_eligible: false`, and CI never uploads
-it as a downloadable artifact.
+checks the executable bit. Pull-request CI builds and uploads
+`Project-Brain-Build10-Personal-Unsigned-arm64` for repository regression and
+personal internal use. Its manifest states `distribution_eligible: false`,
+`usage_scope: personal_internal_only`, and requires per-artifact manual
+Gatekeeper authorization. The exact-SHA `macOS Personal Build` workflow creates
+the same artifact without any Apple or repository secret. See
+[`product-shell-build10-personal-build.md`](product-shell-build10-personal-build.md).
 
 The manual `macOS Developer ID release` workflow packages
 `Project-Brain-Build10-arm64` only when a protected environment supplies the
@@ -72,23 +75,27 @@ other nested executables/frameworks, the App, and then the DMG; enables Hardened
 notarizes and staples both the App and DMG; and verifies them with `codesign`,
 `spctl`, and `stapler`. See
 [`product-shell-build10-signing-notarization.md`](product-shell-build10-signing-notarization.md).
-Fresh-Mac browser-download acceptance and External ChatGPT acceptance remain
-manual Pending gates.
+Developer ID signing, Apple notarization/stapling, and Fresh-Mac public
+distribution acceptance are **Deferred — personal use**. The workflow remains
+available for a future public release. External ChatGPT acceptance remains a
+manual Pending gate.
 
-## Install a signed and notarized release candidate
+## Install the unsigned Personal Build
 
 1. Open the downloaded DMG.
 2. Drag `Project Brain.app` onto the adjacent `Applications` folder icon. A
    bilingual installation guide is also visible in the DMG window.
 3. Eject the DMG, then open `/Applications/Project Brain.app` from Finder's
-   Applications folder. Do not run the copy inside the mounted DMG for formal
-   acceptance.
+   Applications folder. Do not run the copy inside the mounted DMG.
+4. On the first launch, if macOS blocks the App, click **Done** rather than
+   moving it to Trash. Open **System Settings → Privacy & Security → Security**,
+   choose **Open Anyway**, authenticate, and confirm **Open**.
 
-An unsigned preflight is for CI only. It is not an ordinary-user installer and
-must never be presented as one. The signed Build 10 candidate is still not
-distribution-eligible until a Mac that has never installed or trusted Project
-Brain downloads the DMG through a browser, preserves the quarantine attribute,
-and completes the drag-install-launch flow without a Gatekeeper override.
+The Personal Build is unsigned and unnotarized, so a new artifact may require
+authorization again when its bytes change. Verify the downloaded SHA-256 before
+authorizing it. Never use `spctl --master-disable` or recursively clear
+quarantine attributes. This personal exception is not Developer ID signing,
+Apple notarization, or public-distribution acceptance.
 
 The app combines the macOS single-instance Launch Services key with a user-level
 non-blocking process lock, and uses one unique management `Window`. Starting the

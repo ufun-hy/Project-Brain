@@ -31,4 +31,4 @@ test -f "$APP/Contents/Resources/project-brain-cli-contract.json"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "10"
 test "$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' "$APP/Contents/Info.plist")" = "true"
 
-echo "Build 10 unsigned preflight DMG installation layout verification passed"
+echo "Build 10 unsigned personal DMG installation layout verification passed"

@@ -39,8 +39,9 @@ added an MCP transport-probe
 wizard with explicit external-acceptance Pending state. The optional fixed
 one-document Draft PR task remains locked because the current Tunnel contract
 does not provide trusted ChatGPT control-plane attestation. The unsigned
-Build 10 preflight, Developer ID release gate, first-run guide, and current
+Build 10 Personal Build, deferred Developer ID release gate, first-run guide, and current
 external limits are documented in [`docs/product-shell.md`](docs/product-shell.md)
+and [`docs/product-shell-build10-personal-build.md`](docs/product-shell-build10-personal-build.md)
 and [`docs/product-shell-build10-signing-notarization.md`](docs/product-shell-build10-signing-notarization.md).
 Build 9 remains immutable internal-build history in
 [`docs/product-shell-build9-plan-confirm-verification.md`](docs/product-shell-build9-plan-confirm-verification.md).
@@ -281,8 +282,8 @@ scripts/verify-core.sh
 
 The same command runs in Linux CI. macOS PR CI additionally packages the frozen
 helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
-`Project Brain.app`, creates a clearly non-distributable Build 10 unsigned
-preflight without uploading it, verifies all preflight hashes, verifies the embedded helper and static
+`Project Brain.app`, creates and uploads a clearly non-distributable Build 10
+unsigned Personal Build, verifies all artifact hashes, verifies the embedded helper and static
 Tunnel compatibility manifest, executes existing-project onboarding through the
 final app's embedded helper, migrates a preserved schema-v9 database and runs a
 no-change exact-Chinese-goal Analyze task through the final DMG App/Core adapter,
@@ -291,14 +292,21 @@ verify one process/window, and checks Gmail legacy isolation. Tests use temporar
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.
 
+After this workflow exists on the default branch, the manual exact-SHA
+`macOS Personal Build` workflow can generate the same unsigned DMG, App ZIP,
+manifest, and checksums without Apple credentials. It is intended only for the
+owner's internal use and requires a per-artifact **Open Anyway** authorization;
+it never disables Gatekeeper and never claims public-distribution acceptance.
+
 The separate `macOS Developer ID release` workflow is manual and exact-SHA
 bound. It fails closed unless the protected `macos-release` environment
 provides a Developer ID Application identity and App Store Connect notary API
 key. It signs the embedded helper, other nested code, and App from the inside
 out with Hardened Runtime and secure timestamps, notarizes and staples the App and DMG, runs
 `codesign`, `spctl`, and `stapler` verification, and uploads only the signed
-`Project-Brain-Build10-arm64` result. A browser-downloaded DMG test on a Mac
-that has never trusted Project Brain remains a manual Pending release gate.
+`Project-Brain-Build10-arm64` result. Developer ID signing, Apple
+notarization/stapling, and Fresh-Mac public-distribution acceptance are
+**Deferred — personal use**. External ChatGPT acceptance remains Pending.
 
 Architecture and recovery details are in
 [`docs/rfc/RFC-003-core-v3.md`](docs/rfc/RFC-003-core-v3.md) and

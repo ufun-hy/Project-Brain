@@ -15,18 +15,20 @@ running these developer/operator commands manually.
 
 ## Gatekeeper blocks the App
 
-Build 9 and the Build 10 unsigned preflight are internal artifacts. macOS can
+Build 9 and the Build 10 unsigned Personal Build are internal artifacts. macOS can
 show “Apple could not verify Project Brain” because those bytes do not carry a
 Developer ID signature and stapled Apple notarization ticket. That message is a
-release-gate failure, not evidence that local task creation changed user data.
+personal-build authorization boundary, not evidence that local task creation
+changed user data.
 Do not delete `~/.project-brain/` to address it.
 
 Do not disable Gatekeeper globally with `spctl --master-disable`, and do not
 recursively remove quarantine attributes. Those actions weaken the Mac-wide
-security boundary and cannot satisfy product acceptance. Ordinary-user testing
-must use the new, exact-hash `Project-Brain-Build10-arm64.dmg` produced by the
-protected release workflow. It must be dragged to `/Applications`, ejected,
-and launched from Applications.
+security boundary. Verify the exact Personal Build SHA-256, drag the App to
+`/Applications`, eject the DMG, and launch from Applications. If macOS blocks
+the known internal build, click **Done**, open **System Settings → Privacy &
+Security → Security → Open Anyway**, authenticate, and confirm **Open**. A new
+version may require this per-artifact authorization again.
 
 Release engineering should first verify the final bytes:
 
@@ -36,9 +38,10 @@ spctl --assess --type execute --verbose=4 "/Applications/Project Brain.app"
 xcrun stapler validate "Project-Brain-Build10-arm64.dmg"
 ```
 
-These checks do not replace the final browser-download test on a Mac that has
-never trusted Project Brain. Until that GUI flow passes without an override,
-`fresh_mac_quarantine_acceptance` remains `pending_manual`.
+These checks apply only when the future public release pipeline is enabled.
+Developer ID signing, notarization/stapling, and Fresh-Mac public distribution
+acceptance are currently `deferred_personal_use`; the manual Open Anyway flow
+does not satisfy them.
 
 ## Local task planning and creation
 

@@ -10,7 +10,7 @@ CI_RUN_URL=${PROJECT_BRAIN_CI_RUN_URL:-local_unpublished_build}
 APP_VERSION=0.8.0
 APP_BUILD=10
 ARCHITECTURE=arm64
-ARTIFACT_BASE=Project-Brain-Build10-Preflight-Unsigned-arm64
+ARTIFACT_BASE=Project-Brain-Build10-Personal-Unsigned-arm64
 INSTALL_GUIDE_NAME="把 Project Brain.app 拖到 Applications 安装.txt"
 INSTALL_GUIDE="$ROOT/packaging/dmg/$INSTALL_GUIDE_NAME"
 
@@ -126,7 +126,7 @@ DMG="$OUTPUT_DIR/$ARTIFACT_BASE.dmg"
 ZIP="$OUTPUT_DIR/$ARTIFACT_BASE.zip"
 /usr/bin/hdiutil create \
   -quiet \
-  -volname "Project Brain Build 10 Preflight" \
+  -volname "Project Brain Build 10 Personal" \
   -srcfolder "$TEMP_ROOT/dmg" \
   -format UDZO \
   -ov \
@@ -161,8 +161,9 @@ import os
 
 manifest = {
     "schema_version": 5,
-    "artifact_classification": "unsigned_release_preflight",
+    "artifact_classification": "unsigned_personal_build",
     "distribution_eligible": False,
+    "usage_scope": "personal_internal_only",
     "app": {
         "version": os.environ["APP_VERSION"],
         "build": os.environ["APP_BUILD"],
@@ -192,15 +193,16 @@ manifest = {
     "tunnel_compatibility_manifest_version": int(os.environ["MANIFEST_VERSION"]),
     "supported_tunnel_client_versions": ["0.0.10"],
     "target_architecture": os.environ["ARCHITECTURE"],
-    "signing_status": "unsigned_preflight",
-    "notarization_status": "not_submitted_no_credentials",
+    "signing_status": "unsigned_personal_build",
+    "notarization_status": "deferred_personal_use",
     "release_gate": {
-        "developer_id_signature": "pending",
+        "developer_id_signature": "deferred_personal_use",
         "hardened_runtime_build_setting": "enabled",
-        "apple_notarization": "pending",
-        "app_ticket_stapled": "pending",
-        "dmg_ticket_stapled": "pending",
-        "fresh_mac_quarantine_acceptance": "pending_manual",
+        "apple_notarization": "deferred_personal_use",
+        "app_ticket_stapled": "deferred_personal_use",
+        "dmg_ticket_stapled": "deferred_personal_use",
+        "fresh_mac_public_distribution_acceptance": "deferred_personal_use",
+        "personal_gatekeeper_authorization": "required_manual_per_artifact",
     },
     "ci_run_url": os.environ["CI_RUN_URL"],
     "external_acceptance": "pending_user_credentials_and_actions",
@@ -220,7 +222,7 @@ PY
   /usr/bin/shasum -a 256 "$MANIFEST"
 } | /usr/bin/sed "s|$OUTPUT_DIR/||" > "$OUTPUT_DIR/SHA256SUMS"
 
-echo "Build 10 unsigned preflight directory: $OUTPUT_DIR"
-echo "Build 10 unsigned preflight DMG SHA-256: $DMG_SHA"
-echo "Distribution eligibility: false; Developer ID and notarization are required"
+echo "Build 10 unsigned personal directory: $OUTPUT_DIR"
+echo "Build 10 unsigned personal DMG SHA-256: $DMG_SHA"
+echo "Distribution eligibility: false; manual per-artifact Gatekeeper authorization is required"
 echo "External acceptance: pending; this build did not use real ChatGPT ingress"

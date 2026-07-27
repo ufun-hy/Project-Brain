@@ -26,7 +26,9 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn('Button("Modify name")', onboarding)
         self.assertIn("model.onboarding.completed ? model.issue : nil", management)
 
-    def test_build10_preflight_cannot_be_mistaken_for_distribution(self) -> None:
+    def test_build10_personal_artifact_cannot_be_mistaken_for_distribution(
+        self,
+    ) -> None:
         build = (self.root / "scripts/build-rc-artifact.sh").read_text(encoding="utf-8")
         verifier = (self.root / "scripts/verify-rc-artifact.py").read_text(
             encoding="utf-8"
@@ -38,14 +40,51 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         for source in (build, verifier, workflow):
-            self.assertIn("Project-Brain-Build10-Preflight-Unsigned-arm64", source)
+            self.assertIn("Project-Brain-Build10-Personal-Unsigned-arm64", source)
             self.assertNotIn("Project-Brain-Local-Tasks-Build8-arm64", source)
             self.assertNotIn("Project-Brain-RC1-Build7-arm64", source)
         self.assertIn("APP_BUILD=10", build)
         self.assertIn('"distribution_eligible": False', build)
+        self.assertIn('"usage_scope": "personal_internal_only"', build)
+        self.assertIn('"signing_status": "unsigned_personal_build"', build)
+        self.assertIn('"developer_id_signature": "deferred_personal_use"', build)
+        self.assertIn(
+            '"fresh_mac_public_distribution_acceptance": "deferred_personal_use"',
+            build,
+        )
+        self.assertIn(
+            '"personal_gatekeeper_authorization": "required_manual_per_artifact"',
+            build,
+        )
         self.assertIn('manifest["app"]["build"] == "10"', verifier)
         self.assertIn('Info.plist\")" = "10"', layout_verifier)
-        self.assertNotIn("actions/upload-artifact", workflow)
+        self.assertIn("actions/upload-artifact@v4", workflow)
+        self.assertIn("retention-days: 30", workflow)
+
+    def test_personal_build_workflow_is_manual_exact_sha_and_needs_no_secret(
+        self,
+    ) -> None:
+        workflow = (
+            self.root / ".github/workflows/macos-personal-build.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertIn("build_sha:", workflow)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$BUILD_SHA"', workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertNotIn("secrets.", workflow)
+        self.assertNotIn("environment:", workflow)
+        self.assertIn("scripts/verify-core.sh", workflow)
+        self.assertIn("scripts/verify-macos-launchd-lifecycle.py", workflow)
+        self.assertIn("swift test", workflow)
+        self.assertIn("xcodebuild", workflow)
+        self.assertIn("scripts/build-rc-artifact.sh", workflow)
+        self.assertIn("scripts/verify-rc-artifact.py", workflow)
+        self.assertIn("scripts/verify-bundled-helper-local-task.py", workflow)
+        self.assertIn("scripts/verify-final-app-single-instance.sh", workflow)
+        self.assertIn("actions/upload-artifact@v4", workflow)
+        self.assertIn("name: Project-Brain-Build10-Personal-Unsigned-arm64", workflow)
 
     def test_build10_release_is_manual_exact_sha_and_fail_closed_on_secrets(
         self,
@@ -365,6 +404,12 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn("verify-rc-dmg-layout.sh", workflow)
         self.assertIn("LSMultipleInstancesProhibited", verifier)
         self.assertIn("拖到旁边的“Applications”", guide)
+        self.assertIn("系统设置 → 隐私与安全性 → 安全性 → 仍要打开", guide)
+        self.assertIn("每个新版本的文件内容变化后", guide)
+        self.assertIn("不要关闭整机 Gatekeeper", guide)
+        self.assertIn("Never disable Gatekeeper globally", guide)
+        self.assertNotIn("spctl --master-disable", guide)
+        self.assertNotIn("xattr -dr", guide)
 
 
 if __name__ == "__main__":

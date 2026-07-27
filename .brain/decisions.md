@@ -238,13 +238,24 @@ selected-task refresh runs in the background. CLI contract 1.2.0 makes this
 request/confirmation split explicit. External ChatGPT acceptance remains
 Pending and is not inferred from any Build 9 local or artifact test.
 
-## D-026: Fail closed between unsigned regression builds and distributable macOS bytes
+## D-026: Fail closed between unsigned personal builds and distributable macOS bytes
 
 Build 9 is immutable internal-build history. Ordinary pull-request CI may build
-`Project-Brain-Build10-Preflight-Unsigned-arm64` to exercise the final DMG App,
+and upload `Project-Brain-Build10-Personal-Unsigned-arm64` to exercise the final DMG App,
 embedded helper, onboarding, local task, timing, lifecycle, and preserved-data
-flows. Its schema-v5 manifest says `distribution_eligible: false`, it uses a
-visibly unsigned name, and CI does not upload it.
+flows and support the owner's day-to-day testing. Its schema-v5 manifest says
+`artifact_classification: unsigned_personal_build`,
+`usage_scope: personal_internal_only`, and `distribution_eligible: false`. It
+requires a per-artifact Gatekeeper authorization and cannot be relabeled as a
+signed, notarized, or publicly accepted artifact.
+
+The exact-SHA `macOS Personal Build` workflow uses no Apple or repository
+secrets and uploads only the DMG, App ZIP, manifest, and checksum set bound by
+that manifest. Developer ID signing, Apple notarization/stapling, and Fresh-Mac
+public distribution acceptance are `deferred_personal_use` while Project Brain
+is a personal internal tool. This deferral does not weaken the retained public
+release pipeline. It also does not change External ChatGPT acceptance, which
+remains Pending.
 
 Only the manually triggered `macOS Developer ID release` workflow may create
 `Project-Brain-Build10-arm64`. It binds checkout to a caller-supplied exact
@@ -267,7 +278,8 @@ App executable, Core helper, CLI contract, DMG, App ZIP, sanitized notarization
 receipts, exact source SHA, CI run, signing team, and Apple submission IDs.
 Automated Gatekeeper checks are evidence, not the final ordinary-user verdict.
 `distribution_eligible` remains false and
-`fresh_mac_quarantine_acceptance` remains `pending_manual` until a
+`fresh_mac_quarantine_acceptance` remains `pending_manual` in a future signed
+release manifest until a
 browser-downloaded quarantined DMG passes the drag-to-Applications and
 double-click flow on a Mac that has never trusted Project Brain. External
 ChatGPT acceptance remains independently Pending.

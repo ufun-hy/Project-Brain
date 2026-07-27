@@ -1,13 +1,26 @@
 安装 Project Brain
 
 1. 把“Project Brain.app”拖到旁边的“Applications”文件夹。
-2. 复制完成后，弹出“Project Brain RC1 Build 7”磁盘映像。
+2. 复制完成后，弹出“Project Brain Build 10 Personal”磁盘映像。
 3. 打开 Finder → 应用程序 → Project Brain。
+4. 如果 macOS 提示无法验证开发者，请点击“完成”（不要移到废纸篓），然后打开：
+   系统设置 → 隐私与安全性 → 安全性 → 仍要打开。
+   输入 Mac 登录密码，再确认“打开”。
 
-请不要直接从磁盘映像运行 App；正式验收必须从“应用程序”启动。
+这是未签名、未公证的个人内部构建。每个新版本的文件内容变化后，macOS 可能再次要求授权。
+请仅在确认 DMG 来源和 SHA-256 后授权。不要关闭整机 Gatekeeper，也不要递归移除 quarantine 属性。
+请不要直接从磁盘映像运行 App；个人使用验收必须从“应用程序”启动。
 
 Install Project Brain
 
 1. Drag “Project Brain.app” onto the “Applications” folder beside it.
-2. Eject the “Project Brain RC1 Build 7” disk image after copying.
+2. Eject the “Project Brain Build 10 Personal” disk image after copying.
 3. Open Project Brain from Finder → Applications.
+4. If macOS cannot verify the developer, click Done (not Move to Trash), then
+   open System Settings → Privacy & Security → Security → Open Anyway.
+   Enter your Mac login password and confirm Open.
+
+This is an unsigned and unnotarized personal internal build. macOS may require
+authorization again when a new version changes the app bytes. Authorize only
+after verifying the DMG source and SHA-256. Never disable Gatekeeper globally
+or recursively remove quarantine attributes. Do not run the copy inside the DMG.

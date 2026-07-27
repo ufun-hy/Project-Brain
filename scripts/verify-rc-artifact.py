@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the Build 10 unsigned preflight without trusting manifest paths."""
+"""Verify the Build 10 unsigned personal artifact without trusting manifest paths."""
 
 from __future__ import annotations
 
@@ -23,10 +23,11 @@ def verify(directory: Path) -> None:
     manifest_path = directory / "build-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schema_version"] == 5
-    assert manifest["artifact_classification"] == "unsigned_release_preflight"
+    assert manifest["artifact_classification"] == "unsigned_personal_build"
     assert manifest["distribution_eligible"] is False
-    assert manifest["signing_status"] == "unsigned_preflight"
-    assert manifest["notarization_status"] == "not_submitted_no_credentials"
+    assert manifest["usage_scope"] == "personal_internal_only"
+    assert manifest["signing_status"] == "unsigned_personal_build"
+    assert manifest["notarization_status"] == "deferred_personal_use"
     assert manifest["external_acceptance"] == "pending_user_credentials_and_actions"
     assert manifest["app"]["build"] == "10"
     assert manifest["app"]["version"] == "0.8.0"
@@ -50,19 +51,20 @@ def verify(directory: Path) -> None:
     assert manifest["tunnel_compatibility_manifest_version"] == 1
     assert manifest["supported_tunnel_client_versions"] == ["0.0.10"]
     assert manifest["release_gate"] == {
-        "developer_id_signature": "pending",
+        "developer_id_signature": "deferred_personal_use",
         "hardened_runtime_build_setting": "enabled",
-        "apple_notarization": "pending",
-        "app_ticket_stapled": "pending",
-        "dmg_ticket_stapled": "pending",
-        "fresh_mac_quarantine_acceptance": "pending_manual",
+        "apple_notarization": "deferred_personal_use",
+        "app_ticket_stapled": "deferred_personal_use",
+        "dmg_ticket_stapled": "deferred_personal_use",
+        "fresh_mac_public_distribution_acceptance": "deferred_personal_use",
+        "personal_gatekeeper_authorization": "required_manual_per_artifact",
     }
     assert manifest["target_architecture"] == "arm64"
     assert len(manifest["git_head_sha"]) == 40
     assert manifest["ci_run_url"].startswith("https://github.com/")
     assert {entry["name"] for entry in manifest["artifacts"]} == {
-        "Project-Brain-Build10-Preflight-Unsigned-arm64.dmg",
-        "Project-Brain-Build10-Preflight-Unsigned-arm64.zip",
+        "Project-Brain-Build10-Personal-Unsigned-arm64.dmg",
+        "Project-Brain-Build10-Personal-Unsigned-arm64.zip",
     }
     for entry in manifest["artifacts"]:
         name = entry["name"]
@@ -80,14 +82,14 @@ def verify(directory: Path) -> None:
         assert name not in checksums
         checksums[name] = checksum
     assert set(checksums) == {
-        "Project-Brain-Build10-Preflight-Unsigned-arm64.dmg",
-        "Project-Brain-Build10-Preflight-Unsigned-arm64.zip",
+        "Project-Brain-Build10-Personal-Unsigned-arm64.dmg",
+        "Project-Brain-Build10-Personal-Unsigned-arm64.zip",
         "build-manifest.json",
     }
     for name, checksum in checksums.items():
         assert sha256(directory / name) == checksum
 
-    archive = directory / "Project-Brain-Build10-Preflight-Unsigned-arm64.zip"
+    archive = directory / "Project-Brain-Build10-Personal-Unsigned-arm64.zip"
     with zipfile.ZipFile(archive) as app_zip:
         app_prefix = "Project Brain.app/Contents/"
         executable = app_zip.read(app_prefix + "MacOS/Project Brain")
@@ -115,7 +117,7 @@ def main() -> int:
     parser.add_argument("directory", type=Path)
     arguments = parser.parse_args()
     verify(arguments.directory)
-    print("Build 10 unsigned preflight manifest and SHA-256 verification passed")
+    print("Build 10 unsigned personal manifest and SHA-256 verification passed")
     return 0
 
 

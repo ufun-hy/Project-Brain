@@ -8,8 +8,9 @@ PR #17 / Build 7 was merged at exact base
 `main@7259acfa1c38e30f3f8c2126eb7c7c3f8c271e3f`. RFC-008 local task intake is
 implemented on the independent `codex/project-brain-local-task-intake-v1`
 branch for Draft PR #18. Build 9 is immutable internal history. Project Brain
-0.8.0 build 10 adds a fail-closed Developer ID signing, notarization, and
-Gatekeeper release gate without changing local task semantics.
+0.8.0 build 10 supports a no-secret unsigned Personal Build for the owner's
+internal use and retains a fail-closed Developer ID signing/notarization
+pipeline for future public distribution without changing local task semantics.
 
 ## Local task intake
 
@@ -39,10 +40,13 @@ Gatekeeper release gate without changing local task semantics.
 - App/Core are 0.8.0 with CLI contract 1.2.0, request/confirmation/result schema
   1, and database schema 10.
 - English and Simplified Chinese strings are packaged by SwiftPM and Xcode.
-- Build 9 remains immutable. Pull-request CI creates the distinct
-  `Project-Brain-Build10-Preflight-Unsigned-arm64` package only for regression
-  tests, marks it non-distributable in a schema-v5 manifest, and never uploads
-  it.
+- Build 9 remains immutable. Pull-request CI creates and uploads the distinct
+  `Project-Brain-Build10-Personal-Unsigned-arm64` package for regression and
+  personal internal use. Its schema-v5 manifest marks it unsigned,
+  `personal_internal_only`, and non-distributable.
+- A manual exact-SHA `macOS Personal Build` workflow produces the DMG, App ZIP,
+  manifest, and checksums without secrets. Per-artifact Open Anyway approval is
+  required; Gatekeeper is never disabled globally.
 - The manually triggered, exact-SHA `macOS Developer ID release` workflow
   requires protected Apple credentials. It signs the helper, nested code, and
   App from the inside out with Hardened Runtime and secure timestamps,
@@ -74,16 +78,16 @@ Gatekeeper release gate without changing local task semantics.
 
 Secure MCP Tunnel, real credentials, ChatGPT connector discovery and trusted
 control-plane attribution remain **Pending**. Local task and artifact tests do
-not satisfy or replace external ChatGPT acceptance. This host and repository
-currently have no Developer ID identity or configured GitHub release secrets,
-so the signed/notarized Build 10 artifact is also Pending. Even after automated
-Apple checks pass, browser-download quarantine acceptance on a Mac that has
-never trusted Project Brain remains a separate manual Pending gate.
+not satisfy or replace external ChatGPT acceptance. Developer ID signing, Apple
+notarization/stapling, and Fresh-Mac public-distribution acceptance are
+**Deferred — personal use** and do not block PR #18. They return to Pending if
+public distribution resumes.
 
 ## Read next
 
 - `docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md`
 - `docs/product-shell.md`
+- `docs/product-shell-build10-personal-build.md`
 - `docs/product-shell-build10-signing-notarization.md`
 - `docs/product-shell-build9-plan-confirm-verification.md`
 - `docs/troubleshooting-recovery.md`

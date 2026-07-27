@@ -4,9 +4,14 @@
 
 Project Brain 0.8.0 (10) adds the repository-side F5 release gate. Build 9 is
 immutable internal-build history and must not be deleted, rebuilt, overwritten,
-or relabeled. Pull-request CI creates only
-`Project-Brain-Build10-Preflight-Unsigned-arm64`; that package is
-non-distributable and is not uploaded.
+or relabeled. Project Brain is currently operated as a personal internal tool.
+Developer ID signing, Apple notarization/stapling, and Fresh-Mac public
+distribution acceptance are therefore **Deferred — personal use** and do not
+block PR #18. The no-secret Personal Build path is documented in
+[`product-shell-build10-personal-build.md`](product-shell-build10-personal-build.md).
+
+This signed release pipeline remains fail-closed and available for a future
+public distribution. It is not weakened or replaced by the personal-use policy.
 
 The final `Project-Brain-Build10-arm64` artifact does not exist until the
 protected release workflow completes with real Apple credentials. Repository
@@ -133,7 +138,8 @@ Gatekeeper exception:
 8. complete preserved-data onboarding and a real local task without clearing
    `~/.project-brain/`.
 
-Until all steps pass and the human evidence is reviewed, F5 ordinary-user
-installation acceptance remains Pending. Secure MCP Tunnel and External
-ChatGPT acceptance are separate Pending gates and are never inferred from this
-flow.
+Until public distribution is resumed, this section is deferred and is not a
+merge blocker. If public distribution resumes, every step becomes Pending again
+and must pass with real Apple credentials and fresh-Mac evidence. Secure MCP
+Tunnel and External ChatGPT acceptance remain separate Pending gates and are
+never inferred from this flow.
