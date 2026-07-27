@@ -256,6 +256,12 @@ that `get-task-allow` is absent, notarizes and staples the App, creates and
 signs the DMG, notarizes and staples the DMG, and verifies the final bytes with
 `codesign`, `spctl`, and `stapler`.
 
+The release workflow has no pull-request or task-branch push trigger. GitHub
+requires `workflow_dispatch` workflows to exist on the default branch; after
+the reviewed workflow is merged, it can still package an explicitly supplied
+reviewed SHA. This prevents unmerged workflow code from reading release private
+keys merely to produce a pre-merge artifact.
+
 Signed output paths refuse overwrite. The final schema-v5 manifest binds the
 App executable, Core helper, CLI contract, DMG, App ZIP, sanitized notarization
 receipts, exact source SHA, CI run, signing team, and Apple submission IDs.

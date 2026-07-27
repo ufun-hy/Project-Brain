@@ -45,8 +45,12 @@ Gatekeeper release gate without changing local task semantics.
   it.
 - The manually triggered, exact-SHA `macOS Developer ID release` workflow
   requires protected Apple credentials. It signs the helper, nested code, and
-  App from the inside out with Hardened Runtime and secure timestamps, notarizes and staples
-  the App and DMG, and uploads only `Project-Brain-Build10-arm64`.
+  App from the inside out with Hardened Runtime and secure timestamps,
+  notarizes and staples the App and DMG, and uploads only
+  `Project-Brain-Build10-arm64`.
+- GitHub requires a manually dispatched workflow to exist on the default branch.
+  PR workflows never receive the release credentials; after review and merge,
+  the default-branch workflow can still check out the exact reviewed SHA.
 - Final-DMG CI mounts and installs the App, invokes the App/Core typed adapter in
   an isolated HOME, migrates a preserved schema-v9 database, creates and completes
   the reported exact-Chinese-goal Analyze task, restarts the App, records timing

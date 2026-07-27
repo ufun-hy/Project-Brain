@@ -51,6 +51,14 @@ Run the GitHub Actions workflow **macOS Developer ID release** manually and pass
 the exact 40-character PR head SHA as `release_sha`. The workflow checks that
 the checked-out `HEAD` is exactly that value before continuing. It performs:
 
+GitHub accepts a `workflow_dispatch` event only after that workflow file exists
+on the repository's default branch. Because this workflow is introduced by PR
+#18, it is intentionally not given a `pull_request` or task-branch `push`
+trigger: unmerged workflow code must not receive Developer ID private keys or
+notary credentials. After the reviewed workflow enters `main`, dispatch it
+against the exact reviewed SHA. Do not weaken this boundary to manufacture a
+pre-merge artifact.
+
 1. frozen Core helper build and CLI contract validation;
 2. unsigned functional preflight in a temporary, non-published directory;
 3. helper signature with `Developer ID Application`, Hardened Runtime, and a
