@@ -120,4 +120,66 @@ final class CoreModelsTests: XCTestCase {
         XCTAssertEqual(detail.result?["summary"]?.displayText, "Repository is ready")
         XCTAssertEqual(detail.delivery?.commit, false)
     }
+    func testReadinessProblemsIdentifyAndDeduplicateMissingTools() {
+        let response = HealthResponse(
+            status: "unhealthy",
+            checks: [
+                HealthCheck(name: "core:git", status: "failed", detail: "not found"),
+                HealthCheck(
+                    name: "core:codex:Project-Brain",
+                    status: "failed",
+                    detail: "not found"
+                ),
+                HealthCheck(name: "core:gh", status: "failed", detail: "not found"),
+                HealthCheck(
+                    name: "project:Project-Brain:gh",
+                    status: "failed",
+                    detail: "failed"
+                ),
+                HealthCheck(
+                    name: "github_auth",
+                    status: "failed",
+                    detail: "GitHub CLI is not installed"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            response.readinessProblems.map(\.kind),
+            [.git, .codex, .githubCLI]
+        )
+        XCTAssertEqual(
+            response.readinessProblems.first(where: { $0.kind == .githubCLI })?.checkNames.count,
+            3
+        )
+    }
+
+    func testReadinessProblemsDistinguishGitHubLoginAndServices() {
+        let response = HealthResponse(
+            status: "unhealthy",
+            checks: [
+                HealthCheck(
+                    name: "github_auth",
+                    status: "failed",
+                    detail: "not authenticated"
+                ),
+                HealthCheck(
+                    name: "worker_service",
+                    status: "failed",
+                    detail: "not installed"
+                ),
+                HealthCheck(
+                    name: "mcp_transport",
+                    status: "failed",
+                    detail: "connection refused"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            response.readinessProblems.map(\.kind),
+            [.githubAuthentication, .worker, .mcpTransport]
+        )
+    }
+
 }

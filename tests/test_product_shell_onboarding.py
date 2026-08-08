@@ -26,6 +26,27 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn('Button("Modify name")', onboarding)
         self.assertIn("model.onboarding.completed ? model.issue : nil", management)
 
+    def test_onboarding_health_check_surfaces_specific_blockers(self) -> None:
+        onboarding = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/OnboardingView.swift"
+        ).read_text(encoding="utf-8")
+        model = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/AppModel.swift"
+        ).read_text(encoding="utf-8")
+        core_models = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrainKit/CoreModels.swift"
+        ).read_text(encoding="utf-8")
+        self.assertIn("health.readinessProblems", onboarding)
+        self.assertIn('accessibilityIdentifier("readiness-problem-list")', onboarding)
+        self.assertIn('"Git is not installed"', onboarding)
+        self.assertIn('"Codex CLI is not installed"', onboarding)
+        self.assertIn('"GitHub CLI is not installed"', onboarding)
+        self.assertIn('"GitHub sign-in is required"', onboarding)
+        self.assertIn("response.readinessProblems.count", model)
+        self.assertIn("ReadinessProblemKind", core_models)
+        self.assertIn("name == \"core:gh\"", core_models)
+        self.assertNotIn("Last result: \\(health.status)", onboarding)
+
     def test_build10_personal_artifact_cannot_be_mistaken_for_distribution(
         self,
     ) -> None:

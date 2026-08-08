@@ -609,18 +609,26 @@ final class AppModel: ObservableObject {
             presentInstallationRequirement()
             return
         }
+        issue = nil
         runOperation {
             try await self.backend.readiness()
         } onSuccess: { response in
             self.health = response
             if response.status == "healthy" {
+                self.issue = nil
                 self.onboarding.stage = .ready
                 self.persistOnboarding()
             } else {
+                let count = max(1, response.readinessProblems.count)
                 self.issue = UserFacingIssue(
-                    title: "Local checks need attention",
-                    message: "One or more local prerequisites are not ready.",
-                    nextAction: "Open Diagnostics, resolve failed checks, then retry."
+                    title: String(localized: "Local checks need attention"),
+                    message: String(
+                        format: String(localized: "Local readiness blockers format"),
+                        count
+                    ),
+                    nextAction: String(
+                        localized: "Resolve the items shown below, then run the health check again."
+                    )
                 )
             }
         }

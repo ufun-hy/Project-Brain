@@ -579,6 +579,79 @@ public struct HealthCheck: Codable, Identifiable, Equatable, Sendable {
 public struct HealthResponse: Codable, Equatable, Sendable {
     public let status: String
     public let checks: [HealthCheck]
+
+    public var readinessProblems: [ReadinessProblem] {
+        var grouped: [ReadinessProblemKind: [HealthCheck]] = [:]
+        for check in checks where !check.passed {
+            grouped[Self.problemKind(for: check), default: []].append(check)
+        }
+        if grouped.isEmpty, status != "healthy" {
+            grouped[.other] = []
+        }
+        return ReadinessProblemKind.allCases.compactMap { kind in
+            guard let matches = grouped[kind] else { return nil }
+            return ReadinessProblem(
+                kind: kind,
+                checkNames: matches.map(\.name).sorted(),
+                details: Array(Set(matches.map(\.detail))).sorted()
+            )
+        }
+    }
+
+    private static func problemKind(for check: HealthCheck) -> ReadinessProblemKind {
+        let name = check.name.lowercased()
+        let detail = check.detail.lowercased()
+        if name == "core:git" || name.hasSuffix(":git") { return .git }
+        if name == "github_auth" {
+            return detail.contains("not installed") || detail.contains("not found")
+                ? .githubCLI : .githubAuthentication
+        }
+        if name == "core:gh" || name.hasSuffix(":gh") { return .githubCLI }
+        if name.contains(":codex:") || name.hasSuffix(":codex") { return .codex }
+        if name.contains("runtime_root") { return .runtimeRoot }
+        if name.contains("database_schema") { return .database }
+        if name.contains("runtime_lock") { return .runtimeLock }
+        if name.hasSuffix(":repository") { return .repository }
+        if name.hasSuffix(":origin") { return .origin }
+        if name.hasSuffix(":default_branch") { return .defaultBranch }
+        if name.hasSuffix(":launchd_safe_config") { return .launchdConfiguration }
+        if name.hasSuffix(":worktree_root") { return .worktree }
+        if name == "worker_service" { return .worker }
+        if name == "mcp_service" { return .mcpService }
+        if name == "mcp_transport" { return .mcpTransport }
+        if name == "registered_projects" || name.hasPrefix("core:project:") {
+            return .project
+        }
+        return .other
+    }
+}
+
+public enum ReadinessProblemKind: String, CaseIterable, Sendable {
+    case git
+    case codex
+    case githubCLI = "github_cli"
+    case githubAuthentication = "github_authentication"
+    case runtimeRoot = "runtime_root"
+    case database
+    case runtimeLock = "runtime_lock"
+    case repository
+    case origin
+    case defaultBranch = "default_branch"
+    case launchdConfiguration = "launchd_configuration"
+    case worktree
+    case worker
+    case mcpService = "mcp_service"
+    case mcpTransport = "mcp_transport"
+    case project
+    case other
+}
+
+public struct ReadinessProblem: Identifiable, Equatable, Sendable {
+    public let kind: ReadinessProblemKind
+    public let checkNames: [String]
+    public let details: [String]
+
+    public var id: String { kind.rawValue }
 }
 
 public struct RuntimeInitResponse: Codable, Equatable, Sendable {
