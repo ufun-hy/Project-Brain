@@ -149,14 +149,16 @@ path, exact Base SHA, execution revision/hash, adapter, worktree root, expiry,
 schema, and contract live in collapsed technical details. Only a short token
 fingerprint is visible; the replayable token is never displayed.
 
-Schema v10 stores the canonical request and plan hash but only the SHA-256 of
-the transient `local-v2:` token. Confirmation sends exactly `plan_token` and
-`expected_plan_hash` over stdin. Core rechecks the project, remote Base, policy,
-readiness, expiry, supersession, and single-use state under RuntimeLock; task
-creation and token consumption commit in one transaction. Expired, repeated,
-hash-mismatched, superseded, and concurrent second confirmations fail closed.
-After success the App closes the sheet from the minimal create response and
-refreshes only the selected task in the background.
+Schema v11 retains the schema-v10 canonical local plan and adds the Web Task
+Intake dispatch gate plus immutable Analyze-result snapshots. Only SHA-256
+digests of transient confirmation tokens are stored. Local confirmation sends
+exactly `plan_token` and `expected_plan_hash` over stdin. Core rechecks the
+project, remote Base, policy, readiness, expiry, supersession, and single-use
+state under RuntimeLock; task creation and token consumption commit in one
+transaction. Expired, repeated, hash-mismatched, superseded, and concurrent
+second confirmations fail closed. After success the App closes the sheet from
+the minimal create response and refreshes only the selected task in the
+background.
 
 Task Center reads all list/detail/count state back from Core. It displays
 source, task type, status, phase, execution snapshot, result, changed files,

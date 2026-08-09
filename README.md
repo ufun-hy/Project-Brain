@@ -31,8 +31,9 @@ reviewed Tunnel Client into its private App Support directory. Both installers
 use atomic replacement and rollback. Build 10 keeps the App and helper
 to one immutable, versioned CLI contract, upgrades a stale same-version helper
 by SHA-256, and enforces one user process and one management window. It uses a
-schema-v10 canonical plan record, stores only the plan-token SHA-256, and lets
-confirmation submit only the opaque token plus reviewed plan hash. Build 8
+schema-v11 task record, including the Web Task Intake dispatch gate and fixed
+analysis snapshot, while storing only confirmation-token hashes. Local task
+confirmation submits only the opaque token plus reviewed plan hash. Build 8
 introduced strict local-task intake, guided first run, and persisted analysis
 results. Build 4
 added an MCP transport-probe
