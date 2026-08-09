@@ -238,9 +238,14 @@ class MCPAdapterService:
             analysis_result_sha256 = None
             if request.analysis_task_id is not None:
                 source = self.store.get_task(request.analysis_task_id)
-                result = source.get("result")
-                if isinstance(result, dict):
-                    analysis_result_sha256 = _canonical_sha256(result)
+                result = source.get("analysis_result")
+                digest = source.get("analysis_result_sha256")
+                if (
+                    isinstance(result, dict)
+                    and isinstance(digest, str)
+                    and _canonical_sha256(result) == digest
+                ):
+                    analysis_result_sha256 = digest
             execution_plan = {
                 "workflow_kind": request.workflow_kind,
                 "analysis_task_id": request.analysis_task_id,

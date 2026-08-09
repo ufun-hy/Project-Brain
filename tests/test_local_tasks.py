@@ -380,11 +380,50 @@ class LocalTaskTests(unittest.TestCase):
         task = self.fixture.store.get_task(created["task_id"])
         self.assertEqual(task["result"]["kind"], "analysis")
         self.assertIn("repository is ready", task["result"]["summary"])
+        self.assertEqual(task["analysis_result"], task["result"])
+        expected_hash = sha256(
+            _canonical_json(task["result"]).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(task["analysis_result_sha256"], expected_hash)
         self.assertIsNone(task["commit"])
         self.assertIsNone(task["pr_url"])
+        reopened = TaskStore(self.fixture.runtime.database)
+        reopened.initialize()
+        persisted = reopened.get_task(created["task_id"])
+        self.assertEqual(persisted["analysis_result"], task["analysis_result"])
+        self.assertEqual(
+            persisted["analysis_result_sha256"], task["analysis_result_sha256"]
+        )
         self.assertEqual(
             git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
             main_before,
+        )
+
+    def test_analyze_persistence_failure_never_marks_task_completed(self) -> None:
+        analyzer = executable_script(
+            self.fixture.root / "analyzer.py",
+            "import sys\n_ = sys.stdin.read()\nprint('Finding: persistence failure test')\n",
+        )
+        project = self.fixture.store.get_project("project-one")
+        project["codex_command"] = [sys.executable, str(analyzer)]
+        self.fixture.store.register_project(project)
+        _, confirmation = self.planned(self.request())
+        created = self.manager.create(confirmation)["task"]
+        with patch.object(
+            TaskStore,
+            "set_analysis_result",
+            side_effect=RuntimeError("injected result persistence failure"),
+        ):
+            result = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
+        self.assertEqual(result["status"], TaskStatus.FAILED.value)
+        task = self.fixture.store.get_task(created["task_id"])
+        self.assertEqual(task["status"], TaskStatus.FAILED.value)
+        self.assertIsNone(task["result"])
+        self.assertIsNone(task["analysis_result"])
+        self.assertIsNone(task["analysis_result_sha256"])
+        self.assertNotIn(
+            "analysis_completed",
+            [event["event_type"] for event in self.fixture.store.list_events(created["task_id"])],
         )
 
     def test_implement_uses_isolated_worktree_and_stops_at_review(self) -> None:

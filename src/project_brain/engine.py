@@ -92,7 +92,16 @@ class TaskEngine:
                             "Analyze task did not return the required result schema"
                         )
                     self.store.heartbeat_worktree(task["task_id"])
-                    task = self.store.set_task_result(task["task_id"], analysis.result)
+                    task = self.store.set_analysis_result(task["task_id"], analysis.result)
+                    if (
+                        not isinstance(task.get("analysis_result"), dict)
+                        or task["analysis_result"].get("kind") != "analysis"
+                        or not isinstance(task.get("analysis_result_sha256"), str)
+                        or len(task["analysis_result_sha256"]) != 64
+                    ):
+                        raise ProjectBrainError(
+                            "Analyze result was not durably frozen before completion"
+                        )
                     task = self.store.transition(
                         task["task_id"],
                         TaskStatus.COMPLETED,

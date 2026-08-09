@@ -307,6 +307,19 @@ def task_detail_view(
                 limit=MAX_SUMMARY,
             ),
         }
+    elif task.get("workflow_kind") == "analyze" and isinstance(
+        task.get("analysis_result"), dict
+    ):
+        result = task["analysis_result"]
+        analysis = {
+            "task_id": task["task_id"],
+            "source_status": task["status"],
+            "fixed_result_sha256": task.get("analysis_result_sha256"),
+            "result_summary": bounded_text(
+                result.get("summary"),
+                limit=MAX_SUMMARY,
+            ),
+        }
     value = {
         "task": summary,
         "attempts": attempts,

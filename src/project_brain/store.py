@@ -1069,21 +1069,27 @@ class TaskStore:
                     raise StateConflictError(
                         "Analysis task must be completed before creating an implementation draft"
                     )
-                analysis_result = _loads(analysis["result_json"], None)
+                analysis_result = _loads(analysis["analysis_result_json"], None)
+                analysis_result_sha256 = analysis["analysis_result_sha256"]
                 if (
                     not isinstance(analysis_result, dict)
                     or analysis_result.get("kind") != "analysis"
+                    or not isinstance(analysis_result_sha256, str)
                 ):
                     raise InvalidTaskError(
-                        "Analysis task does not contain a valid completed result"
+                        "Analysis task does not contain a valid frozen completed result"
                     )
                 if contains_known_secret(analysis_result):
                     raise InvalidTaskError(
                         "Analysis result contains a credential-like value and cannot be linked"
                     )
-                analysis_result_sha256 = hashlib.sha256(
+                expected_analysis_result_sha256 = hashlib.sha256(
                     _canonical_json(analysis_result).encode("utf-8")
                 ).hexdigest()
+                if analysis_result_sha256 != expected_analysis_result_sha256:
+                    raise InvalidTaskError(
+                        "Analysis task result hash does not match its frozen result"
+                    )
             profile = normalize_execution_profile(self._project(project_row))
             profile_json = canonical_profile_json(profile)
             profile_hash = config_sha256(profile)
@@ -1531,15 +1537,70 @@ class TaskStore:
             return self._task(row)
 
     def set_task_result(self, task_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Persist a task result, freezing Analyze results when applicable."""
+        return self._set_task_result(task_id, result, require_analysis=False)
+
+    def set_analysis_result(self, task_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Atomically persist and freeze a completed Analyze result."""
+        return self._set_task_result(task_id, result, require_analysis=True)
+
+    def _set_task_result(
+        self,
+        task_id: str,
+        result: dict[str, Any],
+        *,
+        require_analysis: bool,
+    ) -> dict[str, Any]:
         if not isinstance(result, dict) or contains_known_secret(result):
             raise InvalidTaskError(
                 "Task result is invalid or contains a credential-like value"
             )
         with self.transaction(immediate=True) as connection:
-            now = utc_now()
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            is_analysis = (
+                row["workflow_kind"] == "analyze"
+                or row["local_task_type"] == "analysis"
+            )
+            if require_analysis and not is_analysis:
+                raise InvalidTaskError("Only Analyze tasks can store an analysis result")
+            if is_analysis:
+                if result.get("kind") != "analysis":
+                    raise InvalidTaskError("Analyze result must have kind=analysis")
+                canonical_result = _canonical_json(result)
+                analysis_result_sha256 = hashlib.sha256(
+                    canonical_result.encode("utf-8")
+                ).hexdigest()
+                if (
+                    row["analysis_result_json"] is not None
+                    or row["analysis_result_sha256"] is not None
+                ):
+                    if (
+                        row["analysis_result_json"] != canonical_result
+                        or row["analysis_result_sha256"] != analysis_result_sha256
+                    ):
+                        raise InvalidTaskError("Analysis result is already frozen")
+                result_json = _json(result)
+                assignments = (
+                    "result_json = ?, analysis_result_json = ?, "
+                    "analysis_result_sha256 = ?, updated_at = ?"
+                )
+                parameters: tuple[Any, ...] = (
+                    result_json,
+                    canonical_result,
+                    analysis_result_sha256,
+                    utc_now(),
+                    task_id,
+                )
+            else:
+                assignments = "result_json = ?, updated_at = ?"
+                parameters = (_json(result), utc_now(), task_id)
             connection.execute(
-                "UPDATE tasks SET result_json = ?, updated_at = ? WHERE task_id = ?",
-                (_json(result), now, task_id),
+                f"UPDATE tasks SET {assignments} WHERE task_id = ?",
+                parameters,
             )
             if connection.execute("SELECT changes()").fetchone()[0] != 1:
                 raise InvalidTaskError(f"Unknown task: {task_id}")
@@ -1552,6 +1613,11 @@ class TaskStore:
                 {
                     "schema_version": result.get("schema_version"),
                     "kind": result.get("kind"),
+                    **(
+                        {"analysis_result_sha256": analysis_result_sha256}
+                        if is_analysis
+                        else {}
+                    ),
                 },
             )
             row = connection.execute(

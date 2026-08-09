@@ -196,6 +196,15 @@ class MCPToolTests(unittest.TestCase):
             TaskStatus.COMPLETED,
             event_type="analysis_completed",
         )
+        source_detail = self.service.tasks_get(task_id="analyze-mcp")
+        self.assertEqual(source_detail["data"]["analysis"]["task_id"], "analyze-mcp")
+        self.assertEqual(
+            source_detail["data"]["analysis"]["result_summary"],
+            analysis_result["summary"],
+        )
+        self.assertEqual(
+            len(source_detail["data"]["task"]["analysis_result_sha256"]), 64
+        )
 
         implementation = self._create_value("implement-mcp")
         implementation["workflow_kind"] = "implement"

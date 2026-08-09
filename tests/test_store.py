@@ -137,6 +137,48 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(implementation["analysis_result_sha256"]), 64)
         self.assertIsNone(self.fixture.store.claim_next())
 
+    def test_implementation_rejects_completed_analysis_without_frozen_result(self) -> None:
+        self.fixture.store.create_mcp_draft(
+            CanonicalTask(
+                task_id="analysis-without-result",
+                project_id="project-one",
+                dedupe_key="analysis-without-result",
+                revision=1,
+                source_type="mcp",
+                goal="Analyze without a persisted result",
+                payload={"prompt": "Analyze only."},
+            ),
+            workflow_kind="analyze",
+            analysis_task_id=None,
+            confirmation_token="a" * 43,
+            request_sha256="6" * 64,
+            dispatch_plan_sha256="7" * 64,
+        )
+        self.fixture.store.confirm_mcp_draft(
+            "analysis-without-result", "a" * 43, "7" * 64
+        )
+        self.assertEqual(self.fixture.store.claim_next()["task_id"], "analysis-without-result")
+        self.fixture.store.transition(
+            "analysis-without-result", TaskStatus.COMPLETED, event_type="analysis_completed"
+        )
+        with self.assertRaisesRegex(InvalidTaskError, "frozen completed result"):
+            self.fixture.store.create_mcp_draft(
+                CanonicalTask(
+                    task_id="implementation-without-result",
+                    project_id="project-one",
+                    dedupe_key="implementation-without-result",
+                    revision=1,
+                    source_type="mcp",
+                    goal="Implement only after Analyze is frozen",
+                    payload={"prompt": "Implement it."},
+                ),
+                workflow_kind="implement",
+                analysis_task_id="analysis-without-result",
+                confirmation_token="b" * 43,
+                request_sha256="8" * 64,
+                dispatch_plan_sha256="9" * 64,
+            )
+
     def test_new_revision_supersedes_named_old_task(self) -> None:
         self.fixture.add_task("old", dedupe_key="flow", revision=1)
         new, created = self.fixture.store.insert_task(
