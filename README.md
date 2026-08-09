@@ -177,10 +177,13 @@ The Streamable HTTP endpoint is `http://127.0.0.1:7677/mcp`. The no-auth MVP
 rejects every non-loopback bind. ChatGPT access uses OpenAI Secure MCP Tunnel;
 do not expose the local endpoint as an unauthenticated public service.
 
-The nine allowlisted tools cover health, projects, canonical task create,
-asynchronous queue dispatch, bounded task list/detail, exact-head review, and
-read-only recovery preview. The ninth tool is a strict, one-field, no-side-effect
-MCP transport probe. Its source is explicitly unattributed and it cannot set
+The allowlisted tools cover health, projects, canonical task create, explicit
+Analyze/Implement task drafts and draft confirmation, asynchronous queue dispatch,
+bounded task list/detail (including redacted agent-log and linked Analyze-result
+summaries), exact-head review, and read-only recovery preview. Drafts use a
+task-bound confirmation gate in the canonical Core record; they cannot be claimed
+until the user has explicitly approved the returned plan. The transport probe is a
+strict, one-field, no-side-effect MCP tool. Its source is explicitly unattributed and it cannot set
 external ChatGPT verification. The tools expose no shell, arbitrary files, cleanup,
 recovery resolution, manual acceptance setter, or merge operation. Dispatch starts a fixed
 one-shot Core worker and returns immediately; `RuntimeLock` and the global

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from project_brain.errors import StateTransitionError
+from project_brain.errors import InvalidTaskError, StateTransitionError
 from project_brain.models import CanonicalTask, TaskStatus
 from project_brain.store import SCHEMA_VERSION, TaskStore
 from project_brain.runtime import RuntimePaths
@@ -66,6 +66,48 @@ class StoreTests(unittest.TestCase):
         )
         self.assertFalse(created)
         self.assertEqual(duplicate["task_id"], "first")
+
+    def test_mcp_draft_confirmation_gate_and_analysis_link_are_canonical(self) -> None:
+        analyze, created = self.fixture.store.create_mcp_draft(
+            CanonicalTask(
+                task_id="analyze-draft",
+                project_id="project-one",
+                dedupe_key="analyze-draft",
+                revision=1,
+                source_type="mcp",
+                goal="Analyze the requested change",
+                payload={"prompt": "Analyze only."},
+            ),
+            workflow_kind="analyze",
+            analysis_task_id=None,
+            confirmation_token="a" * 43,
+        )
+        self.assertTrue(created)
+        self.assertTrue(analyze["dispatch_confirmation_required"])
+        self.assertIsNone(self.fixture.store.claim_next())
+        with self.assertRaises(InvalidTaskError):
+            self.fixture.store.confirm_mcp_draft("analyze-draft", "b" * 43)
+        self.fixture.store.confirm_mcp_draft("analyze-draft", "a" * 43)
+        claimed = self.fixture.store.claim_next()
+        self.assertEqual(claimed["task_id"], "analyze-draft")
+
+        implementation, created = self.fixture.store.create_mcp_draft(
+            CanonicalTask(
+                task_id="implement-draft",
+                project_id="project-one",
+                dedupe_key="implement-draft",
+                revision=1,
+                source_type="mcp",
+                goal="Implement the analyzed change",
+                payload={"prompt": "Implement it."},
+            ),
+            workflow_kind="implement",
+            analysis_task_id="analyze-draft",
+            confirmation_token="c" * 43,
+        )
+        self.assertTrue(created)
+        self.assertEqual(implementation["analysis_task_id"], "analyze-draft")
+        self.assertIsNone(self.fixture.store.claim_next())
 
     def test_new_revision_supersedes_named_old_task(self) -> None:
         self.fixture.add_task("old", dedupe_key="flow", revision=1)

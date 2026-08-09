@@ -25,6 +25,7 @@ MAX_FINDINGS = 50
 
 SAFE_EVENT_PAYLOAD_FIELDS = {
     "attempt_number",
+    "analysis_task_id",
     "by_task_id",
     "canonical_head_sha",
     "category",
@@ -38,6 +39,7 @@ SAFE_EVENT_PAYLOAD_FIELDS = {
     "revision",
     "source_attempt_number",
     "source_type",
+    "workflow_kind",
     "verification_count",
     "verification_set_id",
     "verdict",
@@ -73,6 +75,13 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "next_action": bounded_text(value.get("next_action"), limit=500),
         "project_config_revision": value.get("project_config_revision"),
         "project_config_sha256": short_config_hash(value.get("project_config_sha256")),
+        "workflow_kind": value.get("workflow_kind", "implement"),
+        "analysis_task_id": value.get("analysis_task_id"),
+        "dispatch_confirmation": {
+            "required": bool(value.get("dispatch_confirmation_required")),
+            "confirmed": value.get("dispatch_confirmed_at") is not None,
+            "confirmed_at": value.get("dispatch_confirmed_at"),
+        },
     }
 
 
@@ -185,6 +194,7 @@ def _fit_detail_budget(value: dict[str, Any]) -> dict[str, Any]:
         value["verification"]["evidence"],
         value["attempts"],
         value["active_findings"],
+        value["agent_log_summaries"],
         value["task"]["acceptance_criteria"],
     ]
     truncated = False
@@ -196,6 +206,22 @@ def _fit_detail_budget(value: dict[str, Any]) -> dict[str, Any]:
         truncated = True
     value["response_truncated"] = truncated
     return value
+
+
+def _agent_log_summaries(store: TaskStore, task_id: str) -> list[dict[str, Any]]:
+    """Expose bounded process output summaries, never commands or raw log files."""
+    return [
+        {
+            "session_id": session.get("session_id"),
+            "adapter": bounded_text(session.get("adapter"), limit=128),
+            "status": session.get("status"),
+            "exit_code": session.get("exit_code"),
+            "summary": bounded_text(session.get("output_summary"), limit=MAX_SUMMARY),
+            "started_at": session.get("started_at"),
+            "finished_at": session.get("finished_at"),
+        }
+        for session in store.list_agent_sessions(task_id)[-MAX_ATTEMPTS:]
+    ]
 
 
 def task_detail_view(
@@ -263,6 +289,18 @@ def task_detail_view(
         for review in store.list_reviews(task_id)[-MAX_REVIEWS:]
     ]
     archive = store.get_forensic_archive(task_id)
+    agent_log_summaries = _agent_log_summaries(store, task_id)
+    analysis = None
+    if task.get("analysis_task_id"):
+        source = store.get_task(str(task["analysis_task_id"]))
+        source_logs = _agent_log_summaries(store, source["task_id"])
+        analysis = {
+            "task_id": source["task_id"],
+            "status": source["status"],
+            "head_sha": bounded_text(source.get("head_sha"), limit=128),
+            "pr_url": bounded_text(source.get("pr_url"), limit=1_000),
+            "result_summary": source_logs[-1]["summary"] if source_logs else None,
+        }
     value = {
         "task": summary,
         "attempts": attempts,
@@ -284,6 +322,8 @@ def task_detail_view(
             _finding_view(item)
             for item in store.active_review_findings(task_id)[:MAX_FINDINGS]
         ],
+        "analysis": analysis,
+        "agent_log_summaries": agent_log_summaries,
         "forensic_archive": {
             "archive_id": archive.get("archive_id"),
             "manifest_sha256": archive.get("manifest_sha256"),

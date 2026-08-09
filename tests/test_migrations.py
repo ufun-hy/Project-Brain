@@ -182,7 +182,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(columns["accepting_tasks"]["dflt_value"], "1")
         self.assertEqual(columns["registered"]["dflt_value"], "1")
 
-    def test_version_six_migrates_through_v8_with_stable_installation_identity(self) -> None:
+    def test_version_six_migrates_to_current_with_stable_installation_identity(self) -> None:
         TaskStore(
             self.database,
             migrations={
@@ -207,7 +207,7 @@ class MigrationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
             }
-        self.assertEqual(store.schema_version(), 8)
+        self.assertEqual(store.schema_version(), SCHEMA_VERSION)
         self.assertIn("external_acceptance_runs", tables)
         store.initialize()
         with store.connect() as connection:
@@ -248,7 +248,7 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("external_acceptance_runs", tables)
         restarted = TaskStore(self.database)
         restarted.initialize()
-        self.assertEqual(restarted.schema_version(), 8)
+        self.assertEqual(restarted.schema_version(), SCHEMA_VERSION)
 
     def test_version_seven_pass_is_migrated_to_unattributed_transport_evidence(self) -> None:
         old = TaskStore(
@@ -310,7 +310,7 @@ class MigrationTests(unittest.TestCase):
             event = connection.execute(
                 "SELECT * FROM external_acceptance_events WHERE run_id = 'acceptance-v7'"
             ).fetchone()
-        self.assertEqual(upgraded.schema_version(), 8)
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
         self.assertEqual(run["status"], "mcp_transport_probe_passed")
         self.assertEqual(run["acceptance_contract_version"], 1)
         self.assertEqual(run["ingress"], "local_or_tunneled_mcp_unattributed")

@@ -35,6 +35,8 @@ EXPECTED_TOOLS = {
     "project_brain_system_health",
     "project_brain_projects_list",
     "project_brain_tasks_create",
+    "project_brain_tasks_create_draft",
+    "project_brain_tasks_confirm",
     "project_brain_queue_dispatch_next",
     "project_brain_tasks_list",
     "project_brain_tasks_get",
@@ -83,6 +85,8 @@ class MCPServerSchemaTests(unittest.TestCase):
             "project_brain_system_health": (True, False, True, False),
             "project_brain_projects_list": (True, False, True, False),
             "project_brain_tasks_create": (False, False, True, False),
+            "project_brain_tasks_create_draft": (False, False, True, False),
+            "project_brain_tasks_confirm": (False, False, True, False),
             "project_brain_queue_dispatch_next": (False, True, False, True),
             "project_brain_tasks_list": (True, False, True, False),
             "project_brain_tasks_get": (True, False, True, False),
@@ -118,6 +122,17 @@ class MCPServerSchemaTests(unittest.TestCase):
         probe = next(tool for tool in tools if tool.name == "project_brain_acceptance_probe")
         self.assertEqual(set(probe.inputSchema["properties"]), {"challenge"})
         self.assertEqual(probe.inputSchema["required"], ["challenge"])
+        draft = next(tool for tool in tools if tool.name == "project_brain_tasks_create_draft")
+        self.assertEqual(
+            draft.inputSchema["properties"]["workflow_kind"]["enum"],
+            ["analyze", "implement"],
+        )
+        self.assertTrue(
+            {"command", "argv", "shell", "cwd", "environment", "repo_path", "worktree_path"}
+            .isdisjoint(draft.inputSchema["properties"])
+        )
+        confirm = next(tool for tool in tools if tool.name == "project_brain_tasks_confirm")
+        self.assertEqual(set(confirm.inputSchema["properties"]), {"task_id", "confirmation_token"})
 
     def test_pinned_sdk_private_schema_hardening_compatibility_contract(self) -> None:
         self.assertEqual(importlib.metadata.version("mcp"), "1.28.1")
@@ -160,7 +175,8 @@ class MCPServerSchemaTests(unittest.TestCase):
             return await server.call_tool("project_brain_tasks_create", arguments)
 
         _, structured = asyncio.run(call_create())
-        self.assertEqual(structured["status"], "created")
+        self.assertEqual(structured["status"], "draft_created")
+        self.assertTrue(structured["confirmation"]["required"])
         self.assertEqual(self.fixture.store.get_task("protocol-create")["source_type"], "mcp")
         invalid = dict(arguments)
         invalid["task_id"] = "protocol-invalid"

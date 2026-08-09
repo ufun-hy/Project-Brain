@@ -5,7 +5,6 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from project_brain.models import TaskStatus
-from project_brain.mcp.dispatch import OneShotDispatcher
 from project_brain.mcp.tools import MCPAdapterService
 
 from tests.helpers import CoreFixture, create_remote_clone, git
@@ -85,7 +84,7 @@ class MCPToolTests(unittest.TestCase):
     def test_create_is_canonical_idempotent_and_audited(self) -> None:
         first = self.service.tasks_create(self._create_value())
         second = self.service.tasks_create(self._create_value())
-        self.assertEqual(first["status"], "created")
+        self.assertEqual(first["status"], "draft_created")
         self.assertEqual(second["status"], "duplicate")
         task = self.fixture.store.get_task("mcp-task")
         self.assertEqual(task["source_type"], "mcp")
@@ -98,7 +97,7 @@ class MCPToolTests(unittest.TestCase):
             [
                 event["payload"]["outcome"]
                 for event in self.fixture.store.list_events("mcp-task")
-                if event["event_type"] == "mcp_task_create_requested"
+                if event["event_type"] == "mcp_task_draft_create_requested"
             ],
             ["duplicate"],
         )
@@ -123,7 +122,7 @@ class MCPToolTests(unittest.TestCase):
         head_before = git(repo, "rev-parse", "HEAD").stdout.strip()
         status_before = git(repo, "status", "--porcelain=v1", "--untracked-files=all").stdout
         result = self.service.tasks_create(self._create_value("control-plane-only"))
-        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["status"], "draft_created")
         self.assertEqual(git(repo, "rev-parse", "HEAD").stdout.strip(), head_before)
         self.assertEqual(
             git(repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
@@ -132,6 +131,50 @@ class MCPToolTests(unittest.TestCase):
         task = self.fixture.store.get_task("control-plane-only")
         self.assertIsNone(task["worktree_path"])
         self.assertEqual(list(self.fixture.runtime.worktrees_dir.rglob("*")), [])
+
+    def test_draft_requires_confirmation_and_can_link_analysis_to_implementation(self) -> None:
+        analyze = self._create_value("analyze-mcp")
+        analyze["workflow_kind"] = "analyze"
+        draft = self.service.tasks_create_draft(analyze)
+        self.assertEqual(draft["status"], "draft_created")
+        self.assertTrue(draft["confirmation"]["required"])
+        self.assertEqual(self.fixture.store.claim_next(), None)
+
+        token = draft["confirmation"]["confirmation_token"]
+        confirmed = self.service.tasks_confirm(
+            {"task_id": "analyze-mcp", "confirmation_token": token}
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+        claimed = self.fixture.store.claim_next()
+        self.assertEqual(claimed["task_id"], "analyze-mcp")
+
+        implementation = self._create_value("implement-mcp")
+        implementation["workflow_kind"] = "implement"
+        implementation["analysis_task_id"] = "analyze-mcp"
+        linked = self.service.tasks_create_draft(implementation)
+        self.assertEqual(linked["status"], "draft_created")
+        detail = self.service.tasks_get(task_id="implement-mcp")
+        self.assertEqual(detail["data"]["task"]["analysis_task_id"], "analyze-mcp")
+        self.assertEqual(detail["data"]["analysis"]["task_id"], "analyze-mcp")
+
+    def test_draft_confirmation_rejects_wrong_token_and_non_analysis_parent(self) -> None:
+        draft = self._create_value("gated-mcp")
+        draft["workflow_kind"] = "analyze"
+        result = self.service.tasks_create_draft(draft)
+        wrong = self.service.tasks_confirm(
+            {"task_id": "gated-mcp", "confirmation_token": "x" * 43}
+        )
+        self.assertEqual(wrong["code"], "validation")
+        self.assertEqual(self.fixture.store.claim_next(), None)
+
+        normal = self._create_value("not-analysis")
+        normal["workflow_kind"] = "implement"
+        self.service.tasks_create_draft(normal)
+        invalid = self._create_value("bad-analysis-link")
+        invalid["workflow_kind"] = "implement"
+        invalid["analysis_task_id"] = "not-analysis"
+        self.assertEqual(self.service.tasks_create_draft(invalid)["code"], "validation")
+        self.assertEqual(result["task"]["dispatch_confirmation"]["confirmed"], False)
 
     def test_create_rejects_deep_control_fields_before_persistence(self) -> None:
         forbidden_fields = (
@@ -176,18 +219,16 @@ class MCPToolTests(unittest.TestCase):
                 self.assertEqual(result["code"], code)
         self.assertEqual(self.fixture.store.list_tasks(), [])
 
-    def test_active_supersession_returns_state_conflict_and_preserves_dispatch_blocker(self) -> None:
+    def test_legacy_create_cannot_bypass_draft_confirmation_or_supersede(self) -> None:
         launches: list[list[str]] = []
 
         def unexpected_launch(argv, **_kwargs):
             launches.append(list(argv))
             raise AssertionError("blocked dispatch must not start a worker")
 
-        dispatcher = OneShotDispatcher(
-            self.fixture.store,
-            self.fixture.runtime,
-            popen_factory=unexpected_launch,
-        )
+        from project_brain.mcp.dispatch import OneShotDispatcher
+
+        dispatcher = OneShotDispatcher(self.fixture.store, self.fixture.runtime, popen_factory=unexpected_launch)
         service = MCPAdapterService(
             self.fixture.store,
             self.fixture.runtime,
@@ -196,15 +237,8 @@ class MCPToolTests(unittest.TestCase):
         original = self._create_value("mcp-owned")
         original["dedupe_key"] = "mcp-owned-flow"
         original["revision"] = 4
-        self.assertEqual(service.tasks_create(original)["status"], "created")
-        claimed = self.fixture.store.claim_next()
-        self.assertEqual(claimed["task_id"], "mcp-owned")
-        self.fixture.store.record_agent_session(
-            session_id="session-mcp-owned",
-            task_id="mcp-owned",
-            adapter="codex",
-            command=["codex", "exec"],
-        )
+        self.assertEqual(service.tasks_create(original)["status"], "draft_created")
+        self.assertEqual(self.fixture.store.claim_next(), None)
 
         replacement = self._create_value("mcp-owned-replacement")
         replacement["dedupe_key"] = "mcp-owned-flow"
@@ -212,10 +246,10 @@ class MCPToolTests(unittest.TestCase):
         replacement["supersedes"] = "mcp-owned"
         conflict = service.tasks_create(replacement)
         self.assertEqual(conflict["status"], "error")
-        self.assertEqual(conflict["code"], "state_conflict")
+        self.assertEqual(conflict["code"], "validation")
         self.assertEqual(
             self.fixture.store.get_task("mcp-owned")["status"],
-            TaskStatus.RUNNING.value,
+            TaskStatus.PENDING.value,
         )
         self.assertNotIn(
             "mcp-owned-replacement",
@@ -223,9 +257,7 @@ class MCPToolTests(unittest.TestCase):
         )
 
         dispatch = service.queue_dispatch_next(reason="confirm blocker remains visible")
-        self.assertEqual(dispatch["dispatch_status"], "blocked")
-        self.assertEqual(dispatch["code"], "recovery_blocked")
-        self.assertEqual(dispatch["claim_safety"]["blockers"][0]["task_id"], "mcp-owned")
+        self.assertEqual(dispatch["dispatch_status"], "idle")
         self.assertEqual(launches, [])
 
     def test_tasks_list_clamps_limit_and_task_get_bounds_events(self) -> None:

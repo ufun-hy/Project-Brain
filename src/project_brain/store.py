@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from hashlib import sha256
+from hmac import compare_digest
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -464,6 +466,13 @@ class TaskStore:
         value["payload"] = _loads(value.pop("payload_json"), {})
         if "execution_profile_json" in value:
             value["execution_profile"] = _loads(value.pop("execution_profile_json"), None)
+        if "dispatch_confirmation_required" in value:
+            value["dispatch_confirmation_required"] = bool(
+                value["dispatch_confirmation_required"]
+            )
+        # The confirmation is an opaque, one-purpose capability.  It must
+        # never appear in a Core, CLI, or MCP task view.
+        value.pop("dispatch_confirmation_token_sha256", None)
         value["commit"] = value.pop("commit_sha")
         return value
 
@@ -621,6 +630,164 @@ class TaskStore:
             assert created is not None
             return self._task(created), True
 
+    def create_mcp_draft(
+        self,
+        task: CanonicalTask | dict[str, Any],
+        *,
+        workflow_kind: str,
+        analysis_task_id: str | None,
+        confirmation_token: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Create a canonical MCP task with an explicit claim gate.
+
+        The task is persisted in the same table and uses the existing Core
+        status machine.  The extra columns record only intake authorization;
+        they do not introduce a parallel MCP lifecycle.
+        """
+        if workflow_kind not in {"analyze", "implement"}:
+            raise InvalidTaskError("MCP workflow_kind must be analyze or implement")
+        if not isinstance(confirmation_token, str) or len(confirmation_token) < 32:
+            raise InvalidTaskError("MCP confirmation token is invalid")
+        canonical = task if isinstance(task, CanonicalTask) else CanonicalTask(**task)
+        record = canonical.as_record()
+        if record["source_type"] != "mcp" or record["task_type"] != "codex":
+            raise InvalidTaskError("MCP drafts must be canonical mcp Codex tasks")
+        if contains_known_secret(record):
+            raise InvalidTaskError("Task contains a credential-like value and was not persisted")
+        token_hash = sha256(confirmation_token.encode("utf-8")).hexdigest()
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (record["task_id"],)
+            ).fetchone()
+            if existing is not None:
+                return self._task(existing), False
+            logical = connection.execute(
+                "SELECT * FROM tasks WHERE project_id = ? AND dedupe_key = ? AND revision = ?",
+                (record["project_id"], record["dedupe_key"], record["revision"]),
+            ).fetchone()
+            if logical is not None:
+                return self._task(logical), False
+            if record.get("supersedes"):
+                raise InvalidTaskError("MCP drafts cannot supersede an existing task")
+            project_row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
+            ).fetchone()
+            if project_row is None or not bool(project_row["registered"]):
+                raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
+            if not bool(project_row["accepting_tasks"]):
+                raise InvalidTaskError(
+                    f"Project is paused and not accepting new tasks: {record['project_id']}"
+                )
+            if analysis_task_id is not None:
+                analysis = connection.execute(
+                    "SELECT project_id, workflow_kind FROM tasks WHERE task_id = ?",
+                    (analysis_task_id,),
+                ).fetchone()
+                if analysis is None:
+                    raise InvalidTaskError(f"Analysis task does not exist: {analysis_task_id}")
+                if analysis["project_id"] != record["project_id"]:
+                    raise InvalidTaskError("Analysis task must belong to the same project")
+                if analysis["workflow_kind"] != "analyze":
+                    raise InvalidTaskError("analysis_task_id must reference an analyze task")
+            profile = normalize_execution_profile(self._project(project_row))
+            profile_json = canonical_profile_json(profile)
+            profile_hash = config_sha256(profile)
+            if project_row["config_sha256"] != profile_hash or not project_row["config_revision"]:
+                raise InvalidTaskError("Active project configuration hash is invalid")
+            trusted_ids = {
+                check.get("id")
+                for check in _loads(project_row["verification_commands_json"], [])
+                if isinstance(check, dict) and check.get("id")
+            }
+            for criterion in record.get("acceptance_criteria", []):
+                if isinstance(criterion, dict) and criterion.get("verification_id") not in {
+                    None,
+                    *trusted_ids,
+                }:
+                    raise InvalidTaskError(
+                        f"Unknown trusted verification_id for {record['project_id']}: "
+                        f"{criterion['verification_id']}"
+                    )
+            connection.execute(
+                """
+                INSERT INTO tasks(
+                    task_id, project_id, dedupe_key, revision, source_type,
+                    source_message_id, goal, acceptance_criteria_json, task_type,
+                    payload_json, status, attempt_count, created_at, updated_at,
+                    expires_at, supersedes, project_config_revision,
+                    project_config_sha256, execution_profile_json, workflow_kind,
+                    analysis_task_id, dispatch_confirmation_required,
+                    dispatch_confirmation_token_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    record["task_id"], record["project_id"], record["dedupe_key"],
+                    record["revision"], record["source_type"],
+                    record.get("source_message_id"), record["goal"],
+                    _json(record.get("acceptance_criteria", [])), record["task_type"],
+                    _json(record.get("payload", {})), TaskStatus.PENDING.value,
+                    now, now, record.get("expires_at"), None,
+                    int(project_row["config_revision"]), profile_hash, profile_json,
+                    workflow_kind, analysis_task_id, token_hash,
+                ),
+            )
+            self._event(
+                connection,
+                record["task_id"],
+                "mcp_task_draft_created",
+                None,
+                TaskStatus.PENDING.value,
+                {
+                    "revision": record["revision"],
+                    "source_type": "mcp",
+                    "workflow_kind": workflow_kind,
+                    "analysis_task_id": analysis_task_id,
+                    "dispatch_confirmation_required": True,
+                    "project_config_revision": int(project_row["config_revision"]),
+                    "project_config_sha256": profile_hash,
+                },
+            )
+            created = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (record["task_id"],)
+            ).fetchone()
+            assert created is not None
+            return self._task(created), True
+
+    def confirm_mcp_draft(self, task_id: str, confirmation_token: str) -> dict[str, Any]:
+        """Persist an explicit user confirmation before this task can be claimed."""
+        if not isinstance(confirmation_token, str) or not confirmation_token:
+            raise InvalidTaskError("confirmation_token is required")
+        token_hash = sha256(confirmation_token.encode("utf-8")).hexdigest()
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if row["source_type"] != "mcp" or not bool(row["dispatch_confirmation_required"]):
+                raise StateTransitionError("Task is not an MCP draft requiring confirmation")
+            if row["status"] != TaskStatus.PENDING.value or int(row["attempt_count"]) != 0:
+                raise StateTransitionError("Only an unclaimed pending MCP draft can be confirmed")
+            expected_hash = row["dispatch_confirmation_token_sha256"]
+            if not isinstance(expected_hash, str) or not compare_digest(expected_hash, token_hash):
+                raise InvalidTaskError("confirmation_token does not match this draft")
+            if row["dispatch_confirmed_at"] is None:
+                confirmed_at = utc_now()
+                connection.execute(
+                    "UPDATE tasks SET dispatch_confirmed_at = ?, updated_at = ? WHERE task_id = ?",
+                    (confirmed_at, confirmed_at, task_id),
+                )
+                self._event(
+                    connection,
+                    task_id,
+                    "mcp_task_dispatch_confirmed",
+                    TaskStatus.PENDING.value,
+                    TaskStatus.PENDING.value,
+                    {"workflow_kind": row["workflow_kind"], "analysis_task_id": row["analysis_task_id"]},
+                )
+        return self.get_task(task_id)
+
     def get_task(self, task_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
@@ -745,6 +912,7 @@ class TaskStore:
                 )
             row = connection.execute(
                 f"SELECT * FROM tasks WHERE status IN ({','.join('?' for _ in claimable)}) "
+                "AND (dispatch_confirmation_required = 0 OR dispatch_confirmed_at IS NOT NULL) "
                 "ORDER BY created_at, task_id LIMIT 1",
                 claimable,
             ).fetchone()
@@ -1101,6 +1269,21 @@ class TaskStore:
         value["command"] = _loads(value.pop("command_json"), [])
         value["child_identity"] = _loads(value.pop("child_identity_json"), None)
         return value
+
+    def list_agent_sessions(self, task_id: str) -> list[dict[str, Any]]:
+        """Return task-owned sessions for bounded presentation only."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_sessions WHERE task_id = ? ORDER BY started_at, session_id",
+                (task_id,),
+            ).fetchall()
+        values: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            value["command"] = _loads(value.pop("command_json"), [])
+            value["child_identity"] = _loads(value.pop("child_identity_json"), None)
+            values.append(value)
+        return values
 
     def active_agent_session(self, task_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:

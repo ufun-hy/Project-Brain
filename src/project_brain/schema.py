@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -440,6 +440,22 @@ CREATE INDEX external_acceptance_events_run_idx
     ON external_acceptance_events(run_id, event_id);
 """
 
+# This is deliberately a gate on the canonical task record, rather than an
+# MCP-side task state.  A draft remains a normal pending task, but cannot be
+# claimed until the user confirms the immutable intake plan.
+MIGRATION_9 = """
+ALTER TABLE tasks ADD COLUMN workflow_kind TEXT NOT NULL DEFAULT 'implement'
+    CHECK(workflow_kind IN ('analyze', 'implement'));
+ALTER TABLE tasks ADD COLUMN analysis_task_id TEXT REFERENCES tasks(task_id);
+ALTER TABLE tasks ADD COLUMN dispatch_confirmation_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN dispatch_confirmed_at TEXT;
+ALTER TABLE tasks ADD COLUMN dispatch_confirmation_token_sha256 TEXT;
+
+CREATE INDEX tasks_analysis_task_idx ON tasks(analysis_task_id);
+CREATE INDEX tasks_dispatch_gate_idx
+    ON tasks(status, dispatch_confirmation_required, dispatch_confirmed_at, created_at);
+"""
+
 MIGRATIONS = {
     1: MIGRATION_1,
     2: MIGRATION_2,
@@ -449,4 +465,5 @@ MIGRATIONS = {
     6: MIGRATION_6,
     7: MIGRATION_7,
     8: MIGRATION_8,
+    9: MIGRATION_9,
 }
