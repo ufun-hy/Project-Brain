@@ -41,7 +41,7 @@ class CLITests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             build_parser().parse_args(["--version"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertEqual(output.getvalue().strip(), "project-brain 0.7.0")
+        self.assertEqual(output.getvalue().strip(), "project-brain 0.8.0")
 
     def test_status_json_shows_stage_project_and_next_action(self) -> None:
         self.fixture.add_task("status-task")
@@ -84,9 +84,13 @@ class CLITests(unittest.TestCase):
         _, waiting_output = self.invoke(
             "acceptance", "waiting", created["run"]["run_id"], "--json"
         )
-        self.assertEqual(json.loads(waiting_output)["run"]["status"], "waiting_for_chatgpt")
+        self.assertEqual(
+            json.loads(waiting_output)["run"]["status"], "waiting_for_chatgpt"
+        )
         _, status_output = self.invoke("acceptance", "status", "--json")
-        self.assertEqual(json.loads(status_output)["current"]["status"], "waiting_for_chatgpt")
+        self.assertEqual(
+            json.loads(status_output)["current"]["status"], "waiting_for_chatgpt"
+        )
         with self.assertRaises(SystemExit):
             build_parser().parse_args(["acceptance", "pass"])
 
@@ -106,7 +110,9 @@ class CLITests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        code, output = self.invoke("tasks", "enqueue", "--file", str(task_file), "--json")
+        code, output = self.invoke(
+            "tasks", "enqueue", "--file", str(task_file), "--json"
+        )
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output)["status"], "created")
         self.fixture.store.claim_next()
@@ -172,13 +178,18 @@ class CLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output)["status"], "already_running")
         self.assertEqual(
-            self.fixture.store.get_task("locked-task")["status"], TaskStatus.PENDING.value
+            self.fixture.store.get_task("locked-task")["status"],
+            TaskStatus.PENDING.value,
         )
 
-    def test_recover_command_resolves_recovery_block_with_operator_confirmation(self) -> None:
+    def test_recover_command_resolves_recovery_block_with_operator_confirmation(
+        self,
+    ) -> None:
         self.fixture.add_task("blocked-task")
         task = self.fixture.store.claim_next()
-        WorktreeManager(self.fixture.store, self.fixture.runtime).create(task, self.project)
+        WorktreeManager(self.fixture.store, self.fixture.runtime).create(
+            task, self.project
+        )
         session_id = str(uuid.uuid4())
         self.fixture.store.record_agent_session(
             session_id=session_id,

@@ -85,7 +85,12 @@ class MCPToolTests(unittest.TestCase):
         first = self.service.tasks_create(self._create_value())
         second = self.service.tasks_create(self._create_value())
         self.assertEqual(first["status"], "draft_created")
-        self.assertEqual(second["status"], "duplicate")
+        self.assertEqual(second["status"], "draft_replayed")
+        self.assertEqual(first["plan_hash"], second["plan_hash"])
+        self.assertNotEqual(
+            first["confirmation"]["confirmation_token"],
+            second["confirmation"]["confirmation_token"],
+        )
         task = self.fixture.store.get_task("mcp-task")
         self.assertEqual(task["source_type"], "mcp")
         self.assertEqual(task["task_type"], "codex")
@@ -93,14 +98,34 @@ class MCPToolTests(unittest.TestCase):
         self.assertNotIn("payload", json.dumps(first))
         self.assertEqual(first["task"]["project_config_revision"], 1)
         self.assertEqual(len(first["task"]["project_config_sha256"]), 12)
-        self.assertEqual(
-            [
-                event["payload"]["outcome"]
-                for event in self.fixture.store.list_events("mcp-task")
-                if event["event_type"] == "mcp_task_draft_create_requested"
-            ],
-            ["duplicate"],
+        self.assertIn(
+            "mcp_task_confirmation_reissued",
+            [event["event_type"] for event in self.fixture.store.list_events("mcp-task")],
         )
+        stale = self.service.tasks_confirm(
+            {
+                "task_id": "mcp-task",
+                "confirmation_token": first["confirmation"]["confirmation_token"],
+                "expected_plan_hash": first["plan_hash"],
+            }
+        )
+        self.assertEqual(stale["code"], "validation")
+        confirmed = self.service.tasks_confirm(
+            {
+                "task_id": "mcp-task",
+                "confirmation_token": second["confirmation"]["confirmation_token"],
+                "expected_plan_hash": second["plan_hash"],
+            }
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+        replay_after_confirmation = self.service.tasks_create(self._create_value())
+        self.assertEqual(replay_after_confirmation["status"], "duplicate")
+        self.assertNotIn("confirmation", replay_after_confirmation)
+
+        changed = self._create_value()
+        changed["prompt"] = "A different request must not reuse the same identity."
+        conflict = self.service.tasks_create(changed)
+        self.assertEqual(conflict["code"], "state_conflict")
         self.assertEqual(
             self.fixture.store.list_events("mcp-task")[0]["payload"]["source_type"],
             "mcp",
@@ -141,12 +166,36 @@ class MCPToolTests(unittest.TestCase):
         self.assertEqual(self.fixture.store.claim_next(), None)
 
         token = draft["confirmation"]["confirmation_token"]
+        wrong_plan = self.service.tasks_confirm(
+            {
+                "task_id": "analyze-mcp",
+                "confirmation_token": token,
+                "expected_plan_hash": "0" * 64,
+            }
+        )
+        self.assertEqual(wrong_plan["code"], "state_conflict")
         confirmed = self.service.tasks_confirm(
-            {"task_id": "analyze-mcp", "confirmation_token": token}
+            {
+                "task_id": "analyze-mcp",
+                "confirmation_token": token,
+                "expected_plan_hash": draft["plan_hash"],
+            }
         )
         self.assertEqual(confirmed["status"], "confirmed")
         claimed = self.fixture.store.claim_next()
         self.assertEqual(claimed["task_id"], "analyze-mcp")
+        analysis_result = {
+            "schema_version": 1,
+            "kind": "analysis",
+            "summary": "Implement the bounded MCP intake changes.",
+            "completed_at": "2026-08-09T00:00:00+00:00",
+        }
+        self.fixture.store.set_task_result("analyze-mcp", analysis_result)
+        self.fixture.store.transition(
+            "analyze-mcp",
+            TaskStatus.COMPLETED,
+            event_type="analysis_completed",
+        )
 
         implementation = self._create_value("implement-mcp")
         implementation["workflow_kind"] = "implement"
@@ -156,13 +205,22 @@ class MCPToolTests(unittest.TestCase):
         detail = self.service.tasks_get(task_id="implement-mcp")
         self.assertEqual(detail["data"]["task"]["analysis_task_id"], "analyze-mcp")
         self.assertEqual(detail["data"]["analysis"]["task_id"], "analyze-mcp")
+        self.assertEqual(
+            detail["data"]["analysis"]["result_summary"],
+            analysis_result["summary"],
+        )
+        self.assertEqual(len(detail["data"]["analysis"]["fixed_result_sha256"]), 64)
 
     def test_draft_confirmation_rejects_wrong_token_and_non_analysis_parent(self) -> None:
         draft = self._create_value("gated-mcp")
         draft["workflow_kind"] = "analyze"
         result = self.service.tasks_create_draft(draft)
         wrong = self.service.tasks_confirm(
-            {"task_id": "gated-mcp", "confirmation_token": "x" * 43}
+            {
+                "task_id": "gated-mcp",
+                "confirmation_token": "x" * 43,
+                "expected_plan_hash": result["plan_hash"],
+            }
         )
         self.assertEqual(wrong["code"], "validation")
         self.assertEqual(self.fixture.store.claim_next(), None)

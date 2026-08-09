@@ -203,3 +203,83 @@ The internal RC DMG contains `Project Brain.app`, an `Applications` symlink to
 to drag the app onto that folder. CI mounts the completed image and validates
 the visible install components. Build 6 supersedes immutable Builds 4 and 5
 using new artifact names; it never overwrites either historical build.
+
+## D-024: Treat the native App as a source-neutral, review-first task ingress
+
+The macOS App sends only a strict schema-v1 local task document over stdin to
+fixed Core commands. Goal and criteria are content, never command, argv, cwd,
+environment, path, SQL, executable, branch, worktree, credential, or sandbox
+authority. Core, not Swift, creates task/dedupe identities and binds the exact
+remote Base, project revision/hash, execution profile, delivery policy,
+readiness, expiry, and single-use plan token in SQLite schema v9.
+
+Analyze and Implement share the authoritative task engine and isolated
+worktrees. Analyze runs read-only, treats no changes as success, persists a
+structured result, and never publishes. Implement keeps canonical commit,
+verification seal, optional bounded push/Draft PR, review, recovery, and
+cleanup rules. ChatGPT, Secure MCP Tunnel, and Gmail are optional or separate
+ingresses; local success never changes external ChatGPT acceptance from
+Pending.
+
+## D-025: Make the persisted plan the sole confirmation authority
+
+Build 9 moves local-task plan authority to schema v10. Core canonicalizes the
+request once during planning, binds it to the exact project configuration and
+remote Base, persists request and plan SHA-256 values, and stores only the
+SHA-256 of the transient `local-v2:` token. The App confirms with only the
+opaque token and expected plan hash; it never rebuilds goal, task type, project,
+delivery, executable, verification, or Base fields from mutable SwiftUI state.
+
+RuntimeLock protects the minimal external revalidation path. The task insert
+and one-time token consumption share one immediate SQLite transaction. Expiry,
+hash mismatch, supersession, repetition, and concurrent second consumption all
+fail closed. The minimal create response opens Task Center immediately; one
+selected-task refresh runs in the background. CLI contract 1.2.0 makes this
+request/confirmation split explicit. External ChatGPT acceptance remains
+Pending and is not inferred from any Build 9 local or artifact test.
+
+## D-026: Fail closed between unsigned personal builds and distributable macOS bytes
+
+Build 9 is immutable internal-build history. Ordinary pull-request CI may build
+and upload `Project-Brain-Build10-Personal-Unsigned-arm64` to exercise the final DMG App,
+embedded helper, onboarding, local task, timing, lifecycle, and preserved-data
+flows and support the owner's day-to-day testing. Its schema-v5 manifest says
+`artifact_classification: unsigned_personal_build`,
+`usage_scope: personal_internal_only`, and `distribution_eligible: false`. It
+requires a per-artifact Gatekeeper authorization and cannot be relabeled as a
+signed, notarized, or publicly accepted artifact.
+
+The exact-SHA `macOS Personal Build` workflow uses no Apple or repository
+secrets and uploads only the DMG, App ZIP, manifest, and checksum set bound by
+that manifest. Developer ID signing, Apple notarization/stapling, and Fresh-Mac
+public distribution acceptance are `deferred_personal_use` while Project Brain
+is a personal internal tool. This deferral does not weaken the retained public
+release pipeline. It also does not change External ChatGPT acceptance, which
+remains Pending.
+
+Only the manually triggered `macOS Developer ID release` workflow may create
+`Project-Brain-Build10-arm64`. It binds checkout to a caller-supplied exact
+40-character SHA and requires a protected release environment with a Developer
+ID Application identity and App Store Connect notary API key. Missing
+credentials fail before packaging. The workflow signs the embedded helper,
+other nested code, and App from the inside out using Hardened Runtime and secure timestamps, verifies
+that `get-task-allow` is absent, notarizes and staples the App, creates and
+signs the DMG, notarizes and staples the DMG, and verifies the final bytes with
+`codesign`, `spctl`, and `stapler`.
+
+The release workflow has no pull-request or task-branch push trigger. GitHub
+requires `workflow_dispatch` workflows to exist on the default branch; after
+the reviewed workflow is merged, it can still package an explicitly supplied
+reviewed SHA. This prevents unmerged workflow code from reading release private
+keys merely to produce a pre-merge artifact.
+
+Signed output paths refuse overwrite. The final schema-v5 manifest binds the
+App executable, Core helper, CLI contract, DMG, App ZIP, sanitized notarization
+receipts, exact source SHA, CI run, signing team, and Apple submission IDs.
+Automated Gatekeeper checks are evidence, not the final ordinary-user verdict.
+`distribution_eligible` remains false and
+`fresh_mac_quarantine_acceptance` remains `pending_manual` in a future signed
+release manifest until a
+browser-downloaded quarantined DMG passes the drag-to-Applications and
+double-click flow on a Mac that has never trusted Project Brain. External
+ChatGPT acceptance remains independently Pending.

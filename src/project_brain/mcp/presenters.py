@@ -26,10 +26,12 @@ MAX_FINDINGS = 50
 SAFE_EVENT_PAYLOAD_FIELDS = {
     "attempt_number",
     "analysis_task_id",
+    "analysis_result_sha256",
     "by_task_id",
     "canonical_head_sha",
     "category",
     "dispatch_status",
+    "dispatch_plan_sha256",
     "head_sha",
     "phase",
     "reason",
@@ -77,6 +79,8 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "project_config_sha256": short_config_hash(value.get("project_config_sha256")),
         "workflow_kind": value.get("workflow_kind", "implement"),
         "analysis_task_id": value.get("analysis_task_id"),
+        "analysis_result_sha256": value.get("analysis_result_sha256"),
+        "plan_hash": value.get("dispatch_plan_sha256"),
         "dispatch_confirmation": {
             "required": bool(value.get("dispatch_confirmation_required")),
             "confirmed": value.get("dispatch_confirmed_at") is not None,
@@ -293,13 +297,15 @@ def task_detail_view(
     analysis = None
     if task.get("analysis_task_id"):
         source = store.get_task(str(task["analysis_task_id"]))
-        source_logs = _agent_log_summaries(store, source["task_id"])
+        fixed_result = task.get("analysis_result")
         analysis = {
             "task_id": source["task_id"],
-            "status": source["status"],
-            "head_sha": bounded_text(source.get("head_sha"), limit=128),
-            "pr_url": bounded_text(source.get("pr_url"), limit=1_000),
-            "result_summary": source_logs[-1]["summary"] if source_logs else None,
+            "source_status": source["status"],
+            "fixed_result_sha256": task.get("analysis_result_sha256"),
+            "result_summary": bounded_text(
+                fixed_result.get("summary") if isinstance(fixed_result, dict) else None,
+                limit=MAX_SUMMARY,
+            ),
         }
     value = {
         "task": summary,

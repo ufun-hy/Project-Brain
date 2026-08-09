@@ -141,17 +141,25 @@ headers, source IP, Host, Origin, and User-Agent are not trusted source evidence
 It is not an external-acceptance setter.
 
 The Web Task Intake v1 flow is `projects_list` → `tasks_create_draft` → show
-the returned plan → `tasks_confirm` after the user explicitly approves →
+the returned plan → `tasks_confirm` with the returned `expected_plan_hash` after
+the user explicitly approves →
 `queue_dispatch_next`. A draft is stored in the canonical `tasks` table with a
 claim gate, not in a second MCP task state machine. Its confirmation token is
 opaque, task-bound, stored only as a hash, and is never returned by task query
 tools. Unconfirmed drafts cannot be claimed by either the MCP dispatcher or a
-local Core worker.
+local Core worker. If the first create response is lost, an exact retry returns
+the same plan hash and a newly rotated confirmation token. The previous token is
+invalidated. Reusing the task ID or logical key with different canonical input
+returns a state conflict instead of silently treating new intent as a duplicate.
 
 Draft creation accepts only stable IDs, revision, `workflow_kind` (`analyze` or
 `implement`), goal, criteria, a bounded prompt, optional expiry, and (for an
 Implement task) an optional same-project `analysis_task_id` that must refer to
-an Analyze task. Task detail presents a bounded redacted Analyze result summary
+an already completed Analyze task. Analyze runs in the read-only Codex sandbox,
+must leave the repository unchanged, and completes without commit, push, or PR.
+When an Implement draft links Analyze, Core freezes the completed result and its
+SHA-256 on the Implement task; Codex consumes that immutable snapshot rather than
+re-reading later source-task state. Task detail presents its bounded redacted summary
 and bounded agent-log summaries, along with status, verification evidence, and
 Draft PR. Every schema rejects unknown fields. Any nesting
 level containing `command`, `argv`, `shell`, `cwd`, `environment`, `repo_path`,

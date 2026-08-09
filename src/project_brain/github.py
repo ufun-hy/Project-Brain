@@ -10,6 +10,94 @@ from typing import Any
 from .commands import git, run_command
 from .errors import ExternalCommandError, TaskHistoryError, TransientTaskError
 from .repository import assert_registered_origin
+from .security import redact_text
+
+
+def _bounded_pr_title(value: Any) -> str:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    title = lines[0] if lines else "Project Brain task"
+    for prefix in ("任务名称：", "任务名称:", "Task name:", "Task:"):
+        if title.lower().startswith(prefix.lower()):
+            title = title[len(prefix) :].strip()
+            break
+    title = redact_text(title).strip() or "Project Brain task"
+    return title if len(title) <= 120 else title[:117].rstrip() + "..."
+
+
+def _default_pr_body(task: dict[str, Any]) -> str:
+    context = task.get("publication_context")
+    if not isinstance(context, dict):
+        context = {}
+    changed_files = [
+        redact_text(str(item))[:500]
+        for item in context.get("changed_files", [])[:100]
+        if item
+    ]
+    evidence = {
+        str(item.get("criterion_id")): item
+        for item in context.get("verification_evidence", [])[:100]
+        if isinstance(item, dict) and item.get("criterion_id")
+    }
+    criteria: list[str] = []
+    for index, criterion in enumerate(task.get("acceptance_criteria", [])[:50], start=1):
+        if isinstance(criterion, dict):
+            criterion_id = str(criterion.get("id") or f"AC-{index:02d}")
+            criterion_text = criterion.get("text") or criterion.get("criterion") or criterion_id
+        else:
+            criterion_id = f"AC-{index:02d}"
+            criterion_text = criterion
+        verification = evidence.get(criterion_id, {})
+        status = str(verification.get("status") or "not_recorded")
+        mark = "x" if status == "passed" else " "
+        criteria.append(
+            f"- [{mark}] `{redact_text(criterion_id)[:128]}` "
+            f"{redact_text(str(criterion_text))[:1000]} — `{status}`"
+        )
+    verification_lines = [
+        "- `{}:` {} — {}".format(
+            redact_text(str(item.get("verification_id") or item.get("criterion_id") or "check"))[:128],
+            redact_text(str(item.get("status") or "unknown"))[:64],
+            redact_text(str(item.get("evidence_summary") or "No summary recorded"))[:1000],
+        )
+        for item in context.get("verification_evidence", [])[:100]
+        if isinstance(item, dict)
+    ]
+    known_gaps = ["Human review and an explicit merge decision are still required."]
+    if task.get("source_type") == "mcp":
+        known_gaps.append(
+            "Real ChatGPT web ingress acceptance is tracked separately and cannot be inferred from local or CI evidence in this PR."
+        )
+    return "\n".join(
+        [
+            "## Summary",
+            "",
+            redact_text(str(task.get("goal") or "Project Brain task"))[:4000],
+            "",
+            "## Changed files",
+            "",
+            *(f"- `{item}`" for item in changed_files),
+            *(["- No changed-file evidence was supplied."] if not changed_files else []),
+            "",
+            "## Acceptance criteria",
+            "",
+            *(criteria or ["- No acceptance criteria were supplied."]),
+            "",
+            "## Verification",
+            "",
+            *(verification_lines or ["- No verification evidence was recorded."]),
+            "",
+            "## Known gaps / review boundary",
+            "",
+            *(f"- {item}" for item in known_gaps),
+            "",
+            "## Traceability",
+            "",
+            f"- Task: `{task['task_id']}`",
+            f"- Source: `{task['source_type']}`",
+            f"- Canonical head: `{task.get('commit') or 'not_recorded'}`",
+            "- Created by Project Brain Core; this pull request remains Draft and is never automatically merged.",
+        ]
+    )
 
 
 def github_repository_identity(remote_url: str) -> str:
@@ -112,13 +200,10 @@ class GitHubAdapter:
             assert_registered_origin(worktree, project["remote_url"])
             return result
         payload = task.get("payload") or {}
-        title = payload.get("pr_title") or payload.get("commit_message") or task["goal"]
-        body = payload.get("pr_body") or (
-            "Created by Project Brain Core.\n\n"
-            f"Task: `{task['task_id']}`\n"
-            f"Source: `{task['source_type']}`\n"
-            "Execution succeeded and is awaiting review; this PR is not automatically accepted."
+        title = _bounded_pr_title(
+            payload.get("pr_title") or payload.get("commit_message") or task["goal"]
         )
+        body = payload.get("pr_body") or _default_pr_body(task)
         try:
             completed = run_command(
                 [

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import time
 import unittest
 from pathlib import Path
 
 from project_brain.codex import CodexAdapter
-from project_brain.errors import TransientTaskError
+from project_brain.errors import InvalidTaskError, TransientTaskError
 from project_brain.git_history import GitHistoryNormalizer
 from project_brain.worktrees import WorktreeManager, process_alive
 
@@ -70,6 +72,70 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertIsNotNone(session["child_pid"])
         self.assertIsNotNone(session["child_pgid"])
         self.assertIsNotNone(session["heartbeat_at"])
+
+    def test_linked_implementation_prompt_uses_fixed_analysis_snapshot(self) -> None:
+        task = self.fixture.add_task("linked-prompt")
+        result = {
+            "schema_version": 1,
+            "kind": "analysis",
+            "summary": "Preserve the canonical task state machine.",
+            "completed_at": "2026-08-09T00:00:00+00:00",
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        linked = {
+            **task,
+            "workflow_kind": "implement",
+            "analysis_task_id": "analysis-source",
+            "analysis_result": result,
+            "analysis_result_sha256": digest,
+        }
+        prompt = CodexAdapter(self.fixture.store)._execution_prompt(linked)
+        self.assertIn("Fixed result from the approved Analyze task", prompt)
+        self.assertIn("analysis-source", prompt)
+        self.assertIn(digest, prompt)
+        self.assertIn(result["summary"], prompt)
+
+        tampered = {**linked, "analysis_result": {**result, "summary": "changed"}}
+        with self.assertRaisesRegex(InvalidTaskError, "snapshot hash mismatch"):
+            CodexAdapter(self.fixture.store)._execution_prompt(tampered)
+
+    def test_analyze_command_is_forced_to_read_only_sandbox(self) -> None:
+        analyze = {"workflow_kind": "analyze", "local_task_type": "analysis"}
+        self.assertEqual(
+            CodexAdapter._execution_command(
+                analyze,
+                {"codex_command": ["/usr/local/bin/codex", "exec", "-"]},
+            ),
+            ["/usr/local/bin/codex", "exec", "--sandbox", "read-only", "-"],
+        )
+        self.assertEqual(
+            CodexAdapter._execution_command(
+                analyze,
+                {
+                    "codex_command": [
+                        "/usr/local/bin/codex",
+                        "exec",
+                        "--sandbox",
+                        "workspace-write",
+                        "-",
+                    ]
+                },
+            ),
+            [
+                "/usr/local/bin/codex",
+                "exec",
+                "--sandbox",
+                "read-only",
+                "-",
+            ],
+        )
 
     def test_long_running_session_refreshes_agent_and_worktree_heartbeats(self) -> None:
         project = dict(self.project)

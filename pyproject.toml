@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-brain-core"
-version = "0.7.0"
+version = "0.8.0"
 description = "Local task control plane for Project Brain"
 readme = "README.md"
 requires-python = ">=3.10"

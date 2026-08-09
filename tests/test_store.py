@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from project_brain.errors import InvalidTaskError, StateTransitionError
+from project_brain.errors import InvalidTaskError, StateConflictError, StateTransitionError
 from project_brain.models import CanonicalTask, TaskStatus
 from project_brain.store import SCHEMA_VERSION, TaskStore
 from project_brain.runtime import RuntimePaths
@@ -68,7 +68,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(duplicate["task_id"], "first")
 
     def test_mcp_draft_confirmation_gate_and_analysis_link_are_canonical(self) -> None:
-        analyze, created = self.fixture.store.create_mcp_draft(
+        analyze, created, confirmation_available = self.fixture.store.create_mcp_draft(
             CanonicalTask(
                 task_id="analyze-draft",
                 project_id="project-one",
@@ -81,17 +81,40 @@ class StoreTests(unittest.TestCase):
             workflow_kind="analyze",
             analysis_task_id=None,
             confirmation_token="a" * 43,
+            request_sha256="1" * 64,
+            dispatch_plan_sha256="2" * 64,
         )
         self.assertTrue(created)
+        self.assertTrue(confirmation_available)
         self.assertTrue(analyze["dispatch_confirmation_required"])
         self.assertIsNone(self.fixture.store.claim_next())
         with self.assertRaises(InvalidTaskError):
-            self.fixture.store.confirm_mcp_draft("analyze-draft", "b" * 43)
-        self.fixture.store.confirm_mcp_draft("analyze-draft", "a" * 43)
+            self.fixture.store.confirm_mcp_draft(
+                "analyze-draft", "b" * 43, "2" * 64
+            )
+        with self.assertRaises(StateConflictError):
+            self.fixture.store.confirm_mcp_draft(
+                "analyze-draft", "a" * 43, "3" * 64
+            )
+        self.fixture.store.confirm_mcp_draft(
+            "analyze-draft", "a" * 43, "2" * 64
+        )
         claimed = self.fixture.store.claim_next()
         self.assertEqual(claimed["task_id"], "analyze-draft")
+        analysis_result = {
+            "schema_version": 1,
+            "kind": "analysis",
+            "summary": "Use the existing Core task state machine.",
+            "completed_at": "2026-08-09T00:00:00+00:00",
+        }
+        self.fixture.store.set_task_result("analyze-draft", analysis_result)
+        self.fixture.store.transition(
+            "analyze-draft",
+            TaskStatus.COMPLETED,
+            event_type="analysis_completed",
+        )
 
-        implementation, created = self.fixture.store.create_mcp_draft(
+        implementation, created, confirmation_available = self.fixture.store.create_mcp_draft(
             CanonicalTask(
                 task_id="implement-draft",
                 project_id="project-one",
@@ -104,9 +127,14 @@ class StoreTests(unittest.TestCase):
             workflow_kind="implement",
             analysis_task_id="analyze-draft",
             confirmation_token="c" * 43,
+            request_sha256="4" * 64,
+            dispatch_plan_sha256="5" * 64,
         )
         self.assertTrue(created)
+        self.assertTrue(confirmation_available)
         self.assertEqual(implementation["analysis_task_id"], "analyze-draft")
+        self.assertEqual(implementation["analysis_result"], analysis_result)
+        self.assertEqual(len(implementation["analysis_result_sha256"]), 64)
         self.assertIsNone(self.fixture.store.claim_next())
 
     def test_new_revision_supersedes_named_old_task(self) -> None:

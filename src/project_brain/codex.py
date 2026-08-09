@@ -7,14 +7,26 @@ import os
 import threading
 import uuid
 from pathlib import Path
+import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
-from .errors import ExternalCommandError, InvalidTaskError, RecoveryError, TransientTaskError
+from .errors import (
+    ExternalCommandError,
+    InvalidTaskError,
+    RecoveryError,
+    TransientTaskError,
+)
 from .git_history import GitHistoryNormalizer, GitSnapshot, NormalizedHistory
 from .process_supervision import capture_process_identity, terminate_process_group
 from .store import TaskStore
 from .security import redact_text
+
+
+@dataclass(frozen=True)
+class AnalysisExecution:
+    result: dict[str, Any]
 
 
 class CodexAdapter:
@@ -38,34 +50,13 @@ class CodexAdapter:
         project: dict[str, Any],
         worktree: str | Path,
         snapshot: GitSnapshot,
-    ) -> NormalizedHistory:
-        prompt = task["payload"].get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise InvalidTaskError("codex task requires a non-empty prompt")
-        findings = self.store.active_review_findings(task["task_id"])
-        if findings:
-            prompt += (
-                "\n\nActive review findings for the current canonical commit. "
-                "Address every requirement and preserve the prior commit as an ancestor:\n"
-                + json.dumps(
-                    [
-                        {
-                            "severity": item["severity"],
-                            "file": item.get("file"),
-                            "evidence": item["evidence"],
-                            "requirement": item["requirement"],
-                        }
-                        for item in findings
-                    ],
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-        command = project.get("codex_command")
-        if not isinstance(command, list) or not command or not all(
-            isinstance(item, str) and item for item in command
-        ):
-            raise InvalidTaskError("codex_command must be a non-empty array of strings")
+    ) -> NormalizedHistory | AnalysisExecution:
+        prompt = self._execution_prompt(task)
+        command = self._execution_command(task, project)
+        workflow_kind = task.get("workflow_kind") or (
+            "analyze" if task.get("local_task_type") == "analysis" else "implement"
+        )
+        is_analysis = workflow_kind == "analyze"
         session_id = str(uuid.uuid4())
         self.store.record_agent_session(
             session_id=session_id,
@@ -209,7 +200,9 @@ class CodexAdapter:
         finally:
             stop_heartbeat.set()
             if heartbeat_thread is not None:
-                heartbeat_thread.join(timeout=max(1.0, self.heartbeat_interval_seconds * 2))
+                heartbeat_thread.join(
+                    timeout=max(1.0, self.heartbeat_interval_seconds * 2)
+                )
         assert process is not None
         summary = redact_text((stdout + "\n" + stderr).strip())[-4000:]
         self.store.finish_agent_session(
@@ -223,7 +216,114 @@ class CodexAdapter:
                 f"Codex failed with exit code {process.returncode}: {summary}",
                 returncode=process.returncode,
             )
-        message = task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        if is_analysis:
+            self.normalizer.assert_unchanged(worktree, snapshot)
+            result_text = redact_text(stdout.strip())[-20000:]
+            if not result_text:
+                result_text = "Analysis completed without a textual result."
+            from .models import utc_now
+
+            return AnalysisExecution(
+                result={
+                    "schema_version": 1,
+                    "kind": "analysis",
+                    "summary": result_text,
+                    "completed_at": utc_now(),
+                }
+            )
+        message = (
+            task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        )
         if not isinstance(message, str) or not message.strip():
             raise InvalidTaskError("commit_message must be a non-empty string")
         return self.normalizer.normalize(worktree, snapshot, message=message)
+
+    def _execution_prompt(self, task: dict[str, Any]) -> str:
+        prompt = task["payload"].get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise InvalidTaskError("codex task requires a non-empty prompt")
+        workflow_kind = task.get("workflow_kind") or (
+            "analyze" if task.get("local_task_type") == "analysis" else "implement"
+        )
+        analysis_task_id = task.get("analysis_task_id")
+        if workflow_kind == "implement" and analysis_task_id is not None:
+            analysis_result = task.get("analysis_result")
+            analysis_result_sha256 = task.get("analysis_result_sha256")
+            if (
+                not isinstance(analysis_result, dict)
+                or analysis_result.get("kind") != "analysis"
+                or not isinstance(analysis_result_sha256, str)
+            ):
+                raise InvalidTaskError(
+                    "Linked implementation task is missing its fixed analysis result"
+                )
+            canonical_result = json.dumps(
+                analysis_result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            actual_result_sha256 = hashlib.sha256(
+                canonical_result.encode("utf-8")
+            ).hexdigest()
+            if actual_result_sha256 != analysis_result_sha256:
+                raise InvalidTaskError("Linked analysis result snapshot hash mismatch")
+            prompt += (
+                "\n\nFixed result from the approved Analyze task. Treat this immutable "
+                "snapshot as implementation context; do not reload or substitute a later result:\n"
+                + json.dumps(
+                    {
+                        "analysis_task_id": analysis_task_id,
+                        "analysis_result_sha256": analysis_result_sha256,
+                        "result": analysis_result,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        findings = self.store.active_review_findings(task["task_id"])
+        if findings:
+            prompt += (
+                "\n\nActive review findings for the current canonical commit. "
+                "Address every requirement and preserve the prior commit as an ancestor:\n"
+                + json.dumps(
+                    [
+                        {
+                            "severity": item["severity"],
+                            "file": item.get("file"),
+                            "evidence": item["evidence"],
+                            "requirement": item["requirement"],
+                        }
+                        for item in findings
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        return prompt
+
+    @staticmethod
+    def _execution_command(
+        task: dict[str, Any], project: dict[str, Any]
+    ) -> list[str]:
+        command = project.get("codex_command")
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(item, str) and item for item in command)
+        ):
+            raise InvalidTaskError("codex_command must be a non-empty array of strings")
+        command = list(command)
+        workflow_kind = task.get("workflow_kind") or (
+            "analyze" if task.get("local_task_type") == "analysis" else "implement"
+        )
+        is_analysis = workflow_kind == "analyze"
+        if is_analysis and "--sandbox" in command:
+            sandbox_index = command.index("--sandbox")
+            if sandbox_index + 1 >= len(command):
+                raise InvalidTaskError("codex_command has an incomplete sandbox option")
+            command[sandbox_index + 1] = "read-only"
+        elif is_analysis and Path(command[0]).name.startswith("codex") and "exec" in command:
+            exec_index = command.index("exec")
+            command[exec_index + 1 : exec_index + 1] = ["--sandbox", "read-only"]
+        return command

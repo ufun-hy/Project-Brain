@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 import secrets
 from typing import Annotated, Any, Callable, Literal, TypeVar
 
@@ -16,6 +18,7 @@ from project_brain.errors import (
     AlreadyRunningError,
     InvalidTaskError,
     RecoveryError,
+    StateConflictError,
     StateTransitionError,
 )
 from project_brain.locking import RuntimeLock
@@ -53,6 +56,10 @@ ReasonText = Annotated[str, StringConstraints(min_length=1, max_length=500)]
 ConfirmationToken = Annotated[
     str,
     StringConstraints(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]{32,128}$"),
+]
+PlanHash = Annotated[
+    str,
+    StringConstraints(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
 ]
 AcceptanceChallenge = Annotated[
     str,
@@ -110,6 +117,7 @@ class TaskDraftCreateInput(StrictInput):
 class TaskConfirmInput(StrictInput):
     task_id: StableId
     confirmation_token: ConfirmationToken
+    expected_plan_hash: PlanHash
 
 
 class TaskReviewInput(StrictInput):
@@ -132,6 +140,16 @@ def reject_forbidden_control_fields(value: Any, *, path: str = "input") -> None:
             reject_forbidden_control_fields(item, path=f"{path}[{index}]")
 
 
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 T = TypeVar("T")
 
 
@@ -140,7 +158,7 @@ def _error_code(exc: Exception) -> str:
         return "already_running"
     if isinstance(exc, RecoveryError):
         return "recovery_blocked"
-    if isinstance(exc, StateTransitionError):
+    if isinstance(exc, (StateConflictError, StateTransitionError)):
         return "state_conflict"
     if isinstance(exc, (InvalidTaskError, ValidationError, ValueError)):
         message = str(exc).lower()
@@ -217,6 +235,36 @@ class MCPAdapterService:
             expiry = parse_timestamp(request.expires_at)
             if expiry is not None and expiry <= datetime.now(timezone.utc):
                 raise InvalidTaskError("MCP task draft expires_at must be in the future")
+            analysis_result_sha256 = None
+            if request.analysis_task_id is not None:
+                source = self.store.get_task(request.analysis_task_id)
+                result = source.get("result")
+                if isinstance(result, dict):
+                    analysis_result_sha256 = _canonical_sha256(result)
+            execution_plan = {
+                "workflow_kind": request.workflow_kind,
+                "analysis_task_id": request.analysis_task_id,
+                "analysis_result_sha256": analysis_result_sha256,
+                "task_id": request.task_id,
+                "project_id": request.project_id,
+                "execution_boundary": (
+                    "Codex runs in a read-only sandbox and Core rejects any repository change."
+                    if request.workflow_kind == "analyze"
+                    else "Codex may modify only this task's isolated managed worktree."
+                ),
+                "publication_boundary": (
+                    "Analyze never commits, pushes, or creates a pull request."
+                    if request.workflow_kind == "analyze"
+                    else "Published pull requests remain Draft; Project Brain never merges them automatically."
+                ),
+                "review_boundary": (
+                    "The completed analysis result is immutable and may be linked to a later Implement draft."
+                    if request.workflow_kind == "analyze"
+                    else "Needs changes continues the same canonical task, branch, and Draft PR."
+                ),
+            }
+            plan_hash = _canonical_sha256(execution_plan)
+            request_hash = _canonical_sha256(request_value)
             confirmation_token = secrets.token_urlsafe(32)
             canonical = {
                 "task_id": request.task_id,
@@ -232,14 +280,16 @@ class MCPAdapterService:
                 "payload": {"prompt": request.prompt},
                 "expires_at": request.expires_at,
             }
-            task, created = self.store.create_mcp_draft(
+            task, created, confirmation_available = self.store.create_mcp_draft(
                 canonical,
                 workflow_kind=request.workflow_kind,
                 analysis_task_id=request.analysis_task_id,
                 confirmation_token=confirmation_token,
+                request_sha256=request_hash,
+                dispatch_plan_sha256=plan_hash,
             )
             projects = {item["project_id"]: item for item in self.store.list_projects()}
-            if not created:
+            if not created and not confirmation_available:
                 self.store.record_event(
                     task_id=task["task_id"],
                     event_type="mcp_task_draft_create_requested",
@@ -249,25 +299,21 @@ class MCPAdapterService:
                     "status": "duplicate",
                     "code": "ok",
                     "task": task_summary(task, projects),
-                    "next_action": "Inspect the existing task; no new confirmation token was issued.",
+                    "execution_plan": execution_plan,
+                    "plan_hash": plan_hash,
+                    "next_action": "Inspect the existing task; it is already confirmed or has progressed.",
                 }
             return {
-                "status": "draft_created",
+                "status": "draft_created" if created else "draft_replayed",
                 "code": "ok",
                 "task": task_summary(task, projects),
-                "execution_plan": {
-                    "workflow_kind": request.workflow_kind,
-                    "analysis_task_id": request.analysis_task_id,
-                    "task_id": request.task_id,
-                    "project_id": request.project_id,
-                    "execution_boundary": "A fixed Core worker may run only in this task's isolated managed worktree.",
-                    "publication_boundary": "Any published pull request remains Draft; Project Brain never merges it automatically.",
-                    "review_boundary": "Needs changes continues the same canonical task, branch, and Draft PR.",
-                },
+                "execution_plan": execution_plan,
+                "plan_hash": plan_hash,
                 "confirmation": {
                     "required": True,
                     "confirmation_token": confirmation_token,
-                    "next_action": "Present this plan to the user, then call project_brain_tasks_confirm only after explicit approval.",
+                    "expected_plan_hash": plan_hash,
+                    "next_action": "Present this exact plan to the user, then call project_brain_tasks_confirm with its plan hash only after explicit approval.",
                 },
             }
 
@@ -277,7 +323,11 @@ class MCPAdapterService:
         def operation() -> dict[str, Any]:
             reject_forbidden_control_fields(value)
             request = TaskConfirmInput.model_validate(value)
-            task = self.store.confirm_mcp_draft(request.task_id, request.confirmation_token)
+            task = self.store.confirm_mcp_draft(
+                request.task_id,
+                request.confirmation_token,
+                request.expected_plan_hash,
+            )
             projects = {item["project_id"]: item for item in self.store.list_projects()}
             return {
                 "status": "confirmed",
@@ -560,9 +610,14 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
     def project_brain_tasks_confirm(
         task_id: StableId,
         confirmation_token: ConfirmationToken,
+        expected_plan_hash: PlanHash,
     ) -> dict[str, Any]:
         return service.tasks_confirm(
-            {"task_id": task_id, "confirmation_token": confirmation_token}
+            {
+                "task_id": task_id,
+                "confirmation_token": confirmation_token,
+                "expected_plan_hash": expected_plan_hash,
+            }
         )
 
     @mcp.tool(

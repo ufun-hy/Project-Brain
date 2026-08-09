@@ -67,7 +67,56 @@ class GitHubAdapterTests(unittest.TestCase):
         create_args = run_command.call_args_list[1].args[0]
         self.assertIn("--draft", create_args)
         self.assertNotIn("merge", create_args)
+        title = create_args[create_args.index("--title") + 1]
+        body = create_args[create_args.index("--body") + 1]
+        self.assertEqual(title, "Review task")
+        self.assertIn("## Changed files", body)
+        self.assertIn("## Acceptance criteria", body)
+        self.assertIn("## Verification", body)
+        self.assertIn("## Known gaps / review boundary", body)
+        self.assertIn("remains Draft", body)
         self.assertEqual(origin_check.call_count, 2)
+
+    @patch("project_brain.github.git")
+    @patch("project_brain.github.run_command")
+    @patch("project_brain.github.assert_registered_origin")
+    def test_generated_pr_metadata_is_bounded_and_traceable(
+        self, origin_check, run_command, git_command
+    ) -> None:
+        git_command.side_effect = self._git_result
+        run_command.side_effect = [
+            subprocess.CompletedProcess([], 0, "[]", ""),
+            subprocess.CompletedProcess([], 0, "https://example.test/pr/11\n", ""),
+        ]
+        task = {
+            **self.task,
+            "goal": "任务名称：Web Task Intake v1\n\n目标：不要把整段正文当标题。",
+            "source_type": "mcp",
+            "acceptance_criteria": [
+                {"id": "AC-01", "text": "Analyze stays read-only"}
+            ],
+            "publication_context": {
+                "changed_files": ["src/project_brain/engine.py"],
+                "verification_evidence": [
+                    {
+                        "verification_id": "core-tests",
+                        "criterion_id": "AC-01",
+                        "status": "passed",
+                        "evidence_summary": "Core tests passed",
+                    }
+                ],
+            },
+        }
+        GitHubAdapter().publish(task=task, project=self.project, worktree=self.worktree)
+        create_args = run_command.call_args_list[1].args[0]
+        title = create_args[create_args.index("--title") + 1]
+        body = create_args[create_args.index("--body") + 1]
+        self.assertEqual(title, "Web Task Intake v1")
+        self.assertLessEqual(len(title), 120)
+        self.assertIn("`src/project_brain/engine.py`", body)
+        self.assertIn("[x] `AC-01`", body)
+        self.assertIn("Core tests passed", body)
+        self.assertIn("Real ChatGPT web ingress acceptance is tracked separately", body)
 
     @patch("project_brain.github.git")
     @patch("project_brain.github.run_command")

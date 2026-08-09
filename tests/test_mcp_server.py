@@ -132,7 +132,10 @@ class MCPServerSchemaTests(unittest.TestCase):
             .isdisjoint(draft.inputSchema["properties"])
         )
         confirm = next(tool for tool in tools if tool.name == "project_brain_tasks_confirm")
-        self.assertEqual(set(confirm.inputSchema["properties"]), {"task_id", "confirmation_token"})
+        self.assertEqual(
+            set(confirm.inputSchema["properties"]),
+            {"task_id", "confirmation_token", "expected_plan_hash"},
+        )
 
     def test_pinned_sdk_private_schema_hardening_compatibility_contract(self) -> None:
         self.assertEqual(importlib.metadata.version("mcp"), "1.28.1")

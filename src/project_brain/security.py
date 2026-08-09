@@ -29,12 +29,19 @@ SECRET_FLAGS = {
     "--client-secret",
 }
 
+EMAIL_PATTERN = re.compile(
+    r"(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![A-Z0-9._%+-])"
+)
+USER_HOME_PATTERN = re.compile(r"/(Users|home)/[^/\s]+")
+
 
 def redact_text(value: str) -> str:
     redacted = value
     for pattern in KNOWN_SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
     redacted = ASSIGNMENT_PATTERN.sub(lambda match: f"{match.group(1)}=[REDACTED]", redacted)
+    redacted = EMAIL_PATTERN.sub("[REDACTED_EMAIL]", redacted)
+    redacted = USER_HOME_PATTERN.sub(r"/\1/[REDACTED_USER]", redacted)
     return redacted
 
 
