@@ -453,14 +453,112 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(StateTransitionError):
             self.fixture.store.transition("task", TaskStatus.ACCEPTED)
 
-    def test_needs_changes_can_be_claimed_as_a_new_attempt(self) -> None:
+    def test_needs_changes_requires_exact_head_redispatch_before_claim(self) -> None:
         self.fixture.add_task("review-cycle")
         self.fixture.store.claim_next()
+        published = "a" * 40
+        self.fixture.store.set_task_fields("review-cycle", commit=published)
         self.fixture.store.transition("review-cycle", TaskStatus.AWAITING_REVIEW)
         self.fixture.store.transition("review-cycle", TaskStatus.NEEDS_CHANGES)
+        self.assertIsNone(self.fixture.store.claim_next())
+        self.fixture.store.authorize_redispatch(
+            "review-cycle",
+            expected_remote_head_sha=published,
+            observed_remote_head_sha=published,
+            plan_sha256="b" * 64,
+            idempotency_key="review-cycle-revision-1",
+        )
+        self.assertEqual(
+            self.fixture.store.authorize_redispatch(
+                "review-cycle",
+                expected_remote_head_sha=published,
+                observed_remote_head_sha=published,
+                plan_sha256="b" * 64,
+                idempotency_key="review-cycle-revision-1",
+            )["status"],
+            TaskStatus.RETRY_PENDING.value,
+        )
         claimed = self.fixture.store.claim_next()
         self.assertEqual(claimed["task_id"], "review-cycle")
         self.assertEqual(claimed["attempt_count"], 2)
+
+    def test_redispatch_rejects_stale_head_without_side_effects(self) -> None:
+        self.fixture.add_task("stale-redispatch")
+        self.fixture.store.claim_next()
+        published = "a" * 40
+        self.fixture.store.set_task_fields("stale-redispatch", commit=published)
+        self.fixture.store.transition("stale-redispatch", TaskStatus.AWAITING_REVIEW)
+        self.fixture.store.transition("stale-redispatch", TaskStatus.NEEDS_CHANGES)
+        before = self.fixture.store.list_events("stale-redispatch")
+        with self.assertRaises(StateConflictError):
+            self.fixture.store.authorize_redispatch(
+                "stale-redispatch",
+                expected_remote_head_sha="b" * 40,
+                observed_remote_head_sha="b" * 40,
+                plan_sha256="c" * 64,
+                idempotency_key="stale-redispatch-1",
+            )
+        self.assertEqual(self.fixture.store.get_task("stale-redispatch")["status"], TaskStatus.NEEDS_CHANGES.value)
+        self.assertEqual(self.fixture.store.list_events("stale-redispatch"), before)
+
+    def test_concurrent_redispatch_authorization_is_idempotent(self) -> None:
+        self.fixture.add_task("concurrent-redispatch")
+        self.fixture.store.claim_next()
+        published = "c" * 40
+        self.fixture.store.set_task_fields("concurrent-redispatch", commit=published)
+        self.fixture.store.transition("concurrent-redispatch", TaskStatus.AWAITING_REVIEW)
+        self.fixture.store.transition("concurrent-redispatch", TaskStatus.NEEDS_CHANGES)
+
+        def authorize(_: int) -> str:
+            return self.fixture.store.authorize_redispatch(
+                "concurrent-redispatch",
+                expected_remote_head_sha=published,
+                observed_remote_head_sha=published,
+                plan_sha256="d" * 64,
+                idempotency_key="concurrent-redispatch-revision-2",
+            )["status"]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = list(executor.map(authorize, range(2)))
+        self.assertEqual(statuses, [TaskStatus.RETRY_PENDING.value] * 2)
+        self.assertEqual(
+            [
+                item["event_type"]
+                for item in self.fixture.store.list_events("concurrent-redispatch")
+            ].count("explicit_redispatch_authorized"),
+            1,
+        )
+
+    def test_publication_state_survives_database_reopen(self) -> None:
+        self.fixture.add_task("reopen-publication")
+        self.fixture.store.claim_next()
+        published = "e" * 40
+        candidate = "f" * 40
+        self.fixture.store.set_task_fields("reopen-publication", commit=published)
+        self.fixture.store.record_candidate(
+            "reopen-publication", candidate, publication_base_sha=published
+        )
+        self.fixture.store.record_publication_conflict(
+            "reopen-publication",
+            {
+                "branch": "brain/reopen-publication",
+                "expected_remote_head_sha": published,
+                "observed_remote_head_sha": "a" * 40,
+                "publication_base_sha": published,
+                "candidate_sha": candidate,
+            },
+        )
+        reopened = TaskStore(self.fixture.runtime.database)
+        reopened.initialize()
+        task = reopened.get_task("reopen-publication")
+        self.assertEqual(reopened.schema_version(), 12)
+        self.assertEqual(task["canonical_published_head_sha"], published)
+        self.assertEqual(task["commit"], published)
+        self.assertEqual(task["local_candidate_sha"], candidate)
+        self.assertEqual(
+            task["publication_conflict"]["observed_remote_head_sha"], "a" * 40
+        )
+        self.assertEqual(reopened.list_attempts("reopen-publication")[0]["candidate_sha"], candidate)
 
     def test_status_events_are_append_only(self) -> None:
         self.fixture.add_task("audit")

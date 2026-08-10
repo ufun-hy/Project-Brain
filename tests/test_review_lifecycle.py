@@ -55,6 +55,14 @@ class ReviewLifecycleTests(unittest.TestCase):
         changed = applied["task"]
         self.assertEqual(changed["attempt_phase"], AttemptPhase.IMPLEMENTATION.value)
         self.assertEqual(review["head_sha"], first_commit)
+        self.assertIsNone(self.fixture.store.claim_next())
+        self.fixture.store.authorize_redispatch(
+            "review-task",
+            expected_remote_head_sha=first_commit,
+            observed_remote_head_sha=first_commit,
+            plan_sha256="a" * 64,
+            idempotency_key="review-task-revision-2",
+        )
 
         active = self.fixture.store.get_project("project-one")
         active["codex_command"] = [sys.executable, "-c", "raise SystemExit(97)"]
@@ -180,6 +188,43 @@ class ReviewLifecycleTests(unittest.TestCase):
             ],
         )
         self.assertEqual(applied["task"]["status"], TaskStatus.NEEDS_CHANGES.value)
+
+    def test_approval_rejects_missing_or_expired_criterion_evidence(self) -> None:
+        self.fixture.add_task(
+            "evidence-gate",
+            acceptance_criteria=[{"id": "required", "text": "Required evidence"}],
+        )
+        result = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
+        head = result["task"]["commit"]
+        with self.assertRaises(InvalidTaskError):
+            self.fixture.store.apply_review_verdict(
+                "evidence-gate",
+                verdict="approved",
+                head_sha=head,
+                findings=[],
+            )
+
+        # A passed criterion is still invalid once its exact-head evidence expires.
+        task = self.fixture.store.get_task("evidence-gate")
+        verification_set_id = task["verification_set_id"]
+        with self.fixture.store.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE verification_results SET status = 'passed' "
+                "WHERE task_id = 'evidence-gate' AND verification_set_id = ?",
+                (verification_set_id,),
+            )
+            connection.execute(
+                "UPDATE verification_sets SET expires_at = '2020-01-01T00:00:00+00:00' "
+                "WHERE verification_set_id = ?",
+                (verification_set_id,),
+            )
+        with self.assertRaises(InvalidTaskError):
+            self.fixture.store.apply_review_verdict(
+                "evidence-gate",
+                verdict="approved",
+                head_sha=head,
+                findings=[],
+            )
 
     def test_database_failure_rolls_back_review_findings_transition_and_event(self) -> None:
         self.fixture.add_task(

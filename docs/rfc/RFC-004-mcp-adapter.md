@@ -114,9 +114,13 @@ rotates that digest and returns a replacement token so a lost response cannot
 strand the canonical task.
 
 MCP intake deliberately does not expose supersession. Review-driven
-`needs_changes` stays on the same canonical task, branch, and Draft PR; Core's
+`needs_changes` remains on the same canonical task, branch, and Draft PR only
+after an explicit `tasks_redispatch` authorization bound to the exact current
+remote head. It is not claimable by default. A publication conflict is retained
+as a recoverable forensic state, but the conflicted task cannot be resumed or
+reused; a new revision must be created from the latest remote head. Core's
 existing Store-owned supersession logic remains available only to its local
-canonical ingress where a replacement revision is explicitly warranted.
+canonical ingress where that replacement revision is explicitly warranted.
 
 Review accepts only `task_id`, exact `head_sha`, `approved|needs_changes`, and
 bounded structured findings. It delegates the verdict, finding inserts, task

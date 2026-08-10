@@ -198,6 +198,10 @@ bounded task list/detail (including redacted agent-log and linked Analyze-result
 summaries), exact-head review, and read-only recovery preview. Drafts use a
 task-bound confirmation gate in the canonical Core record; they cannot be claimed
 until the user has explicitly approved the returned plan and matching `plan_hash`.
+Review-driven `needs_changes` retries additionally require explicit exact-head
+redispatch authorization; a publication conflict preserves the canonical
+published head and local forensic candidate and requires a new revision from the
+latest remote head.
 An exact unconfirmed create replay rotates and returns a replacement confirmation
 token, while a reused task/logical identity with different intent fails closed.
 Analyze runs with a read-only Codex sandbox, rejects repository changes, and never

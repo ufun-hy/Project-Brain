@@ -70,6 +70,17 @@ class TransientTaskError(ProjectBrainError):
     retryable = True
 
 
+class PublicationConflictError(ProjectBrainError):
+    """The remote task branch moved or disagreed during publication."""
+
+    category = "publication_conflict"
+    retryable = False
+
+    def __init__(self, message: str, *, conflict: dict[str, object]) -> None:
+        super().__init__(message, retryable=False, next_action_code="new_revision")
+        self.conflict = conflict
+
+
 class AlreadyRunningError(ProjectBrainError):
     category = "already_running"
     retryable = True

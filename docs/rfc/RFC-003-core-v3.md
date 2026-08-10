@@ -75,8 +75,12 @@ push/PR operation. It reads the completed verification set referenced by the
 task and requires that set's canonical head to equal the task commit; it never
 uses the retry's new attempt number as an evidence lookup key. A verification
 retry creates a new append-only set against the same canonical commit. A
-`needs_changes` verdict resets the next attempt to `implementation`, keeps the
-reviewed canonical commit as an ancestor, and creates a new canonical commit.
+`needs_changes` verdict resets the next attempt to `implementation`, but the
+task is not claimable until an explicit exact-head redispatch authorization is
+recorded. It keeps the reviewed canonical commit as an ancestor and creates a
+new candidate commit. A publication conflict keeps the canonical published head
+separate from the local forensic candidate and requires a new revision from the
+latest remote head; it never force-pushes or auto-merges.
 
 Reviews are bound to the current canonical `head_sha`. Verdict validation,
 findings, transition, phase change, and event are one immediate transaction.

@@ -21,6 +21,7 @@ from project_brain.errors import (
     StateConflictError,
     StateTransitionError,
 )
+from project_brain.github import GitHubAdapter
 from project_brain.locking import RuntimeLock
 from project_brain.models import TaskStatus, parse_timestamp
 from project_brain.recovery import RecoveryManager
@@ -60,6 +61,14 @@ ConfirmationToken = Annotated[
 PlanHash = Annotated[
     str,
     StringConstraints(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+]
+RedispatchKey = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    ),
 ]
 AcceptanceChallenge = Annotated[
     str,
@@ -125,6 +134,13 @@ class TaskReviewInput(StrictInput):
     head_sha: ShaText
     verdict: Literal["approved", "needs_changes"]
     findings: Annotated[list[ReviewFindingInput], Field(max_length=50)]
+
+
+class TaskRedispatchInput(StrictInput):
+    task_id: StableId
+    expected_remote_head_sha: ShaText
+    redispatch_plan_sha256: PlanHash
+    idempotency_key: RedispatchKey
 
 
 def reject_forbidden_control_fields(value: Any, *, path: str = "input") -> None:
@@ -343,6 +359,39 @@ class MCPAdapterService:
 
         return _guard(operation)  # type: ignore[return-value]
 
+    def tasks_redispatch(self, value: dict[str, Any]) -> dict[str, Any]:
+        def operation() -> dict[str, Any]:
+            reject_forbidden_control_fields(value)
+            request = TaskRedispatchInput.model_validate(value)
+            task = self.store.get_task(request.task_id)
+            project = self.store.task_execution_profile(task)
+            if not task.get("branch"):
+                raise StateConflictError("Task has no registered publication branch")
+            observed = GitHubAdapter().remote_head(
+                task=task,
+                project=project,
+                worktree=project["repo_path"],
+            )
+            if observed is None:
+                raise StateConflictError("Task publication branch does not exist remotely")
+            updated = self.store.authorize_redispatch(
+                request.task_id,
+                expected_remote_head_sha=request.expected_remote_head_sha,
+                observed_remote_head_sha=observed,
+                plan_sha256=request.redispatch_plan_sha256,
+                idempotency_key=request.idempotency_key,
+            )
+            projects = {item["project_id"]: item for item in self.store.list_projects()}
+            return {
+                "status": "redispatch_authorized",
+                "code": "ok",
+                "task": task_summary(updated, projects),
+                "observed_remote_head_sha": observed,
+                "next_action": "Call project_brain_queue_dispatch_next to start the explicitly authorized worker.",
+            }
+
+        return _guard(operation)  # type: ignore[return-value]
+
     def queue_dispatch_next(self, *, reason: str | None = None) -> dict[str, Any]:
         return _guard(lambda: self.dispatcher.dispatch(reason=reason))  # type: ignore[return-value]
 
@@ -415,7 +464,7 @@ class MCPAdapterService:
                     "created_at": review["created_at"],
                 },
                 "next_action": (
-                    "Call project_brain_queue_dispatch_next for the requested revision."
+                    "Call project_brain_tasks_redispatch with the exact current remote head before dispatch."
                     if request.verdict == "needs_changes"
                     else "Await explicit user merge authorization; Project Brain will not merge."
                 ),
@@ -622,6 +671,30 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
                 "task_id": task_id,
                 "confirmation_token": confirmation_token,
                 "expected_plan_hash": expected_plan_hash,
+            }
+        )
+
+    @mcp.tool(
+        name="project_brain_tasks_redispatch",
+        description=(
+            "Explicitly authorize one needs_changes revision at the exact current "
+            "remote task-branch head. This does not dispatch or execute the task."
+        ),
+        annotations=CREATE_WRITE,
+        structured_output=True,
+    )
+    def project_brain_tasks_redispatch(
+        task_id: StableId,
+        expected_remote_head_sha: ShaText,
+        redispatch_plan_sha256: PlanHash,
+        idempotency_key: RedispatchKey,
+    ) -> dict[str, Any]:
+        return service.tasks_redispatch(
+            {
+                "task_id": task_id,
+                "expected_remote_head_sha": expected_remote_head_sha,
+                "redispatch_plan_sha256": redispatch_plan_sha256,
+                "idempotency_key": idempotency_key,
             }
         )
 

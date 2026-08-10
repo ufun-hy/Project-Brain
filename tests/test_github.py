@@ -7,7 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from project_brain.errors import TaskHistoryError
+from project_brain.errors import (
+    ExternalCommandError,
+    PublicationConflictError,
+    TaskHistoryError,
+)
 from project_brain.github import GitHubAdapter
 
 
@@ -164,6 +168,63 @@ class GitHubAdapterTests(unittest.TestCase):
                         project=self.project,
                         worktree=self.worktree,
                     )
+
+    @patch("project_brain.github.run_command")
+    @patch("project_brain.github.assert_registered_origin")
+    def test_remote_drift_is_rejected_before_push(
+        self, origin_check, run_command
+    ) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def drifted_git(_repo, *args, **kwargs):
+            calls.append(tuple(args))
+            if "ls-remote" in args:
+                return subprocess.CompletedProcess(
+                    [], 0, f"{'b' * 40}\trefs/heads/{self.task['branch']}\n", ""
+                )
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with patch("project_brain.github.git", side_effect=drifted_git):
+            with self.assertRaises(PublicationConflictError) as raised:
+                GitHubAdapter().publish(
+                    task={**self.task, "local_candidate_sha": "c" * 40},
+                    project=self.project,
+                    worktree=self.worktree,
+                )
+        self.assertEqual(raised.exception.category, "publication_conflict")
+        self.assertEqual(raised.exception.conflict["observed_remote_head_sha"], "b" * 40)
+        self.assertFalse(any("push" in call for call in calls))
+        self.assertFalse(any("--force" in call for call in calls))
+
+    @patch("project_brain.github.run_command")
+    @patch("project_brain.github.assert_registered_origin")
+    def test_non_fast_forward_rechecks_remote_without_force_push(
+        self, origin_check, run_command
+    ) -> None:
+        ls_remote_calls = 0
+        calls: list[tuple[str, ...]] = []
+
+        def raced_git(_repo, *args, **kwargs):
+            nonlocal ls_remote_calls
+            calls.append(tuple(args))
+            if "ls-remote" in args:
+                ls_remote_calls += 1
+                remote = "a" * 40 if ls_remote_calls == 1 else "b" * 40
+                return subprocess.CompletedProcess(
+                    [], 0, f"{remote}\trefs/heads/{self.task['branch']}\n", ""
+                )
+            if "push" in args:
+                raise ExternalCommandError("non-fast-forward", returncode=1)
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with patch("project_brain.github.git", side_effect=raced_git):
+            with self.assertRaises(PublicationConflictError):
+                GitHubAdapter().publish(
+                    task={**self.task, "local_candidate_sha": "c" * 40},
+                    project=self.project,
+                    worktree=self.worktree,
+                )
+        self.assertFalse(any("--force" in call for call in calls))
 
     def _existing_pr(self, url: str, *, is_draft: bool = True) -> dict:
         return {

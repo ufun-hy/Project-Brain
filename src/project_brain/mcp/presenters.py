@@ -28,15 +28,20 @@ SAFE_EVENT_PAYLOAD_FIELDS = {
     "analysis_task_id",
     "analysis_result_sha256",
     "by_task_id",
+    "candidate_sha",
     "canonical_head_sha",
+    "expected_remote_head_sha",
     "category",
     "dispatch_status",
     "dispatch_plan_sha256",
     "head_sha",
+    "observed_remote_head_sha",
     "phase",
     "reason",
     "resolution",
     "retryable",
+    "publication_base_sha",
+    "redispatch_plan_sha256",
     "review_id",
     "revision",
     "source_attempt_number",
@@ -72,6 +77,22 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "branch": bounded_text(value.get("branch"), limit=256),
         "commit": bounded_text(value.get("commit"), limit=128),
         "head_sha": bounded_text(value.get("head_sha"), limit=128),
+        "canonical_published_head_sha": bounded_text(
+            value.get("canonical_published_head_sha"), limit=128
+        ),
+        "local_candidate_sha": bounded_text(value.get("local_candidate_sha"), limit=128),
+        "published_head_sha": bounded_text(value.get("published_head_sha"), limit=128),
+        "publication_conflict": value.get("publication_conflict"),
+        "redispatch": {
+            "required": value.get("status") == "needs_changes",
+            "authorized": value.get("redispatch_authorized_at") is not None,
+            "expected_remote_head_sha": bounded_text(
+                value.get("redispatch_expected_remote_head_sha"), limit=128
+            ),
+            "plan_sha256": value.get("redispatch_plan_sha256"),
+            "authorized_at": value.get("redispatch_authorized_at"),
+            "consumed_at": value.get("redispatch_consumed_at"),
+        },
         "pr_url": bounded_text(value.get("pr_url"), limit=1_000),
         "last_error": bounded_text(value.get("last_error")),
         "next_action": bounded_text(value.get("next_action"), limit=500),
@@ -331,6 +352,7 @@ def task_detail_view(
                 "status": verification_set.get("status"),
                 "created_at": verification_set.get("created_at"),
                 "completed_at": verification_set.get("completed_at"),
+                "expires_at": verification_set.get("expires_at"),
             }
             if verification_set
             else None,

@@ -125,6 +125,7 @@ Current references:
 | `project_brain_tasks_create` | write | Create a default Implement draft; it cannot bypass confirmation |
 | `project_brain_tasks_create_draft` | write | Create an `analyze` or `implement` canonical task draft and return its execution plan |
 | `project_brain_tasks_confirm` | write | Persist explicit approval of the exact draft plan before it can be claimed |
+| `project_brain_tasks_redispatch` | write | Explicitly authorize one `needs_changes` retry at the exact current remote head; it does not dispatch |
 | `project_brain_queue_dispatch_next` | write | Start one fixed one-shot worker after lock/claim preflight |
 | `project_brain_tasks_list` | read | At most 100 task summaries |
 | `project_brain_tasks_get` | read | Bounded current evidence, reviews, archive metadata, and recent events |

@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -499,6 +499,25 @@ CREATE INDEX tasks_dispatch_gate_idx
     ON tasks(status, dispatch_confirmation_required, dispatch_confirmed_at, created_at);
 """
 
+MIGRATION_12 = """
+ALTER TABLE tasks ADD COLUMN canonical_published_head_sha TEXT;
+ALTER TABLE tasks ADD COLUMN local_candidate_sha TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_expected_remote_head_sha TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_plan_sha256 TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_idempotency_key TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_authorized_at TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_consumed_at TEXT;
+ALTER TABLE tasks ADD COLUMN publication_conflict_json TEXT;
+
+ALTER TABLE task_attempts ADD COLUMN publication_base_sha TEXT;
+ALTER TABLE task_attempts ADD COLUMN candidate_sha TEXT;
+ALTER TABLE task_attempts ADD COLUMN observed_remote_head_sha TEXT;
+ALTER TABLE verification_sets ADD COLUMN expires_at TEXT;
+
+CREATE INDEX tasks_redispatch_gate_idx
+    ON tasks(status, redispatch_authorized_at, redispatch_consumed_at, created_at);
+"""
+
 MIGRATIONS = {
     1: MIGRATION_1,
     2: MIGRATION_2,
@@ -511,4 +530,5 @@ MIGRATIONS = {
     9: MIGRATION_9,
     10: MIGRATION_10,
     11: MIGRATION_11,
+    12: MIGRATION_12,
 }

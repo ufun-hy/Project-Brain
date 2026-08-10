@@ -8,7 +8,12 @@ from urllib.parse import urlparse
 from typing import Any
 
 from .commands import git, run_command
-from .errors import ExternalCommandError, TaskHistoryError, TransientTaskError
+from .errors import (
+    ExternalCommandError,
+    PublicationConflictError,
+    TaskHistoryError,
+    TransientTaskError,
+)
 from .repository import assert_registered_origin
 from .security import redact_text
 
@@ -47,7 +52,7 @@ def _default_pr_body(task: dict[str, Any]) -> str:
             criterion_id = f"AC-{index:02d}"
             criterion_text = criterion
         verification = evidence.get(criterion_id, {})
-        status = str(verification.get("status") or "not_recorded")
+        status = str(verification.get("status") or "not_verified")
         mark = "x" if status == "passed" else " "
         criteria.append(
             f"- [{mark}] `{redact_text(criterion_id)[:128]}` "
@@ -84,7 +89,7 @@ def _default_pr_body(task: dict[str, Any]) -> str:
             "",
             "## Verification",
             "",
-            *(verification_lines or ["- No verification evidence was recorded."]),
+            *(verification_lines or ["- No verification evidence was recorded; status is `not_verified`."]),
             "",
             "## Known gaps / review boundary",
             "",
@@ -94,7 +99,7 @@ def _default_pr_body(task: dict[str, Any]) -> str:
             "",
             f"- Task: `{task['task_id']}`",
             f"- Source: `{task['source_type']}`",
-            f"- Canonical head: `{task.get('commit') or 'not_recorded'}`",
+            f"- Canonical published head: `{task.get('canonical_published_head_sha') or task.get('commit') or 'not_verified'}`",
             "- Created by Project Brain Core; this pull request remains Draft and is never automatically merged.",
         ]
     )
@@ -129,6 +134,35 @@ def _head_repository_identity(value: Any) -> str | None:
 
 
 class GitHubAdapter:
+    def remote_head(
+        self, *, task: dict[str, Any], project: dict[str, Any], worktree: str | Path
+    ) -> str | None:
+        """Read the exact remote task branch head without publishing anything."""
+        assert_registered_origin(worktree, project["remote_url"])
+        return self._remote_task_head(worktree=worktree, branch=task["branch"])
+
+    @staticmethod
+    def _remote_task_head(
+        *, worktree: str | Path, branch: str
+    ) -> str | None:
+        # Fetch is deliberately best-effort here: a first publication has no
+        # remote task branch yet. ls-remote remains the authoritative exact
+        # remote observation and never updates a canonical task field.
+        git(worktree, "fetch", "origin", branch, retryable=True, check=False)
+        remote = git(
+            worktree,
+            "ls-remote",
+            "--heads",
+            "origin",
+            branch,
+            retryable=True,
+        ).stdout.strip().split()
+        if not remote:
+            return None
+        if len(remote) != 2:
+            raise TaskHistoryError(f"Remote task branch response is malformed: {branch}")
+        return remote[0]
+
     def publish(
         self,
         *,
@@ -138,21 +172,71 @@ class GitHubAdapter:
     ) -> dict[str, Any]:
         branch = task["branch"]
         assert_registered_origin(worktree, project["remote_url"])
+        candidate_sha = task.get("local_candidate_sha") or task.get("commit")
+        expected = (
+            task.get("canonical_published_head_sha")
+            or task.get("commit")
+            or task.get("base_sha")
+        )
+        if not candidate_sha or not expected:
+            raise TaskHistoryError("Publication requires a candidate and an expected base head")
+        observed = self._remote_task_head(worktree=worktree, branch=branch)
+        if observed is not None and observed != expected:
+            raise PublicationConflictError(
+                f"Remote task branch moved before publication: {branch}",
+                conflict={
+                    "branch": branch,
+                    "expected_remote_head_sha": expected,
+                    "observed_remote_head_sha": observed,
+                    "publication_base_sha": expected,
+                    "candidate_sha": candidate_sha,
+                },
+            )
+        if git(
+            worktree,
+            "merge-base",
+            "--is-ancestor",
+            expected,
+            candidate_sha,
+            check=False,
+        ).returncode:
+            raise PublicationConflictError(
+                f"Publication candidate is not descended from the expected head: {branch}",
+                conflict={
+                    "branch": branch,
+                    "expected_remote_head_sha": expected,
+                    "observed_remote_head_sha": observed or "",
+                    "publication_base_sha": expected,
+                    "candidate_sha": candidate_sha,
+                },
+            )
         try:
             git(worktree, "push", "-u", "origin", branch, retryable=True, timeout=600)
         except ExternalCommandError as exc:
+            after_failure = self._remote_task_head(worktree=worktree, branch=branch)
+            if after_failure is not None and after_failure != expected:
+                raise PublicationConflictError(
+                    f"Remote task branch moved during publication: {branch}",
+                    conflict={
+                        "branch": branch,
+                        "expected_remote_head_sha": expected,
+                        "observed_remote_head_sha": after_failure,
+                        "publication_base_sha": expected,
+                        "candidate_sha": candidate_sha,
+                    },
+                ) from exc
             raise TransientTaskError(f"Git push failed: {exc}") from exc
-        remote = git(
-            worktree,
-            "ls-remote",
-            "--heads",
-            "origin",
-            branch,
-            retryable=True,
-        ).stdout.strip().split()
-        if len(remote) != 2 or remote[0] != task.get("commit"):
-            raise TaskHistoryError(
-                f"Published remote branch does not match canonical commit: {branch}"
+        remote_head = self._remote_task_head(worktree=worktree, branch=branch)
+        if remote_head != candidate_sha:
+            raise PublicationConflictError(
+                f"Published remote branch does not match candidate: {branch}",
+                conflict={
+                    "branch": branch,
+                    "expected_remote_head_sha": expected,
+                    "observed_remote_head_sha": remote_head or "",
+                    "publication_base_sha": expected,
+                    "candidate_sha": candidate_sha,
+                },
             )
         result: dict[str, Any] = {"pushed": True, "pr_url": task.get("pr_url")}
         if not project.get("auto_pr", True):
@@ -176,15 +260,15 @@ class GitHubAdapter:
         except (ExternalCommandError, json.JSONDecodeError) as exc:
             raise TransientTaskError(f"Draft PR lookup failed: {exc}") from exc
         if existing:
-            candidate = existing[0]
+            existing_pr = existing[0]
             mismatches: list[str] = []
-            if candidate.get("baseRefName") != project["default_branch"]:
+            if existing_pr.get("baseRefName") != project["default_branch"]:
                 mismatches.append("base branch")
-            if candidate.get("headRefName") != branch:
+            if existing_pr.get("headRefName") != branch:
                 mismatches.append("head branch")
-            if candidate.get("headRefOid") != task.get("commit"):
+            if existing_pr.get("headRefOid") != candidate_sha:
                 mismatches.append("head commit")
-            head_repository = _head_repository_identity(candidate.get("headRepository"))
+            head_repository = _head_repository_identity(existing_pr.get("headRepository"))
             if (
                 not head_repository
                 or head_repository.lower() != repository_identity.lower()
@@ -194,9 +278,9 @@ class GitHubAdapter:
                 raise TaskHistoryError(
                     f"Open PR for {branch} has mismatched " + ", ".join(mismatches)
                 )
-            if candidate.get("isDraft") is not True:
+            if existing_pr.get("isDraft") is not True:
                 raise TaskHistoryError(f"Open PR for {branch} is not a Draft PR")
-            result["pr_url"] = candidate.get("url")
+            result["pr_url"] = existing_pr.get("url")
             assert_registered_origin(worktree, project["remote_url"])
             return result
         payload = task.get("payload") or {}

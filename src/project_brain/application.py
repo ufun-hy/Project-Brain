@@ -24,7 +24,9 @@ NEXT_ACTION = {
     ),
     TaskStatus.RETRY_PENDING.value: "Retry from a new apply process after the transient issue clears.",
     TaskStatus.VERIFICATION_FAILED.value: "Inspect verification evidence, then request changes.",
-    TaskStatus.NEEDS_CHANGES.value: "Run project-brain apply for the requested revision work.",
+    TaskStatus.NEEDS_CHANGES.value: (
+        "Explicitly authorize redispatch at the current published remote head; do not apply directly."
+    ),
     TaskStatus.AWAITING_REVIEW.value: "Review evidence and the Draft PR; do not merge automatically.",
     TaskStatus.READY_TO_MERGE.value: "Await explicit user merge authorization.",
     TaskStatus.MERGING.value: "Wait for the authorized merge operation.",
@@ -50,11 +52,17 @@ def task_view(
         for key, value in task.items()
         if key not in {"execution_profile", "payload"}
     }
+    next_action = NEXT_ACTION.get(task["status"], "Inspect task state.")
+    if task.get("publication_conflict"):
+        next_action = (
+            "Publication conflict is preserved for forensics; create a new revision "
+            "from the latest remote head. Do not resume or reuse this task."
+        )
     return {
         **safe_task,
         "project": projects.get(task["project_id"], {}).get("name", task["project_id"]),
         "elapsed_seconds": elapsed,
-        "next_action": NEXT_ACTION.get(task["status"], "Inspect task state."),
+        "next_action": next_action,
     }
 
 

@@ -73,7 +73,6 @@ TERMINAL_STATUSES = {
 CLAIMABLE_STATUSES = {
     TaskStatus.PENDING,
     TaskStatus.RETRY_PENDING,
-    TaskStatus.NEEDS_CHANGES,
 }
 
 WORKTREE_RETAINED_STATUSES = {
@@ -122,7 +121,6 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.EXPIRED,
     },
     TaskStatus.NEEDS_CHANGES: {
-        TaskStatus.RUNNING,
         TaskStatus.SUPERSEDED,
         TaskStatus.EXPIRED,
         TaskStatus.FAILED,

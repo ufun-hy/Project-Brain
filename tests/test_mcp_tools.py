@@ -391,6 +391,52 @@ class MCPToolTests(unittest.TestCase):
         self.assertEqual(len(self.fixture.store.list_reviews("review-mcp")), 1)
         self.assertEqual(self.dispatcher.calls, [])
 
+    def test_redispatch_requires_current_remote_head_and_is_idempotent(self) -> None:
+        repo, remote = create_remote_clone(self.fixture.root, "redispatch-mcp")
+        project = self.fixture.add_project(
+            project_id="redispatch-project",
+            repo_path=str(repo),
+            remote_url=str(remote),
+        )
+        branch = "brain/redispatch-mcp"
+        published = git(repo, "rev-parse", "HEAD").stdout.strip()
+        git(repo, "branch", branch, published)
+        git(repo, "push", "origin", branch)
+        self.fixture.add_task(
+            "redispatch-mcp",
+            project_id=project["project_id"],
+        )
+        self.fixture.store.claim_next()
+        self.fixture.store.set_task_fields(
+            "redispatch-mcp",
+            branch=branch,
+            commit=published,
+            head_sha=published,
+        )
+        self.fixture.store.transition("redispatch-mcp", TaskStatus.AWAITING_REVIEW)
+        self.fixture.store.transition("redispatch-mcp", TaskStatus.NEEDS_CHANGES)
+        value = {
+            "task_id": "redispatch-mcp",
+            "expected_remote_head_sha": published,
+            "redispatch_plan_sha256": "1" * 64,
+            "idempotency_key": "redispatch-mcp-revision-2",
+        }
+        first = self.service.tasks_redispatch(value)
+        second = self.service.tasks_redispatch(value)
+        self.assertEqual(first["status"], "redispatch_authorized")
+        self.assertEqual(second["status"], "redispatch_authorized")
+        self.assertEqual(
+            self.fixture.store.get_task("redispatch-mcp")["status"],
+            TaskStatus.RETRY_PENDING.value,
+        )
+        self.assertEqual(
+            [
+                item["event_type"]
+                for item in self.fixture.store.list_events("redispatch-mcp")
+            ].count("explicit_redispatch_authorized"),
+            1,
+        )
+
     def test_recovery_preview_is_read_only_and_exposes_no_resolution(self) -> None:
         self.fixture.add_task("preview-mcp")
         self.fixture.store.claim_next()
