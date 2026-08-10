@@ -205,10 +205,6 @@ class StoreTests(unittest.TestCase):
     def test_active_and_merge_owned_states_cannot_be_superseded(self) -> None:
         transitions = {
             TaskStatus.RUNNING: [TaskStatus.RUNNING],
-            TaskStatus.RECOVERY_BLOCKED: [
-                TaskStatus.RUNNING,
-                TaskStatus.RECOVERY_BLOCKED,
-            ],
             TaskStatus.MERGING: [
                 TaskStatus.RUNNING,
                 TaskStatus.AWAITING_REVIEW,
@@ -276,7 +272,7 @@ class StoreTests(unittest.TestCase):
         before_events = self.fixture.store.list_events("owned-recovery")
         before_all_events = self.fixture.store.list_events()
 
-        with self.assertRaises(StateTransitionError):
+        with self.assertRaises(StateConflictError):
             self.fixture.store.insert_task(
                 CanonicalTask(
                     task_id="unsafe-recovery-replacement",
@@ -322,6 +318,63 @@ class StoreTests(unittest.TestCase):
             self.assertNotIn(new_id, {task["task_id"] for task in self.fixture.store.list_tasks()})
         self.assertEqual(self.fixture.store.get_task("higher-revision"), before_task)
         self.assertEqual(self.fixture.store.list_events("higher-revision"), before_events)
+
+    def test_recovery_blocked_can_be_superseded_with_canonical_base_preserved(self) -> None:
+        old = self.fixture.add_task(
+            "blocked-publication",
+            dedupe_key="publication-flow",
+            revision=1,
+        )
+        self.fixture.store.claim_next()
+        published = "a" * 40
+        candidate = "c" * 40
+        self.fixture.store.set_task_fields(
+            old["task_id"],
+            branch="brain/blocked-publication",
+            commit=published,
+            head_sha=published,
+        )
+        self.fixture.store.record_candidate(
+            old["task_id"], candidate, publication_base_sha=published
+        )
+        self.fixture.store.record_publication_conflict(
+            old["task_id"],
+            {
+                "branch": "brain/blocked-publication",
+                "expected_remote_head_sha": published,
+                "observed_remote_head_sha": "b" * 40,
+                "publication_base_sha": published,
+                "candidate_sha": candidate,
+            },
+        )
+        self.fixture.store.block_running_task(
+            old["task_id"], reason="publication conflict requires a new revision"
+        )
+        replacement, created = self.fixture.store.insert_task(
+            CanonicalTask(
+                task_id="blocked-publication-revision-2",
+                project_id="project-one",
+                dedupe_key="publication-flow",
+                revision=2,
+                source_type="test",
+                goal="superseding recovery revision",
+                base_sha=published,
+                supersedes=old["task_id"],
+                payload={"prompt": "test"},
+            )
+        )
+        self.assertTrue(created)
+        self.assertEqual(replacement["base_sha"], published)
+        self.assertEqual(
+            self.fixture.store.get_task(old["task_id"])["status"],
+            TaskStatus.SUPERSEDED.value,
+        )
+        preserved = self.fixture.store.get_task(old["task_id"])
+        self.assertEqual(preserved["publication_conflict"]["candidate_sha"], candidate)
+        self.assertEqual(
+            self.fixture.store.list_events(old["task_id"])[-1]["event_type"],
+            "task_superseded",
+        )
 
     def test_terminal_history_is_preserved_by_higher_revisions(self) -> None:
         terminal_paths = {

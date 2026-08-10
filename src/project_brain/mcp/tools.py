@@ -116,6 +116,7 @@ class TaskDraftCreateInput(StrictInput):
     revision: Annotated[int, Field(ge=1, le=1_000_000)]
     workflow_kind: Literal["analyze", "implement"]
     analysis_task_id: StableId | None = None
+    supersedes: StableId | None = None
     goal: ShortText
     acceptance_criteria: Annotated[list[AcceptanceCriterionInput], Field(max_length=50)]
     prompt: PromptText
@@ -265,6 +266,7 @@ class MCPAdapterService:
             execution_plan = {
                 "workflow_kind": request.workflow_kind,
                 "analysis_task_id": request.analysis_task_id,
+                "supersedes": request.supersedes,
                 "analysis_result_sha256": analysis_result_sha256,
                 "task_id": request.task_id,
                 "project_id": request.project_id,
@@ -300,6 +302,7 @@ class MCPAdapterService:
                 ],
                 "payload": {"prompt": request.prompt},
                 "expires_at": request.expires_at,
+                "supersedes": request.supersedes,
             }
             task, created, confirmation_available = self.store.create_mcp_draft(
                 canonical,

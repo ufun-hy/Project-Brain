@@ -5,12 +5,13 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from project_brain.errors import (
     ExternalCommandError,
     PublicationConflictError,
     TaskHistoryError,
+    TransientTaskError,
 )
 from project_brain.github import GitHubAdapter
 
@@ -195,6 +196,112 @@ class GitHubAdapterTests(unittest.TestCase):
         self.assertEqual(raised.exception.conflict["observed_remote_head_sha"], "b" * 40)
         self.assertFalse(any("push" in call for call in calls))
         self.assertFalse(any("--force" in call for call in calls))
+
+    @patch("project_brain.github.run_command")
+    @patch("project_brain.github.assert_registered_origin")
+    def test_missing_remote_branch_is_fail_closed_after_published_head(
+        self, origin_check, run_command
+    ) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def missing_git(_repo, *args, **kwargs):
+            calls.append(tuple(args))
+            if "ls-remote" in args:
+                return subprocess.CompletedProcess([], 0, "", "")
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with patch("project_brain.github.git", side_effect=missing_git):
+            with self.assertRaises(PublicationConflictError) as raised:
+                GitHubAdapter().publish(
+                    task={
+                        **self.task,
+                        "canonical_published_head_sha": self.task["commit"],
+                        "local_candidate_sha": "c" * 40,
+                    },
+                    project=self.project,
+                    worktree=self.worktree,
+                )
+        self.assertEqual(raised.exception.category, "publication_conflict")
+        self.assertEqual(raised.exception.conflict["observed_remote_head_sha"], "")
+        self.assertFalse(any("push" in call for call in calls))
+        self.assertEqual(run_command.call_count, 0)
+
+    @patch("project_brain.github.assert_registered_origin")
+    def test_push_success_pr_lookup_failure_then_candidate_retry_completes_pr(
+        self, origin_check
+    ) -> None:
+        candidate = "c" * 40
+        expected = self.task["commit"]
+        remote_heads = iter([expected, candidate, candidate])
+        git_calls: list[tuple[str, ...]] = []
+
+        def publishing_git(_repo, *args, **kwargs):
+            git_calls.append(tuple(args))
+            if "ls-remote" in args:
+                remote = next(remote_heads)
+                return subprocess.CompletedProcess(
+                    [], 0, f"{remote}\trefs/heads/{self.task['branch']}\n", ""
+                )
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        existing = self._existing_pr("https://example.test/pr/retry")
+        existing["headRefOid"] = candidate
+        run_command = Mock()
+        run_command.side_effect = [
+            ExternalCommandError("temporary Draft PR lookup failure", returncode=1),
+            subprocess.CompletedProcess([], 0, json.dumps([existing]), ""),
+        ]
+        task = {
+            **self.task,
+            "canonical_published_head_sha": expected,
+            "local_candidate_sha": candidate,
+        }
+        with patch("project_brain.github.git", side_effect=publishing_git), patch(
+            "project_brain.github.run_command", run_command
+        ):
+            with self.assertRaises(TransientTaskError):
+                GitHubAdapter().publish(
+                    task=task, project=self.project, worktree=self.worktree
+                )
+            result = GitHubAdapter().publish(
+                task=task, project=self.project, worktree=self.worktree
+            )
+        self.assertTrue(result["pushed"])
+        self.assertTrue(result["resumed"])
+        self.assertEqual(result["pr_url"], existing["url"])
+        self.assertEqual(run_command.call_count, 2)
+        self.assertEqual(
+            sum(1 for call in git_calls if "push" in call),
+            1,
+        )
+        self.assertFalse(any("--force" in call for call in git_calls))
+
+    @patch("project_brain.github.run_command")
+    @patch("project_brain.github.assert_registered_origin")
+    def test_retry_third_party_drift_is_conflict_not_candidate_resume(
+        self, origin_check, run_command
+    ) -> None:
+        def drifted_git(_repo, *args, **kwargs):
+            if "ls-remote" in args:
+                return subprocess.CompletedProcess(
+                    [], 0, f"{'b' * 40}\trefs/heads/{self.task['branch']}\n", ""
+                )
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with patch("project_brain.github.git", side_effect=drifted_git):
+            with self.assertRaises(PublicationConflictError) as raised:
+                GitHubAdapter().publish(
+                    task={
+                        **self.task,
+                        "canonical_published_head_sha": "a" * 40,
+                        "local_candidate_sha": "c" * 40,
+                    },
+                    project=self.project,
+                    worktree=self.worktree,
+                )
+        self.assertEqual(raised.exception.conflict["observed_remote_head_sha"], "b" * 40)
+        self.assertEqual(run_command.call_count, 0)
+        self.assertFalse(run_command.called)
 
     @patch("project_brain.github.run_command")
     @patch("project_brain.github.assert_registered_origin")

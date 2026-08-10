@@ -113,14 +113,15 @@ a digest and never appears in later task views. An exact unconfirmed create repl
 rotates that digest and returns a replacement token so a lost response cannot
 strand the canonical task.
 
-MCP intake deliberately does not expose supersession. Review-driven
-`needs_changes` remains on the same canonical task, branch, and Draft PR only
-after an explicit `tasks_redispatch` authorization bound to the exact current
-remote head. It is not claimable by default. A publication conflict is retained
-as a recoverable forensic state, but the conflicted task cannot be resumed or
-reused; a new revision must be created from the latest remote head. Core's
-existing Store-owned supersession logic remains available only to its local
-canonical ingress where that replacement revision is explicitly warranted.
+MCP intake exposes one explicit superseding-draft path for a
+`recovery_blocked` publication conflict. The new draft must name the old task,
+use the same project and dedupe key with a strictly greater revision, inherit
+the old task's canonical publication base, and pass the normal confirmation
+gate before the old task is marked `superseded`. The old task, conflict, and
+forensic records remain immutable history. Review-driven `needs_changes`
+remains on the same canonical task, branch, and Draft PR only after an explicit
+`tasks_redispatch` authorization bound to the exact current remote head. It is
+not claimable by default.
 
 Review accepts only `task_id`, exact `head_sha`, `approved|needs_changes`, and
 bounded structured findings. It delegates the verdict, finding inserts, task

@@ -638,6 +638,13 @@ class TaskStore:
                         "Task status cannot be superseded while it owns active or "
                         f"protected state: {superseded_status.value}"
                     )
+                if (
+                    superseded_status is TaskStatus.RECOVERY_BLOCKED
+                    and not superseded_row["canonical_published_head_sha"]
+                ):
+                    raise StateConflictError(
+                        "A recovery-blocked superseding task requires a canonical published head"
+                    )
                 supersession_applied = True
         logical = connection.execute(
             "SELECT * FROM tasks WHERE project_id = ? AND dedupe_key = ? AND revision = ?",
@@ -708,7 +715,12 @@ class TaskStore:
                 int(project_row["config_revision"]),
                 profile_hash,
                 profile_json,
-                record.get("base_sha"),
+                record.get("base_sha")
+                or (
+                    superseded_row["canonical_published_head_sha"]
+                    if superseded_row is not None
+                    else None
+                ),
                 record.get("local_task_type"),
                 (
                     _json(record["delivery"])
@@ -1049,8 +1061,37 @@ class TaskStore:
                     confirmation_token_sha256=token_hash,
                     now=now,
                 )
+            superseded_row: sqlite3.Row | None = None
+            supersession_base_sha: str | None = None
             if record.get("supersedes"):
-                raise InvalidTaskError("MCP drafts cannot supersede an existing task")
+                superseded_row = connection.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?",
+                    (record["supersedes"],),
+                ).fetchone()
+                if superseded_row is None:
+                    raise InvalidTaskError(
+                        f"Superseded task does not exist: {record['supersedes']}"
+                    )
+                if (
+                    superseded_row["project_id"] != record["project_id"]
+                    or superseded_row["dedupe_key"] != record["dedupe_key"]
+                ):
+                    raise InvalidTaskError(
+                        "supersedes must reference the same project and dedupe_key"
+                    )
+                if record["revision"] <= superseded_row["revision"]:
+                    raise StateTransitionError(
+                        "A superseding task revision must be greater than the referenced task"
+                    )
+                if superseded_row["status"] != TaskStatus.RECOVERY_BLOCKED.value:
+                    raise StateTransitionError(
+                        "MCP superseding drafts are only available for recovery_blocked tasks"
+                    )
+                supersession_base_sha = superseded_row["canonical_published_head_sha"]
+                if not supersession_base_sha:
+                    raise StateConflictError(
+                        "A recovery-blocked superseding draft requires a canonical published head"
+                    )
             project_row = connection.execute(
                 "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
             ).fetchone()
@@ -1124,13 +1165,13 @@ class TaskStore:
                     source_message_id, goal, acceptance_criteria_json, task_type,
                     payload_json, status, attempt_count, created_at, updated_at,
                     expires_at, supersedes, project_config_revision,
-                    project_config_sha256, execution_profile_json, local_task_type,
+                    project_config_sha256, execution_profile_json, base_sha, local_task_type,
                     delivery_json, workflow_kind, analysis_task_id,
                     analysis_result_json, analysis_result_sha256,
                     mcp_request_sha256, dispatch_plan_sha256,
                     dispatch_confirmation_required,
                     dispatch_confirmation_token_sha256
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     record["task_id"], record["project_id"], record["dedupe_key"],
@@ -1138,8 +1179,9 @@ class TaskStore:
                     record.get("source_message_id"), record["goal"],
                     _json(record.get("acceptance_criteria", [])), record["task_type"],
                     _json(record.get("payload", {})), TaskStatus.PENDING.value,
-                    now, now, record.get("expires_at"), None,
+                    now, now, record.get("expires_at"), record.get("supersedes"),
                     int(project_row["config_revision"]), profile_hash, profile_json,
+                    supersession_base_sha,
                     "analysis" if workflow_kind == "analyze" else "implement",
                     _json(
                         {
@@ -1178,6 +1220,14 @@ class TaskStore:
                     "dispatch_confirmation_required": True,
                     "project_config_revision": int(project_row["config_revision"]),
                     "project_config_sha256": profile_hash,
+                    **(
+                        {
+                            "supersedes": record["supersedes"],
+                            "publication_base_sha": supersession_base_sha,
+                        }
+                        if record.get("supersedes")
+                        else {}
+                    ),
                 },
             )
             created = connection.execute(
@@ -1267,6 +1317,46 @@ class TaskStore:
                     "The confirmed MCP execution plan does not match the reviewed plan"
                 )
             if row["dispatch_confirmed_at"] is None:
+                if row["supersedes"]:
+                    superseded = connection.execute(
+                        "SELECT * FROM tasks WHERE task_id = ?",
+                        (row["supersedes"],),
+                    ).fetchone()
+                    if superseded is None:
+                        raise InvalidTaskError(
+                            f"Superseded task does not exist: {row['supersedes']}"
+                        )
+                    if (
+                        superseded["status"] != TaskStatus.RECOVERY_BLOCKED.value
+                        or superseded["project_id"] != row["project_id"]
+                        or superseded["dedupe_key"] != row["dedupe_key"]
+                        or int(row["revision"]) <= int(superseded["revision"])
+                        or row["canonical_published_head_sha"] is not None
+                        or row["base_sha"] != superseded["canonical_published_head_sha"]
+                    ):
+                        raise StateConflictError(
+                            "Superseding draft identity or canonical publication base changed"
+                        )
+                    superseded_at = utc_now()
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                        (
+                            TaskStatus.SUPERSEDED.value,
+                            superseded_at,
+                            superseded["task_id"],
+                        ),
+                    )
+                    self._event(
+                        connection,
+                        superseded["task_id"],
+                        "task_superseded",
+                        TaskStatus.RECOVERY_BLOCKED.value,
+                        TaskStatus.SUPERSEDED.value,
+                        {
+                            "by_task_id": row["task_id"],
+                            "publication_base_sha": row["base_sha"],
+                        },
+                    )
                 confirmed_at = utc_now()
                 connection.execute(
                     "UPDATE tasks SET dispatch_confirmed_at = ?, updated_at = ? WHERE task_id = ?",

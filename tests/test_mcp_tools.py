@@ -313,7 +313,7 @@ class MCPToolTests(unittest.TestCase):
         replacement["supersedes"] = "mcp-owned"
         conflict = service.tasks_create(replacement)
         self.assertEqual(conflict["status"], "error")
-        self.assertEqual(conflict["code"], "validation")
+        self.assertEqual(conflict["code"], "state_conflict")
         self.assertEqual(
             self.fixture.store.get_task("mcp-owned")["status"],
             TaskStatus.PENDING.value,
@@ -326,6 +326,74 @@ class MCPToolTests(unittest.TestCase):
         dispatch = service.queue_dispatch_next(reason="confirm blocker remains visible")
         self.assertEqual(dispatch["dispatch_status"], "idle")
         self.assertEqual(launches, [])
+
+    def test_recovery_blocked_public_superseding_draft_requires_confirmation(self) -> None:
+        old = self.fixture.add_task(
+            "blocked-publication",
+            dedupe_key="publication-flow",
+            revision=1,
+        )
+        self.fixture.store.claim_next()
+        published = "a" * 40
+        candidate = "c" * 40
+        self.fixture.store.set_task_fields(
+            old["task_id"],
+            branch="brain/blocked-publication",
+            commit=published,
+            head_sha=published,
+        )
+        self.fixture.store.record_candidate(
+            old["task_id"], candidate, publication_base_sha=published
+        )
+        self.fixture.store.record_publication_conflict(
+            old["task_id"],
+            {
+                "branch": "brain/blocked-publication",
+                "expected_remote_head_sha": published,
+                "observed_remote_head_sha": "b" * 40,
+                "publication_base_sha": published,
+                "candidate_sha": candidate,
+            },
+        )
+        self.fixture.store.block_running_task(
+            old["task_id"], reason="publication conflict requires a new revision"
+        )
+
+        replacement = self._create_value("publication-replacement")
+        replacement.update(
+            {
+                "dedupe_key": "publication-flow",
+                "revision": 2,
+                "supersedes": old["task_id"],
+                "workflow_kind": "implement",
+            }
+        )
+        draft = self.service.tasks_create_draft(replacement)
+        self.assertEqual(draft["status"], "draft_created")
+        self.assertEqual(
+            self.fixture.store.get_task(old["task_id"])["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        stored = self.fixture.store.get_task("publication-replacement")
+        self.assertEqual(stored["base_sha"], published)
+        self.assertIsNone(stored["canonical_published_head_sha"])
+        self.assertIsNone(self.fixture.store.claim_next())
+
+        confirmed = self.service.tasks_confirm(
+            {
+                "task_id": "publication-replacement",
+                "confirmation_token": draft["confirmation"]["confirmation_token"],
+                "expected_plan_hash": draft["plan_hash"],
+            }
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+        self.assertEqual(
+            self.fixture.store.get_task(old["task_id"])["status"],
+            TaskStatus.SUPERSEDED.value,
+        )
+        preserved = self.fixture.store.get_task(old["task_id"])
+        self.assertEqual(preserved["publication_conflict"]["candidate_sha"], candidate)
+        self.assertEqual(self.fixture.store.claim_next()["task_id"], "publication-replacement")
 
     def test_tasks_list_clamps_limit_and_task_get_bounds_events(self) -> None:
         for index in range(105):

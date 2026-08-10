@@ -46,6 +46,7 @@ SAFE_EVENT_PAYLOAD_FIELDS = {
     "revision",
     "source_attempt_number",
     "source_type",
+    "supersedes",
     "workflow_kind",
     "verification_count",
     "verification_set_id",
@@ -75,6 +76,8 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "updated_at": value.get("updated_at"),
         "elapsed_seconds": value.get("elapsed_seconds"),
         "branch": bounded_text(value.get("branch"), limit=256),
+        "supersedes": value.get("supersedes"),
+        "base_sha": bounded_text(value.get("base_sha"), limit=128),
         "commit": bounded_text(value.get("commit"), limit=128),
         "head_sha": bounded_text(value.get("head_sha"), limit=128),
         "canonical_published_head_sha": bounded_text(

@@ -178,10 +178,27 @@ class GitHubAdapter:
             or task.get("commit")
             or task.get("base_sha")
         )
+        canonical_published_head = task.get("canonical_published_head_sha")
         if not candidate_sha or not expected:
             raise TaskHistoryError("Publication requires a candidate and an expected base head")
         observed = self._remote_task_head(worktree=worktree, branch=branch)
-        if observed is not None and observed != expected:
+        if observed is None and canonical_published_head:
+            raise PublicationConflictError(
+                f"Published task branch disappeared before publication: {branch}",
+                conflict={
+                    "branch": branch,
+                    "expected_remote_head_sha": canonical_published_head,
+                    "observed_remote_head_sha": "",
+                    "publication_base_sha": expected,
+                    "candidate_sha": candidate_sha,
+                },
+            )
+        candidate_already_remote = observed == candidate_sha
+        if (
+            observed is not None
+            and observed != expected
+            and not candidate_already_remote
+        ):
             raise PublicationConflictError(
                 f"Remote task branch moved before publication: {branch}",
                 conflict={
@@ -210,23 +227,41 @@ class GitHubAdapter:
                     "candidate_sha": candidate_sha,
                 },
             )
-        try:
-            git(worktree, "push", "-u", "origin", branch, retryable=True, timeout=600)
-        except ExternalCommandError as exc:
-            after_failure = self._remote_task_head(worktree=worktree, branch=branch)
-            if after_failure is not None and after_failure != expected:
-                raise PublicationConflictError(
-                    f"Remote task branch moved during publication: {branch}",
-                    conflict={
-                        "branch": branch,
-                        "expected_remote_head_sha": expected,
-                        "observed_remote_head_sha": after_failure,
-                        "publication_base_sha": expected,
-                        "candidate_sha": candidate_sha,
-                    },
-                ) from exc
-            raise TransientTaskError(f"Git push failed: {exc}") from exc
-        remote_head = self._remote_task_head(worktree=worktree, branch=branch)
+        if not candidate_already_remote:
+            try:
+                git(worktree, "push", "-u", "origin", branch, retryable=True, timeout=600)
+            except ExternalCommandError as exc:
+                after_failure = self._remote_task_head(worktree=worktree, branch=branch)
+                if after_failure is None and canonical_published_head:
+                    raise PublicationConflictError(
+                        f"Published task branch disappeared during publication: {branch}",
+                        conflict={
+                            "branch": branch,
+                            "expected_remote_head_sha": canonical_published_head,
+                            "observed_remote_head_sha": "",
+                            "publication_base_sha": expected,
+                            "candidate_sha": candidate_sha,
+                        },
+                    ) from exc
+                if after_failure is not None and after_failure not in {expected, candidate_sha}:
+                    raise PublicationConflictError(
+                        f"Remote task branch moved during publication: {branch}",
+                        conflict={
+                            "branch": branch,
+                            "expected_remote_head_sha": expected,
+                            "observed_remote_head_sha": after_failure,
+                            "publication_base_sha": expected,
+                            "candidate_sha": candidate_sha,
+                        },
+                    ) from exc
+                if after_failure == candidate_sha:
+                    candidate_already_remote = True
+                else:
+                    raise TransientTaskError(f"Git push failed: {exc}") from exc
+        remote_head = (
+            candidate_sha if candidate_already_remote
+            else self._remote_task_head(worktree=worktree, branch=branch)
+        )
         if remote_head != candidate_sha:
             raise PublicationConflictError(
                 f"Published remote branch does not match candidate: {branch}",
@@ -238,7 +273,11 @@ class GitHubAdapter:
                     "candidate_sha": candidate_sha,
                 },
             )
-        result: dict[str, Any] = {"pushed": True, "pr_url": task.get("pr_url")}
+        result: dict[str, Any] = {
+            "pushed": True,
+            "resumed": candidate_already_remote,
+            "pr_url": task.get("pr_url"),
+        }
         if not project.get("auto_pr", True):
             assert_registered_origin(worktree, project["remote_url"])
             return result
