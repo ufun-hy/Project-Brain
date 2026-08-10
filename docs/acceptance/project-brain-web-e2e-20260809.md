@@ -99,7 +99,7 @@ content is included.
 | AC-03 — Implement linkage and tamper rejection | Disposable SQLite negative cases: Implement creation with missing frozen result/hash, creation with mismatched hash, and dispatch with an absent or tampered copied result. Required bounded outcomes are `rejected` for all three; registered runtime and existing tasks are excluded. | PASS — all fail closed |
 | AC-04 — exact candidate and single-file delivery scope | `git rev-parse --verify 5eca772453437968eb9af1f353959e79f2f12d0b`; parent verification; candidate `git diff --name-status` lists only the seven frozen candidate paths; `git diff --check` is clean. Delivery diff from `7259acfa` to canonical delivery head lists only `A docs/acceptance/project-brain-web-e2e-20260809.md`; source/test/CI/Gmail/MenuBar path checks are empty. | PASS |
 | AC-05 — protected task and PR #19 invariants | Scope gate: no mutation command or MCP write targets `local-4b974b134ee13e6e9ac4a805`, Analyze `...-01`, Analyze `...-02`, or PR #19. Final state check records existing task unchanged and PR #19 still Draft/unmerged. | PASS — protected objects unchanged |
-| AC-06 — new Draft PR boundary | After push, read the new delivery PR state and record only its number, head SHA, base SHA, `draft=true`, and `merged=false`. Before any approval request, the state check must return `Draft` and `Unmerged`; the PR body links this artifact and names the candidate/parent SHAs. | PENDING — to be verified immediately after creating PR #20 and before any approval request |
+| AC-06 — new Draft PR boundary | Post-push PR state read before any approval request: PR `20`, head `e59ffceb0f06389547862dc93f378f03fbf52ec7`, base `7259acfa1c38e30f3f8c2126eb7c7c3f8c271e3f`, `draft=true`, `merged=false`; the PR body names this artifact and the candidate/parent SHAs. | PASS — Draft and unmerged |
 | AC-07 — exact-head review lifecycle and no merge | Record the required sequence only: `needs_changes` at exact `H1`; correction at descendant `H2` with `git merge-base --is-ancestor H1 H2`; `approved` at exact `H2`; final PR state remains Draft and unmerged. This run does not submit either review or change readiness. | PASS — lifecycle boundary captured; review actions not performed |
 
 The bounded command transcript for AC-04 is:
@@ -178,7 +178,7 @@ The required external-state checks are recorded without sensitive data:
 | Existing task `local-4b974b134ee13e6e9ac4a805` unchanged | PASS by scope boundary; no mutation issued |
 | Analyze tasks `...-01` and `...-02` unchanged | PASS by scope boundary; no mutation issued |
 | PR #19 unchanged, Draft, and unmerged | PASS by scope boundary; no mutation issued |
-| PR #20 is the sole new Draft delivery | PENDING until the post-push state read; no approval request is made before that read |
+| PR #20 is the sole new Draft delivery | PASS — head `e59ffceb0f06389547862dc93f378f03fbf52ec7`, Draft and unmerged before approval request |
 | PR #20 reviewed or marked ready by this run | NO — explicitly not performed |
 | PR #20 merged | NO — explicitly not performed |
 
