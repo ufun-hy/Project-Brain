@@ -112,7 +112,7 @@ def onboard(
     assert applied["action"] == "add"
 
 
-EXPECTED_DATABASE_SCHEMA_VERSION = 11
+EXPECTED_DATABASE_SCHEMA_VERSION = 12
 
 
 def downgrade_fixture_to_v10(runtime: Path) -> None:
