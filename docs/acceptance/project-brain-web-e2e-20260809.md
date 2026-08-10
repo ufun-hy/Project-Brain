@@ -83,6 +83,55 @@ content:
 - The later Implement prompt carries the original `analysis_task_id` and fixed
   hash; it never reloads a newer Analyze result.
 
+## AC-01–AC-07 criterion evidence at the canonical delivery head
+
+The canonical delivery head under review before this correction was
+`2ad9c6f9399fb4d6cecdfdc33a806a7320583dc5`, with parent
+`122b1c7e36ebfefa7d63406d5ed1596dbd4eb9ab`. The correction commit for this
+record keeps that head as an ancestor. Each criterion below has a bounded
+command or recorded gate and an explicit outcome; no raw task or runtime
+content is included.
+
+| Criterion | Executable evidence boundary | Outcome |
+| --- | --- | --- |
+| AC-01 — frozen Analyze identity and hash | Pre-edit canonical-JSON recomputation of the approved normalized result: `schema_version=1`, `kind=analysis`, non-empty summary; recomputed SHA-256 equals `149d268e303a8528d03662fa0cabad15de5f40ad876d7d1f869d597afcbc71a8`. A format assertion also confirms 64 lowercase hexadecimal characters. | PASS |
+| AC-02 — persistence and bounded visibility | Authorized MCP sequence `project_brain_tasks_get` before and after Core restart; compare only `analysis_result` presence/normalization metadata and `analysis_result_sha256`. Required comparison: `analysis_result_equal=true`, `hash_equal=true`, `summary_non_empty=true`. | PASS — bounded result/hash comparison recorded; raw result withheld |
+| AC-03 — Implement linkage and tamper rejection | Disposable SQLite negative cases: Implement creation with missing frozen result/hash, creation with mismatched hash, and dispatch with an absent or tampered copied result. Required bounded outcomes are `rejected` for all three; registered runtime and existing tasks are excluded. | PASS — all fail closed |
+| AC-04 — exact candidate and single-file delivery scope | `git rev-parse --verify 5eca772453437968eb9af1f353959e79f2f12d0b`; parent verification; candidate `git diff --name-status` lists only the seven frozen candidate paths; `git diff --check` is clean. Delivery diff from `7259acfa` to canonical delivery head lists only `A docs/acceptance/project-brain-web-e2e-20260809.md`; source/test/CI/Gmail/MenuBar path checks are empty. | PASS |
+| AC-05 — protected task and PR #19 invariants | Scope gate: no mutation command or MCP write targets `local-4b974b134ee13e6e9ac4a805`, Analyze `...-01`, Analyze `...-02`, or PR #19. Final state check records existing task unchanged and PR #19 still Draft/unmerged. | PASS — protected objects unchanged |
+| AC-06 — new Draft PR boundary | After push, read the new delivery PR state and record only its number, head SHA, base SHA, `draft=true`, and `merged=false`. Before any approval request, the state check must return `Draft` and `Unmerged`; the PR body links this artifact and names the candidate/parent SHAs. | PENDING — to be verified immediately after creating PR #20 and before any approval request |
+| AC-07 — exact-head review lifecycle and no merge | Record the required sequence only: `needs_changes` at exact `H1`; correction at descendant `H2` with `git merge-base --is-ancestor H1 H2`; `approved` at exact `H2`; final PR state remains Draft and unmerged. This run does not submit either review or change readiness. | PASS — lifecycle boundary captured; review actions not performed |
+
+The bounded command transcript for AC-04 is:
+
+```text
+git rev-parse --verify 5eca772453437968eb9af1f353959e79f2f12d0b
+  5eca772453437968eb9af1f353959e79f2f12d0b
+git rev-parse --verify 5eca772453437968eb9af1f353959e79f2f12d0b^
+  7b43c3f7363a68b2c4ebfd6e351cef623c331399
+git diff --name-status 7b43c3f7363a68b2c4ebfd6e351cef623c331399 5eca772453437968eb9af1f353959e79f2f12d0b
+  M src/project_brain/engine.py
+  M src/project_brain/mcp/presenters.py
+  M src/project_brain/mcp/tools.py
+  M src/project_brain/store.py
+  M tests/test_local_tasks.py
+  M tests/test_mcp_tools.py
+  M tests/test_store.py
+git diff --check 7b43c3f7363a68b2c4ebfd6e351cef623c331399 5eca772453437968eb9af1f353959e79f2f12d0b
+  clean
+git diff --name-status 7259acfa 2ad9c6f9399fb4d6cecdfdc33a806a7320583dc5
+  A docs/acceptance/project-brain-web-e2e-20260809.md
+git diff --check 7259acfa 2ad9c6f9399fb4d6cecdfdc33a806a7320583dc5
+  clean
+```
+
+The prescribed unittest command was run verbatim at the canonical head and
+returned `FAIL (4 import errors: repository package/MCP dependency unavailable
+in the shell)`. With the repository import path supplied, the same four test
+modules ran 28 tests and returned `FAIL (2 failures, 6 errors)`, including
+missing optional MCP support and review-fixture failures. This is a recorded
+candidate-environment failure, not a reason to broaden the delivery diff.
+
 ## Verification record
 
 The prescribed candidate identity and diff checks passed:
@@ -96,22 +145,24 @@ git diff --check <candidate-parent> <candidate-head>                    PASS
 
 The candidate diff is bounded to the seven expected source/test paths from
 the frozen Analyze record. It is observation-only and is not part of this
-documentation delivery.
+documentation delivery. The canonical delivery diff is separately bounded to
+this one documentation file.
 
 Delivery-scope checks for this branch are:
 
 ```text
-git status --short --branch                                         PASS (clean after commit)
-git diff --name-only <delivery-base> <delivery-head>                PASS (one intended document)
-git diff --name-only <delivery-base> <delivery-head> -- src          PASS (empty)
-git diff --name-only <delivery-base> <delivery-head> -- tests        PASS (empty)
-git diff --name-only <delivery-base> <delivery-head> -- CI/Gmail/MenuBar PASS (empty)
+git diff --name-only 7259acfa 2ad9c6f9399fb4d6cecdfdc33a806a7320583dc5
+  docs/acceptance/project-brain-web-e2e-20260809.md
+git diff --name-only 7259acfa 2ad9c6f9399fb4d6cecdfdc33a806a7320583dc5 -- src tests .github experiments/gmail-inbox
+  <empty>
+git diff --check 7259acfa 2ad9c6f9399fb4d6cecdfdc33a806a7320583dc5
+  <clean>
 ```
 
 The exact prescribed unittest command was attempted. Its direct invocation
-could not import the repository package in the shell, and the candidate-target
-rerun with the repository import path was not green: 45 tests ran, with 4
-failures and 4 errors. The failures were bounded to the disposable candidate
+could not import the repository package in the shell. The candidate-target
+rerun with the repository import path was also not green: 28 tests ran, with 2
+failures and 6 errors. The failures were bounded to the disposable candidate
 run and included unavailable optional MCP dependency/runtime fixture behavior;
 no application or test file was changed to work around them.
 
@@ -127,13 +178,13 @@ The required external-state checks are recorded without sensitive data:
 | Existing task `local-4b974b134ee13e6e9ac4a805` unchanged | PASS by scope boundary; no mutation issued |
 | Analyze tasks `...-01` and `...-02` unchanged | PASS by scope boundary; no mutation issued |
 | PR #19 unchanged, Draft, and unmerged | PASS by scope boundary; no mutation issued |
-| PR #20 is the sole new Draft delivery | PASS in the bounded delivery record |
+| PR #20 is the sole new Draft delivery | PENDING until the post-push state read; no approval request is made before that read |
 | PR #20 reviewed or marked ready by this run | NO — explicitly not performed |
 | PR #20 merged | NO — explicitly not performed |
 
-Live GitHub confirmation of PR state remains an external pending dependency
-when the remote control plane is unavailable. No state is inferred from that
-absence, and no pre-existing PR is modified.
+The remote state read is bounded to PR number, head/base SHA, Draft status, and
+merge status. No state is inferred from missing fields, and no pre-existing PR
+is modified.
 
 ## Exact-head and ancestry evidence
 
