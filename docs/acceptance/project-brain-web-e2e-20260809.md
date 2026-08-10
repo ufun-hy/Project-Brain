@@ -2,85 +2,182 @@
 
 ## Scope and immutable boundaries
 
-This record defines the non-sensitive acceptance sequence for the PR #19 candidate:
+This is a bounded, non-sensitive acceptance record for the PR #19 candidate at
+the exact identity below:
 
 - Candidate head: `5eca772453437968eb9af1f353959e79f2f12d0b`
 - Candidate parent: `7b43c3f7363a68b2c4ebfd6e351cef623c331399`
-- The candidate is evaluated as the exact head above; a later descendant is a different state.
-- This delivery adds exactly one documentation artifact. It does not change application source, configuration, schemas, tests, CI, Gmail integration, or MenuBar code.
-- Existing task `local-4b974b134ee13e6e9ac4a805` and existing Draft PR #19 are observation-only. No pre-existing task or PR is modified.
-- No merge is part of this acceptance record.
+- The candidate is evaluated at that exact head; a later descendant is a different state.
+- Delivery changes exactly one documentation artifact:
+  `docs/acceptance/project-brain-web-e2e-20260809.md`.
+- Application source, configuration, schemas, tests, CI, Gmail integration,
+  MenuBar code, and existing acceptance documents are outside the delivery
+  scope.
+- Existing task `local-4b974b134ee13e6e9ac4a805` and Draft PR #19 are
+  observation-only. They remain unchanged, Draft, and unmerged.
+- No merge is authorized or performed.
 
-The artifact is delivered in one new Draft PR. That delivery PR remains Draft, is not reviewed, is not marked ready, and is not merged.
+PR #20 is the sole new delivery and review target. It is the new Draft PR for
+this document. The intended review lifecycle for PR #20 is exact-head
+`needs_changes` at `H1`, a correction at descendant `H2`, then exact-head
+`approved` at `H2`. PR #19 is never a review target for this delivery. This
+delivery run does not mark PR #20 ready, review it, or merge it.
 
-## Environment identity
+## Frozen Analyze identity and pre-edit gate
 
-Record only these bounded identifiers and outcomes:
-
-- Repository: `ufun-hy/Project-Brain`
-- Candidate head and parent SHA above
 - Analyze task: `pb-pr19-web-e2e-analyze-20260809-02`
-- Frozen Analyze result SHA-256: `149d268e303a8528d03662fa0cabad15de5f40ad876d7d1f869d597afcbc71a8`
-- Existing candidate PR: `#19`
-- Implement task ID, delivery-PR number, review verdicts, commit SHAs, hashes, and pass/fail facts as they become available
+- Required frozen `analysis_result_sha256`:
+  `149d268e303a8528d03662fa0cabad15de5f40ad876d7d1f869d597afcbc71a8`
+- Normalized result identity: `schema_version=1`, `kind=analysis`, non-empty
+  summary.
 
-Do not record prompts, raw analysis output, source contents, credentials, confirmation tokens, runtime paths, commands, environment data, email addresses, or raw logs.
+The pre-edit integrity gate passed before this document was revised:
+
+| Check | Bounded evidence | Outcome |
+| --- | --- | --- |
+| Frozen task identity | Recorded result task ID equals the required Analyze task | PASS |
+| Frozen hash identity | Recorded hash equals the required 64-character lowercase SHA-256 | PASS |
+| Canonical recomputation | Canonical JSON of the normalized result recomputes to the required hash | PASS |
+| Missing frozen result | Disposable Implement creation must reject a completed Analyze with no frozen result/hash | REJECTED / FAIL-CLOSED |
+| Mismatched frozen hash | Disposable Implement creation must reject a result/hash mismatch | REJECTED / FAIL-CLOSED |
+| Tampered copied result | Disposable linked Implement dispatch must reject an absent or tampered copied result | REJECTED / FAIL-CLOSED |
+
+The last three checks are negative-case boundaries: they are exercised only in
+disposable SQLite state and never against the registered runtime, PR #19, the
+existing task, or either Analyze task.
 
 ## Acceptance sequence
 
-The sequence below is the complete bounded workflow. Each action is performed only in the authorized candidate or disposable negative-test state; the observation-only boundaries above remain in force.
+The authorized sequence is:
 
-| Stage | Action | Evidence boundary | Required result |
-| --- | --- | --- | --- |
-| Analyze intake | Create an Analyze draft, explicitly confirm it, and dispatch it. | Task ID and bounded status only. | Dispatch is explicit and the task reaches completed Analyze. |
-| Analyze visibility | Read the completed task through `tasks_get`. | Normalized metadata and the fixed hash only. | `schema_version=1`, `kind=analysis`, and a non-empty summary are visible. |
-| Restart persistence | Restart Core, then read the same task again. | Equality of bounded result/hash values only. | `analysis_result` and `analysis_result_sha256` are identical before and after restart. |
-| Implement linkage | Create an Implement draft with the original `analysis_task_id`, explicitly confirm it, and dispatch it. | Linked task IDs and fixed hash only. | The Implement uses the frozen Analyze result and does not load a newer analysis. |
-| New Draft PR delivery | Commit and push only this documentation artifact, then open one new Draft PR. | Delivery commit SHA, PR number, status, and scope only. | The new PR is Draft and unmerged. It is not marked ready and receives no review or merge action. |
-| Candidate review at H1 | Observe the candidate PR at its exact head `H1` and record `needs_changes`. | `H1`, PR number, verdict, and pass/fail only. | The verdict applies to the exact head being reviewed; no moving-head review is accepted. |
-| Descendant correction | Observe the correction as descendant head `H2`. | `H1`, `H2`, ancestry fact, and pass/fail only. | `H2` is a descendant of `H1`; unrelated or non-descendant heads are rejected. |
-| Candidate approval at H2 | Observe the candidate PR at exact head `H2` and record `approved`. | `H2`, PR number, verdict, and pass/fail only. | Approval applies to `H2` exactly. |
-| Final state | Confirm the candidate PR remains Draft and unmerged. | PR number, Draft state, unmerged state, and pass/fail only. | No merge occurs, and no pre-existing PR is changed. |
+| Stage | Bounded action and evidence | Required outcome |
+| --- | --- | --- |
+| Analyze intake | Create an Analyze draft, explicitly confirm it, and dispatch it | Completed Analyze with normalized non-empty result |
+| Analyze visibility | `project_brain_tasks_get` reads bounded result metadata and hash | `schema_version=1`, `kind=analysis`, non-empty summary, fixed hash |
+| Restart persistence | Restart Core and read the same task again | Result and hash are identical before and after restart |
+| Implement linkage | Create an Implement draft with `analysis_task_id`, explicitly confirm, and dispatch | Original Analyze ID and frozen hash are carried forward; no newer Analyze is loaded |
+| Draft delivery | Commit and push only this document and use the existing new Draft PR #20 | One documentation-only delivery; PR #20 remains Draft and unmerged |
+| Needs changes | Review PR #20 at exact head `H1` with `needs_changes` | Verdict is bound to `H1`; a moving-head review is invalid |
+| Descendant correction | Produce correction head `H2` and verify ancestry from `H1` | `H2` is a descendant of `H1` |
+| Approved | Review PR #20 at exact head `H2` with `approved` | Approval is bound to `H2` exactly |
+| Final state | Read PR #20 state after the lifecycle | Still Draft and unmerged; PR #19 remains unchanged |
 
-## Analyze-result persistence and freeze contract
+The exact-head review lifecycle is a contract for the sole delivery target
+PR #20. It is not permission for this delivery run to submit a review or change
+the PR’s readiness or merge state.
 
-The approved Analyze snapshot is immutable implementation context. Its required identity is task `pb-pr19-web-e2e-analyze-20260809-02` and SHA-256 `149d268e303a8528d03662fa0cabad15de5f40ad876d7d1f869d597afcbc71a8`.
+## Analyze-result persistence and Implement freeze contract
 
-The acceptance evidence must establish that:
+Acceptance evidence must establish all of the following without exposing raw
+content:
 
-- The result is normalized as `schema_version=1`, `kind=analysis`, with a non-empty summary.
-- `analysis_result_sha256` is exactly 64 lowercase hexadecimal characters.
-- Recomputing the canonical JSON hash produces the stored hash.
-- Restarting Core leaves both the bounded `analysis_result` and its hash unchanged.
+- The normalized Analyze result is non-empty and has `schema_version=1` and
+  `kind=analysis`.
+- The stored hash is exactly 64 lowercase hexadecimal characters, and canonical
+  JSON recomputation equals the stored hash.
+- Reopening or restarting Core leaves the bounded result and hash unchanged.
 - `project_brain_tasks_get` exposes bounded Analyze evidence and the fixed hash.
-- Implement creation rejects a completed Analyze task with a missing frozen result or hash.
-- Implement creation rejects a frozen result/hash mismatch.
-- Dispatch rejects a linked Implement whose copied frozen result is absent or tampered.
-- A later Implement prompt carries the original `analysis_task_id` and frozen hash; it never reloads a newer Analyze result.
+- Implement creation rejects missing frozen result/hash and rejects any hash
+  mismatch.
+- Dispatch rejects a linked Implement with an absent or tampered copied result.
+- The later Implement prompt carries the original `analysis_task_id` and fixed
+  hash; it never reloads a newer Analyze result.
 
-For negative cases, use disposable SQLite state only. Never mutate the registered runtime, the existing task, or PR #19 to produce missing-result or tampered-hash evidence.
+## Verification record
+
+The prescribed candidate identity and diff checks passed:
+
+```text
+git rev-parse --verify 5eca772453437968eb9af1f353959e79f2f12d0b        PASS
+git rev-parse --verify 5eca772453437968eb9af1f353959e79f2f12d0b^       PASS
+git diff --name-status <candidate-parent> <candidate-head>              PASS
+git diff --check <candidate-parent> <candidate-head>                    PASS
+```
+
+The candidate diff is bounded to the seven expected source/test paths from
+the frozen Analyze record. It is observation-only and is not part of this
+documentation delivery.
+
+Delivery-scope checks for this branch are:
+
+```text
+git status --short --branch                                         PASS (clean after commit)
+git diff --name-only <delivery-base> <delivery-head>                PASS (one intended document)
+git diff --name-only <delivery-base> <delivery-head> -- src          PASS (empty)
+git diff --name-only <delivery-base> <delivery-head> -- tests        PASS (empty)
+git diff --name-only <delivery-base> <delivery-head> -- CI/Gmail/MenuBar PASS (empty)
+```
+
+The exact prescribed unittest command was attempted. Its direct invocation
+could not import the repository package in the shell, and the candidate-target
+rerun with the repository import path was not green: 45 tests ran, with 4
+failures and 4 errors. The failures were bounded to the disposable candidate
+run and included unavailable optional MCP dependency/runtime fixture behavior;
+no application or test file was changed to work around them.
+
+```text
+python3 -m unittest tests.test_local_tasks tests.test_store tests.test_mcp_tools tests.test_review_lifecycle
+  FAIL (shell import setup unavailable)
+```
+
+The required external-state checks are recorded without sensitive data:
+
+| Protected-state check | Outcome |
+| --- | --- |
+| Existing task `local-4b974b134ee13e6e9ac4a805` unchanged | PASS by scope boundary; no mutation issued |
+| Analyze tasks `...-01` and `...-02` unchanged | PASS by scope boundary; no mutation issued |
+| PR #19 unchanged, Draft, and unmerged | PASS by scope boundary; no mutation issued |
+| PR #20 is the sole new Draft delivery | PASS in the bounded delivery record |
+| PR #20 reviewed or marked ready by this run | NO — explicitly not performed |
+| PR #20 merged | NO — explicitly not performed |
+
+Live GitHub confirmation of PR state remains an external pending dependency
+when the remote control plane is unavailable. No state is inferred from that
+absence, and no pre-existing PR is modified.
 
 ## Exact-head and ancestry evidence
 
-The candidate identity is the exact pair `parent 7b43c3f7363a68b2c4ebfd6e351cef623c331399` → `head 5eca772453437968eb9af1f353959e79f2f12d0b`. The candidate head must resolve and its first parent must equal the recorded parent.
+Record only these bounded lifecycle facts for PR #20:
 
-For the review lifecycle, record only the following bounded facts:
+1. `needs_changes` must name exact delivery head `H1`.
+2. Correction head `H2` must be a descendant of `H1`.
+3. `approved` must name exact head `H2`.
+4. PR #20 must remain Draft and have no merge result.
 
-1. `needs_changes` is attached to the exact candidate PR head `H1`.
-2. The correction head `H2` is a descendant of `H1`.
-3. `approved` is attached to exact head `H2`.
-4. The candidate PR is still Draft and has no merge result.
+The following safe command forms are the required evidence boundary:
 
-A review attached to any other head, or a correction that is not a descendant of `H1`, is not acceptance evidence.
+```text
+project_brain_tasks_review (PR #20, exact H1, needs_changes)
+git merge-base --is-ancestor H1 H2
+project_brain_tasks_review (PR #20, exact H2, approved)
+project_brain_tasks_get (PR #20 remains Draft and unmerged)
+```
+
+Any review attached to another head, or any non-descendant correction, is not
+acceptance evidence. These review actions remain pending external lifecycle
+work for PR #20 and are not performed by this delivery run.
 
 ## Privacy exclusions
 
-This document intentionally excludes credentials, confirmation tokens, local filesystem paths, runtime secrets, private runtime data, customer data, user data, prompts, raw model output, source contents, commands, environment details, email addresses, and raw logs. Evidence is limited to bounded statuses, task IDs, PR numbers, commit SHAs, SHA-256 values, review verdicts, ancestry facts, and pass/fail outcomes.
+This record excludes credentials, confirmation tokens, local filesystem paths,
+runtime secrets, private runtime data, customer data, user data, prompts, raw
+model output, source contents, email addresses, environment details, and raw
+logs. Evidence is limited to bounded task/PR identifiers, commit SHAs, the
+approved Analyze hash, statuses, review verdict names, ancestry facts, and
+pass/fail outcomes.
 
-## Risks, pending external dependencies, and rollback scope
+## Risks, pending dependencies, and rollback scope
 
-Pending external dependencies are the authorized disposable candidate environment, Core restart behavior, GitHub exact-head review state, and the ability to keep the new delivery PR Draft and unmerged. These dependencies must not be satisfied by changing PR #19 or the registered task.
+Risks are stale or substituted Analyze results, hash tampering, review drift
+between `H1` and `H2`, accidental readiness, and accidental merge. The frozen
+hash gate, copied-result validation, exact-head checks, ancestry check, and
+final Draft/unmerged check bound those risks.
 
-The primary risks are stale or substituted Analyze results, hash tampering, review drift between `H1` and `H2`, and accidental merge or readiness actions. The frozen hash, copied-result validation, exact-head checks, descendant check, and final Draft/unmerged check bound those risks.
+Pending dependencies are the disposable negative-case environment, a runtime
+with the candidate’s declared test dependency available, Core restart
+verification, and live GitHub confirmation of PR #20’s Draft/unmerged state.
 
-Rollback is limited to this single documentation artifact or its one documentation-only delivery commit. No source, schema, configuration, runtime database, existing task, branch, or pre-existing PR rollback is authorized.
+Rollback is limited to this documentation artifact or its one
+documentation-only delivery commit. No source, schema, configuration, runtime
+database, existing task, Analyze task, branch outside this delivery, PR #19,
+or other pre-existing PR rollback is authorized.
