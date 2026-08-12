@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
+import secrets
 from typing import Annotated, Any, Callable, Literal, TypeVar
 
 from mcp.server.fastmcp import FastMCP
@@ -15,9 +18,10 @@ from project_brain.errors import (
     AlreadyRunningError,
     InvalidTaskError,
     RecoveryError,
+    StateConflictError,
     StateTransitionError,
 )
-from project_brain.ingress import TaskImporter
+from project_brain.github import GitHubAdapter
 from project_brain.locking import RuntimeLock
 from project_brain.models import TaskStatus, parse_timestamp
 from project_brain.recovery import RecoveryManager
@@ -50,6 +54,22 @@ PromptText = Annotated[str, StringConstraints(min_length=1, max_length=20_000)]
 TimestampText = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 ShaText = Annotated[str, StringConstraints(min_length=7, max_length=128)]
 ReasonText = Annotated[str, StringConstraints(min_length=1, max_length=500)]
+ConfirmationToken = Annotated[
+    str,
+    StringConstraints(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]{32,128}$"),
+]
+PlanHash = Annotated[
+    str,
+    StringConstraints(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+]
+RedispatchKey = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    ),
+]
 AcceptanceChallenge = Annotated[
     str,
     StringConstraints(
@@ -89,17 +109,25 @@ class ReviewFindingInput(StrictInput):
     requirement: Annotated[str, StringConstraints(min_length=1, max_length=4_000)]
 
 
-class TaskCreateInput(StrictInput):
+class TaskDraftCreateInput(StrictInput):
     task_id: StableId
     project_id: StableId
     dedupe_key: StableId
     revision: Annotated[int, Field(ge=1, le=1_000_000)]
+    workflow_kind: Literal["analyze", "implement"]
+    analysis_task_id: StableId | None = None
+    supersedes: StableId | None = None
     goal: ShortText
     acceptance_criteria: Annotated[list[AcceptanceCriterionInput], Field(max_length=50)]
     prompt: PromptText
     task_type: Literal["codex"] = "codex"
     expires_at: TimestampText | None = None
-    supersedes: StableId | None = None
+
+
+class TaskConfirmInput(StrictInput):
+    task_id: StableId
+    confirmation_token: ConfirmationToken
+    expected_plan_hash: PlanHash
 
 
 class TaskReviewInput(StrictInput):
@@ -107,6 +135,13 @@ class TaskReviewInput(StrictInput):
     head_sha: ShaText
     verdict: Literal["approved", "needs_changes"]
     findings: Annotated[list[ReviewFindingInput], Field(max_length=50)]
+
+
+class TaskRedispatchInput(StrictInput):
+    task_id: StableId
+    expected_remote_head_sha: ShaText
+    redispatch_plan_sha256: PlanHash
+    idempotency_key: RedispatchKey
 
 
 def reject_forbidden_control_fields(value: Any, *, path: str = "input") -> None:
@@ -122,6 +157,16 @@ def reject_forbidden_control_fields(value: Any, *, path: str = "input") -> None:
             reject_forbidden_control_fields(item, path=f"{path}[{index}]")
 
 
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 T = TypeVar("T")
 
 
@@ -130,7 +175,7 @@ def _error_code(exc: Exception) -> str:
         return "already_running"
     if isinstance(exc, RecoveryError):
         return "recovery_blocked"
-    if isinstance(exc, StateTransitionError):
+    if isinstance(exc, (StateConflictError, StateTransitionError)):
         return "state_conflict"
     if isinstance(exc, (InvalidTaskError, ValidationError, ValueError)):
         message = str(exc).lower()
@@ -185,15 +230,65 @@ class MCPAdapterService:
         )  # type: ignore[return-value]
 
     def tasks_create(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Compatibility entry point for a default Implement draft.
+
+        It intentionally cannot bypass the Web Task Intake confirmation gate.
+        Use ``tasks_create_draft`` to choose Analyze or link Analyze to Implement.
+        """
+        draft = dict(value)
+        draft["workflow_kind"] = "implement"
+        return self.tasks_create_draft(draft)
+
+    def tasks_create_draft(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Create a canonical task plus its one-purpose dispatch confirmation gate."""
         def operation() -> dict[str, Any]:
             reject_forbidden_control_fields(value)
-            request = TaskCreateInput.model_validate(value)
+            request = TaskDraftCreateInput.model_validate(value)
             request_value = request.model_dump(exclude_none=True)
             if contains_known_secret(request_value):
-                raise InvalidTaskError("MCP task contains a credential-like value")
+                raise InvalidTaskError("MCP task draft contains a credential-like value")
+            if request.workflow_kind == "analyze" and request.analysis_task_id is not None:
+                raise InvalidTaskError("Analyze drafts cannot reference another analysis task")
             expiry = parse_timestamp(request.expires_at)
             if expiry is not None and expiry <= datetime.now(timezone.utc):
-                raise InvalidTaskError("MCP task expires_at must be in the future")
+                raise InvalidTaskError("MCP task draft expires_at must be in the future")
+            analysis_result_sha256 = None
+            if request.analysis_task_id is not None:
+                source = self.store.get_task(request.analysis_task_id)
+                result = source.get("analysis_result")
+                digest = source.get("analysis_result_sha256")
+                if (
+                    isinstance(result, dict)
+                    and isinstance(digest, str)
+                    and _canonical_sha256(result) == digest
+                ):
+                    analysis_result_sha256 = digest
+            execution_plan = {
+                "workflow_kind": request.workflow_kind,
+                "analysis_task_id": request.analysis_task_id,
+                "supersedes": request.supersedes,
+                "analysis_result_sha256": analysis_result_sha256,
+                "task_id": request.task_id,
+                "project_id": request.project_id,
+                "execution_boundary": (
+                    "Codex runs in a read-only sandbox and Core rejects any repository change."
+                    if request.workflow_kind == "analyze"
+                    else "Codex may modify only this task's isolated managed worktree."
+                ),
+                "publication_boundary": (
+                    "Analyze never commits, pushes, or creates a pull request."
+                    if request.workflow_kind == "analyze"
+                    else "Published pull requests remain Draft; Project Brain never merges them automatically."
+                ),
+                "review_boundary": (
+                    "The completed analysis result is immutable and may be linked to a later Implement draft."
+                    if request.workflow_kind == "analyze"
+                    else "Needs changes continues the same canonical task, branch, and Draft PR."
+                ),
+            }
+            plan_hash = _canonical_sha256(execution_plan)
+            request_hash = _canonical_sha256(request_value)
+            confirmation_token = secrets.token_urlsafe(32)
             canonical = {
                 "task_id": request.task_id,
                 "project_id": request.project_id,
@@ -209,23 +304,93 @@ class MCPAdapterService:
                 "expires_at": request.expires_at,
                 "supersedes": request.supersedes,
             }
-            task, created = TaskImporter(self.store).import_value(canonical)
-            if not created:
+            task, created, confirmation_available = self.store.create_mcp_draft(
+                canonical,
+                workflow_kind=request.workflow_kind,
+                analysis_task_id=request.analysis_task_id,
+                confirmation_token=confirmation_token,
+                request_sha256=request_hash,
+                dispatch_plan_sha256=plan_hash,
+            )
+            projects = {item["project_id"]: item for item in self.store.list_projects()}
+            if not created and not confirmation_available:
                 self.store.record_event(
                     task_id=task["task_id"],
-                    event_type="mcp_task_create_requested",
-                    payload={
-                        "requested_task_id": request.task_id,
-                        "outcome": "duplicate",
-                    },
+                    event_type="mcp_task_draft_create_requested",
+                    payload={"requested_task_id": request.task_id, "outcome": "duplicate"},
                 )
-            projects = {item["project_id"]: item for item in self.store.list_projects()}
-            summary = task_summary(task, projects)
+                return {
+                    "status": "duplicate",
+                    "code": "ok",
+                    "task": task_summary(task, projects),
+                    "execution_plan": execution_plan,
+                    "plan_hash": plan_hash,
+                    "next_action": "Inspect the existing task; it is already confirmed or has progressed.",
+                }
             return {
-                "status": "created" if created else "duplicate",
+                "status": "draft_created" if created else "draft_replayed",
                 "code": "ok",
-                "task": summary,
-                "next_action": "Call project_brain_queue_dispatch_next to process the queue.",
+                "task": task_summary(task, projects),
+                "execution_plan": execution_plan,
+                "plan_hash": plan_hash,
+                "confirmation": {
+                    "required": True,
+                    "confirmation_token": confirmation_token,
+                    "expected_plan_hash": plan_hash,
+                    "next_action": "Present this exact plan to the user, then call project_brain_tasks_confirm with its plan hash only after explicit approval.",
+                },
+            }
+
+        return _guard(operation)  # type: ignore[return-value]
+
+    def tasks_confirm(self, value: dict[str, Any]) -> dict[str, Any]:
+        def operation() -> dict[str, Any]:
+            reject_forbidden_control_fields(value)
+            request = TaskConfirmInput.model_validate(value)
+            task = self.store.confirm_mcp_draft(
+                request.task_id,
+                request.confirmation_token,
+                request.expected_plan_hash,
+            )
+            projects = {item["project_id"]: item for item in self.store.list_projects()}
+            return {
+                "status": "confirmed",
+                "code": "ok",
+                "task": task_summary(task, projects),
+                "next_action": "Call project_brain_queue_dispatch_next to start the fixed worker.",
+            }
+
+        return _guard(operation)  # type: ignore[return-value]
+
+    def tasks_redispatch(self, value: dict[str, Any]) -> dict[str, Any]:
+        def operation() -> dict[str, Any]:
+            reject_forbidden_control_fields(value)
+            request = TaskRedispatchInput.model_validate(value)
+            task = self.store.get_task(request.task_id)
+            project = self.store.task_execution_profile(task)
+            if not task.get("branch"):
+                raise StateConflictError("Task has no registered publication branch")
+            observed = GitHubAdapter().remote_head(
+                task=task,
+                project=project,
+                worktree=project["repo_path"],
+            )
+            if observed is None:
+                raise StateConflictError("Task publication branch does not exist remotely")
+            updated = self.store.authorize_redispatch(
+                request.task_id,
+                expected_remote_head_sha=request.expected_remote_head_sha,
+                observed_remote_head_sha=observed,
+                plan_sha256=request.redispatch_plan_sha256,
+                idempotency_key=request.idempotency_key,
+            )
+            projects = {item["project_id"]: item for item in self.store.list_projects()}
+            return {
+                "status": "redispatch_authorized",
+                "code": "ok",
+                "task": task_summary(updated, projects),
+                "observed_remote_head_sha": observed,
+                "next_action": "Call project_brain_queue_dispatch_next to start the explicitly authorized worker.",
             }
 
         return _guard(operation)  # type: ignore[return-value]
@@ -302,7 +467,7 @@ class MCPAdapterService:
                     "created_at": review["created_at"],
                 },
                 "next_action": (
-                    "Call project_brain_queue_dispatch_next for the requested revision."
+                    "Call project_brain_tasks_redispatch with the exact current remote head before dispatch."
                     if request.verdict == "needs_changes"
                     else "Await explicit user merge authorization; Project Brain will not merge."
                 ),
@@ -437,7 +602,6 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
         prompt: PromptText,
         task_type: Literal["codex"] = "codex",
         expires_at: TimestampText | None = None,
-        supersedes: StableId | None = None,
     ) -> dict[str, Any]:
         return service.tasks_create(
             {
@@ -450,7 +614,90 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
                 "prompt": prompt,
                 "task_type": task_type,
                 "expires_at": expires_at,
-                "supersedes": supersedes,
+            }
+        )
+
+    @mcp.tool(
+        name="project_brain_tasks_create_draft",
+        description=(
+            "Create an Analyze or Implement canonical task draft and return its bounded "
+            "execution plan plus an explicit dispatch-confirmation token."
+        ),
+        annotations=CREATE_WRITE,
+        structured_output=True,
+    )
+    def project_brain_tasks_create_draft(
+        task_id: StableId,
+        project_id: StableId,
+        dedupe_key: StableId,
+        revision: Annotated[int, Field(ge=1, le=1_000_000)],
+        workflow_kind: Literal["analyze", "implement"],
+        goal: ShortText,
+        acceptance_criteria: Annotated[list[AcceptanceCriterionInput], Field(max_length=50)],
+        prompt: PromptText,
+        analysis_task_id: StableId | None = None,
+        task_type: Literal["codex"] = "codex",
+        expires_at: TimestampText | None = None,
+    ) -> dict[str, Any]:
+        return service.tasks_create_draft(
+            {
+                "task_id": task_id,
+                "project_id": project_id,
+                "dedupe_key": dedupe_key,
+                "revision": revision,
+                "workflow_kind": workflow_kind,
+                "analysis_task_id": analysis_task_id,
+                "goal": goal,
+                "acceptance_criteria": [item.model_dump(exclude_none=True) for item in acceptance_criteria],
+                "prompt": prompt,
+                "task_type": task_type,
+                "expires_at": expires_at,
+            }
+        )
+
+    @mcp.tool(
+        name="project_brain_tasks_confirm",
+        description=(
+            "Record the user's explicit approval of one MCP task draft plan. "
+            "This authorizes queue dispatch but does not itself execute, publish, or merge."
+        ),
+        annotations=CREATE_WRITE,
+        structured_output=True,
+    )
+    def project_brain_tasks_confirm(
+        task_id: StableId,
+        confirmation_token: ConfirmationToken,
+        expected_plan_hash: PlanHash,
+    ) -> dict[str, Any]:
+        return service.tasks_confirm(
+            {
+                "task_id": task_id,
+                "confirmation_token": confirmation_token,
+                "expected_plan_hash": expected_plan_hash,
+            }
+        )
+
+    @mcp.tool(
+        name="project_brain_tasks_redispatch",
+        description=(
+            "Explicitly authorize one needs_changes revision at the exact current "
+            "remote task-branch head. This does not dispatch or execute the task."
+        ),
+        annotations=CREATE_WRITE,
+        structured_output=True,
+    )
+    def project_brain_tasks_redispatch(
+        task_id: StableId,
+        expected_remote_head_sha: ShaText,
+        redispatch_plan_sha256: PlanHash,
+        idempotency_key: RedispatchKey,
+    ) -> dict[str, Any]:
+        return service.tasks_redispatch(
+            {
+                "task_id": task_id,
+                "expected_remote_head_sha": expected_remote_head_sha,
+                "redispatch_plan_sha256": redispatch_plan_sha256,
+                "idempotency_key": idempotency_key,
             }
         )
 

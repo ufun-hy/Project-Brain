@@ -75,6 +75,13 @@ class RemoteRecoveryTests(unittest.TestCase):
                 }
             ],
         )
+        self.fixture.store.authorize_redispatch(
+            "remote-review",
+            expected_remote_head_sha=first_commit,
+            observed_remote_head_sha=first_commit,
+            plan_sha256="a" * 64,
+            idempotency_key="remote-review-revision-2",
+        )
         second = engine.apply_once()
         second_commit = second["task"]["commit"]
         second_record = self.fixture.store.get_worktree("remote-review")

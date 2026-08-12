@@ -42,7 +42,7 @@ def verify(directory: Path) -> None:
         "task_request_schema_version": 1,
         "confirmation_schema_version": 1,
         "result_schema_version": 1,
-        "database_schema_version": 10,
+        "database_schema_version": 12,
         "transport": "stdin_json",
         "plan_token_prefix": "local-v2:",
         "plan_token_storage": "sha256_only",

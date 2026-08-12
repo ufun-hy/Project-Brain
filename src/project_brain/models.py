@@ -73,7 +73,6 @@ TERMINAL_STATUSES = {
 CLAIMABLE_STATUSES = {
     TaskStatus.PENDING,
     TaskStatus.RETRY_PENDING,
-    TaskStatus.NEEDS_CHANGES,
 }
 
 WORKTREE_RETAINED_STATUSES = {
@@ -105,6 +104,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.EXPIRED,
     },
     TaskStatus.RECOVERY_BLOCKED: {
+        TaskStatus.SUPERSEDED,
         TaskStatus.RETRY_PENDING,
         TaskStatus.FAILED,
         TaskStatus.EXPIRED,
@@ -122,7 +122,6 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.EXPIRED,
     },
     TaskStatus.NEEDS_CHANGES: {
-        TaskStatus.RUNNING,
         TaskStatus.SUPERSEDED,
         TaskStatus.EXPIRED,
         TaskStatus.FAILED,
@@ -226,6 +225,7 @@ class CanonicalTask:
     acceptance_criteria: list[Any] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)
     expires_at: str | None = None
+    base_sha: str | None = None
     supersedes: str | None = None
 
     def validate(self) -> None:
@@ -237,6 +237,12 @@ class CanonicalTask:
         validate_stable_id("dedupe_key", self.dedupe_key)
         if self.supersedes is not None:
             validate_stable_id("supersedes", self.supersedes)
+        if self.base_sha is not None and (
+            not isinstance(self.base_sha, str)
+            or len(self.base_sha) != 40
+            or any(character not in "0123456789abcdef" for character in self.base_sha)
+        ):
+            raise InvalidTaskError("base_sha must be a lowercase Git commit SHA")
         if self.revision < 1:
             raise InvalidTaskError("revision must be at least 1")
         if self.task_type not in {"codex", "write_files", "command"}:

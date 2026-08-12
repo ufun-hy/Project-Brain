@@ -24,6 +24,7 @@ from .errors import (
     StateConflictError,
 )
 from .executables import find_executable
+from .github import GitHubAdapter
 from .locking import RuntimeLock
 from .ingress import TaskImporter
 from .projects import ProjectRegistry
@@ -147,6 +148,14 @@ def build_parser() -> argparse.ArgumentParser:
     task_review.add_argument("task_id")
     task_review.add_argument("--file", type=Path, required=True)
     _add_json(task_review)
+    task_redispatch = task_sub.add_parser(
+        "redispatch", help="Explicitly authorize a needs_changes redispatch"
+    )
+    task_redispatch.add_argument("task_id")
+    task_redispatch.add_argument("--expected-remote-head", required=True)
+    task_redispatch.add_argument("--plan-sha256", required=True)
+    task_redispatch.add_argument("--idempotency-key", required=True)
+    _add_json(task_redispatch)
     task_recover = task_sub.add_parser("recover", help="Reconcile an interrupted task")
     task_recover.add_argument("task_id")
     recovery_mode = task_recover.add_mutually_exclusive_group()
@@ -970,6 +979,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 task = applied["task"]
             _render(
                 {"status": task["status"], "task": task, "review": review},
+                json_output=args.json_output,
+            )
+        elif args.command == "tasks" and args.tasks_command == "redispatch":
+            with RuntimeLock(runtime.lock_file):
+                task = store.get_task(args.task_id)
+                project = store.task_execution_profile(task)
+                observed = GitHubAdapter().remote_head(
+                    task=task,
+                    project=project,
+                    worktree=project["repo_path"],
+                )
+                if observed is None:
+                    raise StateConflictError(
+                        "Task publication branch does not exist remotely"
+                    )
+                task = store.authorize_redispatch(
+                    args.task_id,
+                    expected_remote_head_sha=args.expected_remote_head,
+                    observed_remote_head_sha=observed,
+                    plan_sha256=args.plan_sha256,
+                    idempotency_key=args.idempotency_key,
+                )
+            _render(
+                {
+                    "status": "redispatch_authorized",
+                    "observed_remote_head_sha": observed,
+                    "task": task,
+                },
                 json_output=args.json_output,
             )
         elif args.command == "tasks" and args.tasks_command == "recover":

@@ -1,6 +1,6 @@
 """SQLite schema versions and forward-only migration definitions."""
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 
 MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -477,6 +477,47 @@ ALTER TABLE local_task_plans ADD COLUMN contract_version TEXT;
 ALTER TABLE local_task_plans ADD COLUMN superseded_at TEXT;
 """
 
+# Web Task Intake extends the canonical task record rather than introducing a
+# second MCP-owned lifecycle. The immutable request/plan hashes make exact
+# retries recoverable while rejecting a reused idempotency key with new intent.
+MIGRATION_11 = """
+ALTER TABLE tasks ADD COLUMN workflow_kind TEXT NOT NULL DEFAULT 'implement'
+    CHECK(workflow_kind IN ('analyze', 'implement'));
+ALTER TABLE tasks ADD COLUMN analysis_task_id TEXT REFERENCES tasks(task_id);
+ALTER TABLE tasks ADD COLUMN analysis_result_json TEXT;
+ALTER TABLE tasks ADD COLUMN analysis_result_sha256 TEXT;
+ALTER TABLE tasks ADD COLUMN mcp_request_sha256 TEXT;
+ALTER TABLE tasks ADD COLUMN dispatch_plan_sha256 TEXT;
+ALTER TABLE tasks ADD COLUMN dispatch_confirmation_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN dispatch_confirmed_at TEXT;
+ALTER TABLE tasks ADD COLUMN dispatch_confirmation_token_sha256 TEXT;
+
+UPDATE tasks SET workflow_kind = 'analyze' WHERE local_task_type = 'analysis';
+
+CREATE INDEX tasks_analysis_task_idx ON tasks(analysis_task_id);
+CREATE INDEX tasks_dispatch_gate_idx
+    ON tasks(status, dispatch_confirmation_required, dispatch_confirmed_at, created_at);
+"""
+
+MIGRATION_12 = """
+ALTER TABLE tasks ADD COLUMN canonical_published_head_sha TEXT;
+ALTER TABLE tasks ADD COLUMN local_candidate_sha TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_expected_remote_head_sha TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_plan_sha256 TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_idempotency_key TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_authorized_at TEXT;
+ALTER TABLE tasks ADD COLUMN redispatch_consumed_at TEXT;
+ALTER TABLE tasks ADD COLUMN publication_conflict_json TEXT;
+
+ALTER TABLE task_attempts ADD COLUMN publication_base_sha TEXT;
+ALTER TABLE task_attempts ADD COLUMN candidate_sha TEXT;
+ALTER TABLE task_attempts ADD COLUMN observed_remote_head_sha TEXT;
+ALTER TABLE verification_sets ADD COLUMN expires_at TEXT;
+
+CREATE INDEX tasks_redispatch_gate_idx
+    ON tasks(status, redispatch_authorized_at, redispatch_consumed_at, created_at);
+"""
+
 MIGRATIONS = {
     1: MIGRATION_1,
     2: MIGRATION_2,
@@ -488,4 +529,6 @@ MIGRATIONS = {
     8: MIGRATION_8,
     9: MIGRATION_9,
     10: MIGRATION_10,
+    11: MIGRATION_11,
+    12: MIGRATION_12,
 }

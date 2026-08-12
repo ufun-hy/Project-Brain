@@ -69,6 +69,13 @@ class VerificationSetTests(unittest.TestCase):
         self.fixture.store.transition("two-rounds", TaskStatus.AWAITING_REVIEW)
         self.fixture.store.finish_attempt("two-rounds", status="completed")
         self.fixture.store.transition("two-rounds", TaskStatus.NEEDS_CHANGES)
+        self.fixture.store.authorize_redispatch(
+            "two-rounds",
+            expected_remote_head_sha=record["base_sha"],
+            observed_remote_head_sha=record["base_sha"],
+            plan_sha256="c" * 64,
+            idempotency_key="two-rounds-revision-2",
+        )
         second_task = self.fixture.store.claim_next()
         second_task = self.fixture.store.set_attempt_phase(
             "two-rounds", AttemptPhase.VERIFICATION

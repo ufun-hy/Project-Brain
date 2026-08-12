@@ -31,8 +31,9 @@ reviewed Tunnel Client into its private App Support directory. Both installers
 use atomic replacement and rollback. Build 10 keeps the App and helper
 to one immutable, versioned CLI contract, upgrades a stale same-version helper
 by SHA-256, and enforces one user process and one management window. It uses a
-schema-v10 canonical plan record, stores only the plan-token SHA-256, and lets
-confirmation submit only the opaque token plus reviewed plan hash. Build 8
+schema-v12 task record, including the Web Task Intake dispatch gate and fixed
+analysis snapshot, while storing only confirmation-token hashes. Local task
+confirmation submits only the opaque token plus reviewed plan hash. Build 8
 introduced strict local-task intake, guided first run, and persisted analysis
 results. Build 4
 added an MCP transport-probe
@@ -191,10 +192,24 @@ The Streamable HTTP endpoint is `http://127.0.0.1:7677/mcp`. The no-auth MVP
 rejects every non-loopback bind. ChatGPT access uses OpenAI Secure MCP Tunnel;
 do not expose the local endpoint as an unauthenticated public service.
 
-The nine allowlisted tools cover health, projects, canonical task create,
-asynchronous queue dispatch, bounded task list/detail, exact-head review, and
-read-only recovery preview. The ninth tool is a strict, one-field, no-side-effect
-MCP transport probe. Its source is explicitly unattributed and it cannot set
+The allowlisted tools cover health, projects, canonical task create, explicit
+Analyze/Implement task drafts and draft confirmation, asynchronous queue dispatch,
+bounded task list/detail (including redacted agent-log and linked Analyze-result
+summaries), exact-head review, and read-only recovery preview. Drafts use a
+task-bound confirmation gate in the canonical Core record; they cannot be claimed
+until the user has explicitly approved the returned plan and matching `plan_hash`.
+Review-driven `needs_changes` retries additionally require explicit exact-head
+redispatch authorization. A publication conflict preserves the canonical
+published head and local forensic candidate and requires an explicit new
+revision from that canonical head. The new revision uses the same project and
+dedupe key with a greater revision, passes the normal draft confirmation gate,
+and never mutates the old task's conflict or forensic history.
+An exact unconfirmed create replay rotates and returns a replacement confirmation
+token, while a reused task/logical identity with different intent fails closed.
+Analyze runs with a read-only Codex sandbox, rejects repository changes, and never
+commits, pushes, or creates a PR. A linked Implement task stores and consumes the
+completed Analyze result plus its SHA-256 as an immutable snapshot. The transport probe is a
+strict, one-field, no-side-effect MCP tool. Its source is explicitly unattributed and it cannot set
 external ChatGPT verification. The tools expose no shell, arbitrary files, cleanup,
 recovery resolution, manual acceptance setter, or merge operation. Dispatch starts a fixed
 one-shot Core worker and returns immediately; `RuntimeLock` and the global

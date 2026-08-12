@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from project_brain.errors import StateTransitionError
+from project_brain.errors import InvalidTaskError, StateConflictError, StateTransitionError
 from project_brain.models import CanonicalTask, TaskStatus
 from project_brain.store import SCHEMA_VERSION, TaskStore
 from project_brain.runtime import RuntimePaths
@@ -67,6 +67,118 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(created)
         self.assertEqual(duplicate["task_id"], "first")
 
+    def test_mcp_draft_confirmation_gate_and_analysis_link_are_canonical(self) -> None:
+        analyze, created, confirmation_available = self.fixture.store.create_mcp_draft(
+            CanonicalTask(
+                task_id="analyze-draft",
+                project_id="project-one",
+                dedupe_key="analyze-draft",
+                revision=1,
+                source_type="mcp",
+                goal="Analyze the requested change",
+                payload={"prompt": "Analyze only."},
+            ),
+            workflow_kind="analyze",
+            analysis_task_id=None,
+            confirmation_token="a" * 43,
+            request_sha256="1" * 64,
+            dispatch_plan_sha256="2" * 64,
+        )
+        self.assertTrue(created)
+        self.assertTrue(confirmation_available)
+        self.assertTrue(analyze["dispatch_confirmation_required"])
+        self.assertIsNone(self.fixture.store.claim_next())
+        with self.assertRaises(InvalidTaskError):
+            self.fixture.store.confirm_mcp_draft(
+                "analyze-draft", "b" * 43, "2" * 64
+            )
+        with self.assertRaises(StateConflictError):
+            self.fixture.store.confirm_mcp_draft(
+                "analyze-draft", "a" * 43, "3" * 64
+            )
+        self.fixture.store.confirm_mcp_draft(
+            "analyze-draft", "a" * 43, "2" * 64
+        )
+        claimed = self.fixture.store.claim_next()
+        self.assertEqual(claimed["task_id"], "analyze-draft")
+        analysis_result = {
+            "schema_version": 1,
+            "kind": "analysis",
+            "summary": "Use the existing Core task state machine.",
+            "completed_at": "2026-08-09T00:00:00+00:00",
+        }
+        self.fixture.store.set_task_result("analyze-draft", analysis_result)
+        self.fixture.store.transition(
+            "analyze-draft",
+            TaskStatus.COMPLETED,
+            event_type="analysis_completed",
+        )
+
+        implementation, created, confirmation_available = self.fixture.store.create_mcp_draft(
+            CanonicalTask(
+                task_id="implement-draft",
+                project_id="project-one",
+                dedupe_key="implement-draft",
+                revision=1,
+                source_type="mcp",
+                goal="Implement the analyzed change",
+                payload={"prompt": "Implement it."},
+            ),
+            workflow_kind="implement",
+            analysis_task_id="analyze-draft",
+            confirmation_token="c" * 43,
+            request_sha256="4" * 64,
+            dispatch_plan_sha256="5" * 64,
+        )
+        self.assertTrue(created)
+        self.assertTrue(confirmation_available)
+        self.assertEqual(implementation["analysis_task_id"], "analyze-draft")
+        self.assertEqual(implementation["analysis_result"], analysis_result)
+        self.assertEqual(len(implementation["analysis_result_sha256"]), 64)
+        self.assertIsNone(self.fixture.store.claim_next())
+
+    def test_implementation_rejects_completed_analysis_without_frozen_result(self) -> None:
+        self.fixture.store.create_mcp_draft(
+            CanonicalTask(
+                task_id="analysis-without-result",
+                project_id="project-one",
+                dedupe_key="analysis-without-result",
+                revision=1,
+                source_type="mcp",
+                goal="Analyze without a persisted result",
+                payload={"prompt": "Analyze only."},
+            ),
+            workflow_kind="analyze",
+            analysis_task_id=None,
+            confirmation_token="a" * 43,
+            request_sha256="6" * 64,
+            dispatch_plan_sha256="7" * 64,
+        )
+        self.fixture.store.confirm_mcp_draft(
+            "analysis-without-result", "a" * 43, "7" * 64
+        )
+        self.assertEqual(self.fixture.store.claim_next()["task_id"], "analysis-without-result")
+        self.fixture.store.transition(
+            "analysis-without-result", TaskStatus.COMPLETED, event_type="analysis_completed"
+        )
+        with self.assertRaisesRegex(InvalidTaskError, "frozen completed result"):
+            self.fixture.store.create_mcp_draft(
+                CanonicalTask(
+                    task_id="implementation-without-result",
+                    project_id="project-one",
+                    dedupe_key="implementation-without-result",
+                    revision=1,
+                    source_type="mcp",
+                    goal="Implement only after Analyze is frozen",
+                    payload={"prompt": "Implement it."},
+                ),
+                workflow_kind="implement",
+                analysis_task_id="analysis-without-result",
+                confirmation_token="b" * 43,
+                request_sha256="8" * 64,
+                dispatch_plan_sha256="9" * 64,
+            )
+
     def test_new_revision_supersedes_named_old_task(self) -> None:
         self.fixture.add_task("old", dedupe_key="flow", revision=1)
         new, created = self.fixture.store.insert_task(
@@ -93,10 +205,6 @@ class StoreTests(unittest.TestCase):
     def test_active_and_merge_owned_states_cannot_be_superseded(self) -> None:
         transitions = {
             TaskStatus.RUNNING: [TaskStatus.RUNNING],
-            TaskStatus.RECOVERY_BLOCKED: [
-                TaskStatus.RUNNING,
-                TaskStatus.RECOVERY_BLOCKED,
-            ],
             TaskStatus.MERGING: [
                 TaskStatus.RUNNING,
                 TaskStatus.AWAITING_REVIEW,
@@ -164,7 +272,7 @@ class StoreTests(unittest.TestCase):
         before_events = self.fixture.store.list_events("owned-recovery")
         before_all_events = self.fixture.store.list_events()
 
-        with self.assertRaises(StateTransitionError):
+        with self.assertRaises(StateConflictError):
             self.fixture.store.insert_task(
                 CanonicalTask(
                     task_id="unsafe-recovery-replacement",
@@ -210,6 +318,63 @@ class StoreTests(unittest.TestCase):
             self.assertNotIn(new_id, {task["task_id"] for task in self.fixture.store.list_tasks()})
         self.assertEqual(self.fixture.store.get_task("higher-revision"), before_task)
         self.assertEqual(self.fixture.store.list_events("higher-revision"), before_events)
+
+    def test_recovery_blocked_can_be_superseded_with_canonical_base_preserved(self) -> None:
+        old = self.fixture.add_task(
+            "blocked-publication",
+            dedupe_key="publication-flow",
+            revision=1,
+        )
+        self.fixture.store.claim_next()
+        published = "a" * 40
+        candidate = "c" * 40
+        self.fixture.store.set_task_fields(
+            old["task_id"],
+            branch="brain/blocked-publication",
+            commit=published,
+            head_sha=published,
+        )
+        self.fixture.store.record_candidate(
+            old["task_id"], candidate, publication_base_sha=published
+        )
+        self.fixture.store.record_publication_conflict(
+            old["task_id"],
+            {
+                "branch": "brain/blocked-publication",
+                "expected_remote_head_sha": published,
+                "observed_remote_head_sha": "b" * 40,
+                "publication_base_sha": published,
+                "candidate_sha": candidate,
+            },
+        )
+        self.fixture.store.block_running_task(
+            old["task_id"], reason="publication conflict requires a new revision"
+        )
+        replacement, created = self.fixture.store.insert_task(
+            CanonicalTask(
+                task_id="blocked-publication-revision-2",
+                project_id="project-one",
+                dedupe_key="publication-flow",
+                revision=2,
+                source_type="test",
+                goal="superseding recovery revision",
+                base_sha=published,
+                supersedes=old["task_id"],
+                payload={"prompt": "test"},
+            )
+        )
+        self.assertTrue(created)
+        self.assertEqual(replacement["base_sha"], published)
+        self.assertEqual(
+            self.fixture.store.get_task(old["task_id"])["status"],
+            TaskStatus.SUPERSEDED.value,
+        )
+        preserved = self.fixture.store.get_task(old["task_id"])
+        self.assertEqual(preserved["publication_conflict"]["candidate_sha"], candidate)
+        self.assertEqual(
+            self.fixture.store.list_events(old["task_id"])[-1]["event_type"],
+            "task_superseded",
+        )
 
     def test_terminal_history_is_preserved_by_higher_revisions(self) -> None:
         terminal_paths = {
@@ -341,14 +506,112 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(StateTransitionError):
             self.fixture.store.transition("task", TaskStatus.ACCEPTED)
 
-    def test_needs_changes_can_be_claimed_as_a_new_attempt(self) -> None:
+    def test_needs_changes_requires_exact_head_redispatch_before_claim(self) -> None:
         self.fixture.add_task("review-cycle")
         self.fixture.store.claim_next()
+        published = "a" * 40
+        self.fixture.store.set_task_fields("review-cycle", commit=published)
         self.fixture.store.transition("review-cycle", TaskStatus.AWAITING_REVIEW)
         self.fixture.store.transition("review-cycle", TaskStatus.NEEDS_CHANGES)
+        self.assertIsNone(self.fixture.store.claim_next())
+        self.fixture.store.authorize_redispatch(
+            "review-cycle",
+            expected_remote_head_sha=published,
+            observed_remote_head_sha=published,
+            plan_sha256="b" * 64,
+            idempotency_key="review-cycle-revision-1",
+        )
+        self.assertEqual(
+            self.fixture.store.authorize_redispatch(
+                "review-cycle",
+                expected_remote_head_sha=published,
+                observed_remote_head_sha=published,
+                plan_sha256="b" * 64,
+                idempotency_key="review-cycle-revision-1",
+            )["status"],
+            TaskStatus.RETRY_PENDING.value,
+        )
         claimed = self.fixture.store.claim_next()
         self.assertEqual(claimed["task_id"], "review-cycle")
         self.assertEqual(claimed["attempt_count"], 2)
+
+    def test_redispatch_rejects_stale_head_without_side_effects(self) -> None:
+        self.fixture.add_task("stale-redispatch")
+        self.fixture.store.claim_next()
+        published = "a" * 40
+        self.fixture.store.set_task_fields("stale-redispatch", commit=published)
+        self.fixture.store.transition("stale-redispatch", TaskStatus.AWAITING_REVIEW)
+        self.fixture.store.transition("stale-redispatch", TaskStatus.NEEDS_CHANGES)
+        before = self.fixture.store.list_events("stale-redispatch")
+        with self.assertRaises(StateConflictError):
+            self.fixture.store.authorize_redispatch(
+                "stale-redispatch",
+                expected_remote_head_sha="b" * 40,
+                observed_remote_head_sha="b" * 40,
+                plan_sha256="c" * 64,
+                idempotency_key="stale-redispatch-1",
+            )
+        self.assertEqual(self.fixture.store.get_task("stale-redispatch")["status"], TaskStatus.NEEDS_CHANGES.value)
+        self.assertEqual(self.fixture.store.list_events("stale-redispatch"), before)
+
+    def test_concurrent_redispatch_authorization_is_idempotent(self) -> None:
+        self.fixture.add_task("concurrent-redispatch")
+        self.fixture.store.claim_next()
+        published = "c" * 40
+        self.fixture.store.set_task_fields("concurrent-redispatch", commit=published)
+        self.fixture.store.transition("concurrent-redispatch", TaskStatus.AWAITING_REVIEW)
+        self.fixture.store.transition("concurrent-redispatch", TaskStatus.NEEDS_CHANGES)
+
+        def authorize(_: int) -> str:
+            return self.fixture.store.authorize_redispatch(
+                "concurrent-redispatch",
+                expected_remote_head_sha=published,
+                observed_remote_head_sha=published,
+                plan_sha256="d" * 64,
+                idempotency_key="concurrent-redispatch-revision-2",
+            )["status"]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = list(executor.map(authorize, range(2)))
+        self.assertEqual(statuses, [TaskStatus.RETRY_PENDING.value] * 2)
+        self.assertEqual(
+            [
+                item["event_type"]
+                for item in self.fixture.store.list_events("concurrent-redispatch")
+            ].count("explicit_redispatch_authorized"),
+            1,
+        )
+
+    def test_publication_state_survives_database_reopen(self) -> None:
+        self.fixture.add_task("reopen-publication")
+        self.fixture.store.claim_next()
+        published = "e" * 40
+        candidate = "f" * 40
+        self.fixture.store.set_task_fields("reopen-publication", commit=published)
+        self.fixture.store.record_candidate(
+            "reopen-publication", candidate, publication_base_sha=published
+        )
+        self.fixture.store.record_publication_conflict(
+            "reopen-publication",
+            {
+                "branch": "brain/reopen-publication",
+                "expected_remote_head_sha": published,
+                "observed_remote_head_sha": "a" * 40,
+                "publication_base_sha": published,
+                "candidate_sha": candidate,
+            },
+        )
+        reopened = TaskStore(self.fixture.runtime.database)
+        reopened.initialize()
+        task = reopened.get_task("reopen-publication")
+        self.assertEqual(reopened.schema_version(), 12)
+        self.assertEqual(task["canonical_published_head_sha"], published)
+        self.assertEqual(task["commit"], published)
+        self.assertEqual(task["local_candidate_sha"], candidate)
+        self.assertEqual(
+            task["publication_conflict"]["observed_remote_head_sha"], "a" * 40
+        )
+        self.assertEqual(reopened.list_attempts("reopen-publication")[0]["candidate_sha"], candidate)
 
     def test_status_events_are_append_only(self) -> None:
         self.fixture.add_task("audit")

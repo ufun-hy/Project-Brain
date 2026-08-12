@@ -23,6 +23,8 @@ from project_brain.schema import (
     MIGRATION_8,
     MIGRATION_9,
     MIGRATION_10,
+    MIGRATION_11,
+    MIGRATION_12,
     SCHEMA_VERSION,
 )
 from project_brain.store import TaskStore
@@ -357,6 +359,125 @@ class MigrationTests(unittest.TestCase):
         self.assertRegex(row["plan_sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn(token, row["plan_json"])
         self.assertNotIn(token.encode("utf-8"), self.database.read_bytes())
+        upgraded.initialize()
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
+
+    def test_v10_upgrade_adds_web_intake_gate_and_backfills_analysis(self) -> None:
+        self.create_v4_project_and_task([str(Path(sys.executable).resolve())])
+        migrations = {
+            1: MIGRATION_1,
+            2: MIGRATION_2,
+            3: MIGRATION_3,
+            4: MIGRATION_4,
+            5: MIGRATION_5,
+            6: MIGRATION_6,
+            7: MIGRATION_7,
+            8: MIGRATION_8,
+            9: MIGRATION_9,
+            10: MIGRATION_10,
+        }
+        version_ten = TaskStore(
+            self.database,
+            migrations=migrations,
+            schema_version=10,
+        )
+        version_ten.initialize()
+        with version_ten.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE tasks SET local_task_type = 'analysis' WHERE task_id = 'legacy-task'"
+            )
+
+        upgraded = TaskStore(self.database)
+        upgraded.initialize()
+        task = upgraded.get_task("legacy-task")
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
+        self.assertEqual(task["workflow_kind"], "analyze")
+        self.assertFalse(task["dispatch_confirmation_required"])
+        self.assertIsNone(task["analysis_result"])
+        self.assertIsNone(task["analysis_result_sha256"])
+        self.assertIsNone(task["dispatch_plan_sha256"])
+
+    def test_v11_failure_rolls_back_web_intake_columns_and_version(self) -> None:
+        migrations = {
+            1: MIGRATION_1,
+            2: MIGRATION_2,
+            3: MIGRATION_3,
+            4: MIGRATION_4,
+            5: MIGRATION_5,
+            6: MIGRATION_6,
+            7: MIGRATION_7,
+            8: MIGRATION_8,
+            9: MIGRATION_9,
+            10: MIGRATION_10,
+        }
+        TaskStore(self.database, migrations=migrations, schema_version=10).initialize()
+        broken = {**migrations, 11: MIGRATION_11 + "\nINVALID SQL;"}
+        with self.assertRaises(sqlite3.DatabaseError):
+            TaskStore(self.database, migrations=broken, schema_version=11).initialize()
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
+        self.assertNotIn("workflow_kind", columns)
+        self.assertNotIn("dispatch_plan_sha256", columns)
+
+    def test_v12_upgrade_adds_publication_fencing_columns_and_preserves_data(self) -> None:
+        self.create_v4_project_and_task([str(Path(sys.executable).resolve())])
+        migrations = {
+            1: MIGRATION_1,
+            2: MIGRATION_2,
+            3: MIGRATION_3,
+            4: MIGRATION_4,
+            5: MIGRATION_5,
+            6: MIGRATION_6,
+            7: MIGRATION_7,
+            8: MIGRATION_8,
+            9: MIGRATION_9,
+            10: MIGRATION_10,
+            11: MIGRATION_11,
+            12: MIGRATION_12,
+        }
+        version_eleven = TaskStore(
+            self.database,
+            migrations={key: value for key, value in migrations.items() if key < 12},
+            schema_version=11,
+        )
+        version_eleven.initialize()
+        with version_eleven.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE tasks SET status = 'awaiting_review', commit_sha = ? "
+                "WHERE task_id = 'legacy-task'",
+                ("a" * 40,),
+            )
+
+        upgraded = TaskStore(self.database)
+        upgraded.initialize()
+        task = upgraded.get_task("legacy-task")
+        self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
+        self.assertEqual(task["commit"], "a" * 40)
+        self.assertIsNone(task["canonical_published_head_sha"])
+        self.assertIsNone(task["local_candidate_sha"])
+        with upgraded.connect() as connection:
+            task_columns = {item["name"] for item in connection.execute("PRAGMA table_info(tasks)")}
+            attempt_columns = {
+                item["name"] for item in connection.execute("PRAGMA table_info(task_attempts)")
+            }
+            verification_columns = {
+                item["name"]
+                for item in connection.execute("PRAGMA table_info(verification_sets)")
+            }
+        self.assertTrue(
+            {
+                "canonical_published_head_sha",
+                "local_candidate_sha",
+                "publication_conflict_json",
+            }.issubset(task_columns)
+        )
+        self.assertTrue(
+            {"publication_base_sha", "candidate_sha", "observed_remote_head_sha"}.issubset(
+                attempt_columns
+            )
+        )
+        self.assertIn("expires_at", verification_columns)
         upgraded.initialize()
         self.assertEqual(upgraded.schema_version(), SCHEMA_VERSION)
 

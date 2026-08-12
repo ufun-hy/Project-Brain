@@ -112,35 +112,30 @@ def onboard(
     assert applied["action"] == "add"
 
 
-def downgrade_fixture_to_v9(runtime: Path) -> None:
+EXPECTED_DATABASE_SCHEMA_VERSION = 12
+
+
+def downgrade_fixture_to_v10(runtime: Path) -> None:
     database = runtime / "project-brain.db"
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE tasks SET status = 'accepted' WHERE task_id = 'upgrade-sentinel'")
-        # Build a truthful Build 8 schema-v9 fixture. No local plan exists yet,
-        # so replacing the empty table preserves all project/task runtime data.
-        connection.execute("DELETE FROM schema_migrations WHERE version = 10")
-        connection.execute("DROP TABLE local_task_plans")
+        # Build a truthful schema-v10 fixture by removing only the Web Task
+        # Intake columns and indexes. Reinitialization must apply migration 11
+        # while preserving the existing project, task, and local plan data.
         connection.executescript("""
-            CREATE TABLE local_task_plans (
-                plan_token TEXT PRIMARY KEY,
-                schema_version INTEGER NOT NULL CHECK(schema_version = 1),
-                request_sha256 TEXT NOT NULL,
-                request_json TEXT NOT NULL,
-                plan_json TEXT NOT NULL,
-                project_id TEXT NOT NULL REFERENCES projects(project_id),
-                project_config_revision INTEGER NOT NULL,
-                project_config_sha256 TEXT NOT NULL,
-                base_sha TEXT,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                consumed_at TEXT,
-                task_id TEXT UNIQUE REFERENCES tasks(task_id)
-            );
-            CREATE INDEX local_task_plans_expiry_idx
-                ON local_task_plans(expires_at, consumed_at);
-            CREATE INDEX local_task_plans_project_idx
-                ON local_task_plans(project_id, created_at);
-            PRAGMA user_version = 9;
+            DROP INDEX tasks_analysis_task_idx;
+            DROP INDEX tasks_dispatch_gate_idx;
+            ALTER TABLE tasks DROP COLUMN dispatch_confirmation_token_sha256;
+            ALTER TABLE tasks DROP COLUMN dispatch_confirmed_at;
+            ALTER TABLE tasks DROP COLUMN dispatch_confirmation_required;
+            ALTER TABLE tasks DROP COLUMN dispatch_plan_sha256;
+            ALTER TABLE tasks DROP COLUMN mcp_request_sha256;
+            ALTER TABLE tasks DROP COLUMN analysis_result_sha256;
+            ALTER TABLE tasks DROP COLUMN analysis_result_json;
+            ALTER TABLE tasks DROP COLUMN analysis_task_id;
+            ALTER TABLE tasks DROP COLUMN workflow_kind;
+            DELETE FROM schema_migrations WHERE version = 11;
+            PRAGMA user_version = 10;
         """)
 
 
@@ -242,7 +237,7 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
             initialized = run_json(
                 helper, runtime, ["init", "--json"], environment=environment
             )
-            assert initialized["schema_version"] == 10
+            assert initialized["schema_version"] == EXPECTED_DATABASE_SCHEMA_VERSION
             onboard(helper, runtime, repository, analyzer, contract, environment)
 
             sentinel_file = root / "upgrade-sentinel.json"
@@ -270,11 +265,11 @@ def verify(dmg: Path, evidence_output: Path | None = None) -> None:
                 ["tasks", "enqueue", "--file", str(sentinel_file), "--json"],
                 environment=environment,
             )
-            downgrade_fixture_to_v9(runtime)
+            downgrade_fixture_to_v10(runtime)
             migrated = run_json(
                 helper, runtime, ["init", "--json"], environment=environment
             )
-            assert migrated["schema_version"] == 10
+            assert migrated["schema_version"] == EXPECTED_DATABASE_SCHEMA_VERSION
             sentinel = run_json(
                 helper,
                 runtime,

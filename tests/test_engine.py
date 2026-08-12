@@ -6,7 +6,13 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from project_brain.engine import TaskEngine
-from project_brain.errors import FetchError, RecoveryError, TransientTaskError
+from project_brain.errors import (
+    FetchError,
+    PublicationConflictError,
+    RecoveryError,
+    StateTransitionError,
+    TransientTaskError,
+)
 from tests.helpers import git
 from project_brain.models import TaskStatus
 
@@ -213,7 +219,10 @@ class TaskEngineTests(unittest.TestCase):
         )
         first = engine.apply_once()
         self.assertEqual(first["status"], TaskStatus.RETRY_PENDING.value)
-        commit = first["task"]["commit"]
+        candidate = first["task"]["local_candidate_sha"]
+        published = first["task"]["canonical_published_head_sha"]
+        self.assertIsNone(first["task"]["commit"])
+        self.assertNotEqual(candidate, published)
         verification_set_id = first["task"]["verification_set_id"]
         first_evidence = self.fixture.store.list_verifications(
             "publish-resume", verification_set_id=verification_set_id
@@ -260,7 +269,8 @@ class TaskEngineTests(unittest.TestCase):
             )
         second = engine.apply_once()
         self.assertEqual(second["status"], TaskStatus.AWAITING_REVIEW.value)
-        self.assertEqual(second["task"]["commit"], commit)
+        self.assertEqual(second["task"]["commit"], candidate)
+        self.assertIsNone(second["task"]["local_candidate_sha"])
         self.assertEqual(second["task"]["pr_url"], "https://example.test/pr/1")
         self.assertEqual(publisher.calls, 2)
         self.assertEqual(second["task"]["verification_set_id"], verification_set_id)
@@ -275,6 +285,52 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(
             git(worktree, "rev-list", "--count", f"{second['task']['base_sha']}..HEAD").stdout.strip(),
             "1",
+        )
+
+    def test_publication_conflict_preserves_published_head_and_blocks_retry(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["auto_push"] = True
+        self.fixture.store.register_project(project)
+        self._write_task("publication-conflict")
+
+        class ConflictingPublisher:
+            def publish(self, *, task, **_):
+                raise PublicationConflictError(
+                    "remote branch moved",
+                    conflict={
+                        "branch": task["branch"],
+                        "expected_remote_head_sha": task["canonical_published_head_sha"],
+                        "observed_remote_head_sha": "b" * 40,
+                        "publication_base_sha": task["canonical_published_head_sha"],
+                        "candidate_sha": task["local_candidate_sha"],
+                    },
+                )
+
+        result = TaskEngine(
+            self.fixture.store,
+            self.fixture.runtime,
+            github=ConflictingPublisher(),
+        ).apply_once()
+        self.assertEqual(result["status"], TaskStatus.RECOVERY_BLOCKED.value)
+        task = result["task"]
+        self.assertIsNone(task["commit"])
+        self.assertEqual(task["canonical_published_head_sha"], task["base_sha"])
+        self.assertIsNotNone(task["local_candidate_sha"])
+        self.assertEqual(task["publication_conflict"]["observed_remote_head_sha"], "b" * 40)
+        self.assertEqual(
+            self.fixture.store.get_task("publication-conflict")["attempt_count"], 1
+        )
+        with self.assertRaises(StateTransitionError):
+            self.fixture.store.resolve_recovery_block(
+                "publication-conflict", resolution="resume"
+            )
+        with self.assertRaises(StateTransitionError):
+            self.fixture.store.resolve_recovery_block(
+                "publication-conflict", resolution="confirm_no_agent"
+            )
+        self.assertEqual(
+            self.fixture.store.get_task("publication-conflict")["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
         )
 
 

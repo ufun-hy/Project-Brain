@@ -25,19 +25,29 @@ MAX_FINDINGS = 50
 
 SAFE_EVENT_PAYLOAD_FIELDS = {
     "attempt_number",
+    "analysis_task_id",
+    "analysis_result_sha256",
     "by_task_id",
+    "candidate_sha",
     "canonical_head_sha",
+    "expected_remote_head_sha",
     "category",
     "dispatch_status",
+    "dispatch_plan_sha256",
     "head_sha",
+    "observed_remote_head_sha",
     "phase",
     "reason",
     "resolution",
     "retryable",
+    "publication_base_sha",
+    "redispatch_plan_sha256",
     "review_id",
     "revision",
     "source_attempt_number",
     "source_type",
+    "supersedes",
+    "workflow_kind",
     "verification_count",
     "verification_set_id",
     "verdict",
@@ -66,13 +76,40 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "updated_at": value.get("updated_at"),
         "elapsed_seconds": value.get("elapsed_seconds"),
         "branch": bounded_text(value.get("branch"), limit=256),
+        "supersedes": value.get("supersedes"),
+        "base_sha": bounded_text(value.get("base_sha"), limit=128),
         "commit": bounded_text(value.get("commit"), limit=128),
         "head_sha": bounded_text(value.get("head_sha"), limit=128),
+        "canonical_published_head_sha": bounded_text(
+            value.get("canonical_published_head_sha"), limit=128
+        ),
+        "local_candidate_sha": bounded_text(value.get("local_candidate_sha"), limit=128),
+        "published_head_sha": bounded_text(value.get("published_head_sha"), limit=128),
+        "publication_conflict": value.get("publication_conflict"),
+        "redispatch": {
+            "required": value.get("status") == "needs_changes",
+            "authorized": value.get("redispatch_authorized_at") is not None,
+            "expected_remote_head_sha": bounded_text(
+                value.get("redispatch_expected_remote_head_sha"), limit=128
+            ),
+            "plan_sha256": value.get("redispatch_plan_sha256"),
+            "authorized_at": value.get("redispatch_authorized_at"),
+            "consumed_at": value.get("redispatch_consumed_at"),
+        },
         "pr_url": bounded_text(value.get("pr_url"), limit=1_000),
         "last_error": bounded_text(value.get("last_error")),
         "next_action": bounded_text(value.get("next_action"), limit=500),
         "project_config_revision": value.get("project_config_revision"),
         "project_config_sha256": short_config_hash(value.get("project_config_sha256")),
+        "workflow_kind": value.get("workflow_kind", "implement"),
+        "analysis_task_id": value.get("analysis_task_id"),
+        "analysis_result_sha256": value.get("analysis_result_sha256"),
+        "plan_hash": value.get("dispatch_plan_sha256"),
+        "dispatch_confirmation": {
+            "required": bool(value.get("dispatch_confirmation_required")),
+            "confirmed": value.get("dispatch_confirmed_at") is not None,
+            "confirmed_at": value.get("dispatch_confirmed_at"),
+        },
     }
 
 
@@ -185,6 +222,7 @@ def _fit_detail_budget(value: dict[str, Any]) -> dict[str, Any]:
         value["verification"]["evidence"],
         value["attempts"],
         value["active_findings"],
+        value["agent_log_summaries"],
         value["task"]["acceptance_criteria"],
     ]
     truncated = False
@@ -196,6 +234,22 @@ def _fit_detail_budget(value: dict[str, Any]) -> dict[str, Any]:
         truncated = True
     value["response_truncated"] = truncated
     return value
+
+
+def _agent_log_summaries(store: TaskStore, task_id: str) -> list[dict[str, Any]]:
+    """Expose bounded process output summaries, never commands or raw log files."""
+    return [
+        {
+            "session_id": session.get("session_id"),
+            "adapter": bounded_text(session.get("adapter"), limit=128),
+            "status": session.get("status"),
+            "exit_code": session.get("exit_code"),
+            "summary": bounded_text(session.get("output_summary"), limit=MAX_SUMMARY),
+            "started_at": session.get("started_at"),
+            "finished_at": session.get("finished_at"),
+        }
+        for session in store.list_agent_sessions(task_id)[-MAX_ATTEMPTS:]
+    ]
 
 
 def task_detail_view(
@@ -263,6 +317,33 @@ def task_detail_view(
         for review in store.list_reviews(task_id)[-MAX_REVIEWS:]
     ]
     archive = store.get_forensic_archive(task_id)
+    agent_log_summaries = _agent_log_summaries(store, task_id)
+    analysis = None
+    if task.get("analysis_task_id"):
+        source = store.get_task(str(task["analysis_task_id"]))
+        fixed_result = task.get("analysis_result")
+        analysis = {
+            "task_id": source["task_id"],
+            "source_status": source["status"],
+            "fixed_result_sha256": task.get("analysis_result_sha256"),
+            "result_summary": bounded_text(
+                fixed_result.get("summary") if isinstance(fixed_result, dict) else None,
+                limit=MAX_SUMMARY,
+            ),
+        }
+    elif task.get("workflow_kind") == "analyze" and isinstance(
+        task.get("analysis_result"), dict
+    ):
+        result = task["analysis_result"]
+        analysis = {
+            "task_id": task["task_id"],
+            "source_status": task["status"],
+            "fixed_result_sha256": task.get("analysis_result_sha256"),
+            "result_summary": bounded_text(
+                result.get("summary"),
+                limit=MAX_SUMMARY,
+            ),
+        }
     value = {
         "task": summary,
         "attempts": attempts,
@@ -274,6 +355,7 @@ def task_detail_view(
                 "status": verification_set.get("status"),
                 "created_at": verification_set.get("created_at"),
                 "completed_at": verification_set.get("completed_at"),
+                "expires_at": verification_set.get("expires_at"),
             }
             if verification_set
             else None,
@@ -284,6 +366,8 @@ def task_detail_view(
             _finding_view(item)
             for item in store.active_review_findings(task_id)[:MAX_FINDINGS]
         ],
+        "analysis": analysis,
+        "agent_log_summaries": agent_log_summaries,
         "forensic_archive": {
             "archive_id": archive.get("archive_id"),
             "manifest_sha256": archive.get("manifest_sha256"),

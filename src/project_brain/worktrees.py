@@ -161,7 +161,11 @@ class WorktreeManager:
         conflicts = git(
             path, "diff", "--name-only", "--diff-filter=U", check=False
         ).stdout
-        expected = task.get("commit") or record["base_sha"]
+        expected = (
+            task.get("local_candidate_sha")
+            or task.get("commit")
+            or record["base_sha"]
+        )
         if branch != record["branch"] or head != expected or status or conflicts:
             raise WorktreeError(
                 "Registered task worktree differs from its canonical branch, HEAD, or clean status"
@@ -176,6 +180,11 @@ class WorktreeManager:
     ) -> dict[str, Any]:
         branch = record["branch"]
         trusted_branch = task.get("branch")
+        if task.get("local_candidate_sha"):
+            raise WorktreeError(
+                "Cannot auto-recover a worktree while an unpublished local candidate "
+                "is retained; preserve the forensic candidate and create a new revision"
+            )
         trusted_sha = task.get("commit") or task.get("head_sha")
         if trusted_branch != branch:
             raise WorktreeError(
