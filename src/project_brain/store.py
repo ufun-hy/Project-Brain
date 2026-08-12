@@ -2027,13 +2027,10 @@ class TaskStore:
                 """
                 UPDATE tasks
                 SET branch = ?, base_sha = ?, head_sha = ?, worktree_path = ?,
-                    canonical_published_head_sha = COALESCE(
-                        canonical_published_head_sha, ?
-                    ),
                     updated_at = ?
                 WHERE task_id = ? AND project_id = ?
                 """,
-                (branch, base_sha, base_sha, path, base_sha, now, task_id, project_id),
+                (branch, base_sha, base_sha, path, now, task_id, project_id),
             )
             if connection.execute("SELECT changes()").fetchone()[0] != 1:
                 raise InvalidTaskError(f"Unable to bind worktree to task: {task_id}")

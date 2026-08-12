@@ -39,6 +39,21 @@
         "resolve_existing": "--resolve-existing",
         "verification_file": "--verification-file"
       }
+    },
+    "task_detail": {
+      "command_path": ["tasks", "show"],
+      "options": {"json": "--json"},
+      "canonical_fields": [
+        "task_id",
+        "status",
+        "plan_hash",
+        "supersedes",
+        "revision",
+        "dispatch_confirmation"
+      ],
+      "dispatch_confirmation_fields": ["required", "confirmed", "confirmed_at"],
+      "plan_hash_source": "dispatch_plan_sha256",
+      "confirmed_source": "dispatch_confirmed_at"
     }
   },
   "schema_version": 1

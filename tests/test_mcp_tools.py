@@ -149,6 +149,12 @@ class MCPToolTests(unittest.TestCase):
         self.assertNotIn("payload", json.dumps(first))
         self.assertEqual(first["task"]["project_config_revision"], 1)
         self.assertEqual(len(first["task"]["project_config_sha256"]), 12)
+        self.assertEqual(first["task"]["revision"], 1)
+        self.assertEqual(first["task"]["plan_hash"], task["dispatch_plan_sha256"])
+        self.assertEqual(
+            first["task"]["dispatch_confirmation"],
+            {"required": True, "confirmed": False, "confirmed_at": None},
+        )
         self.assertIn(
             "mcp_task_confirmation_reissued",
             [event["event_type"] for event in self.fixture.store.list_events("mcp-task")],

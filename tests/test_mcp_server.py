@@ -133,6 +133,14 @@ class MCPServerSchemaTests(unittest.TestCase):
             {"command", "argv", "shell", "cwd", "environment", "repo_path", "worktree_path"}
             .isdisjoint(draft.inputSchema["properties"])
         )
+        self.assertIn("supersedes", draft.inputSchema["properties"])
+        self.assertIn(
+            {"type": "string"},
+            [
+                {key: value for key, value in option.items() if key == "type"}
+                for option in draft.inputSchema["properties"]["supersedes"]["anyOf"]
+            ],
+        )
         confirm = next(tool for tool in tools if tool.name == "project_brain_tasks_confirm")
         self.assertEqual(
             set(confirm.inputSchema["properties"]),

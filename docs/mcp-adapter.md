@@ -123,7 +123,7 @@ Current references:
 | `project_brain_system_health` | read | Bounded Core/runtime/dependency health |
 | `project_brain_projects_list` | read | Registered project identity and health, without paths or commands |
 | `project_brain_tasks_create` | write | Create a default Implement draft; it cannot bypass confirmation |
-| `project_brain_tasks_create_draft` | write | Create an `analyze` or `implement` canonical task draft and return its execution plan |
+| `project_brain_tasks_create_draft` | write | Create an `analyze` or `implement` canonical task draft and return its execution plan; optional `supersedes` links a strictly higher same-project/dedupe revision |
 | `project_brain_tasks_confirm` | write | Persist explicit approval of the exact draft plan before it can be claimed |
 | `project_brain_tasks_redispatch` | write | Explicitly authorize one `needs_changes` retry at the exact current remote head; it does not dispatch |
 | `project_brain_queue_dispatch_next` | write | Start one fixed one-shot worker after lock/claim preflight |
@@ -152,10 +152,19 @@ local Core worker. If the first create response is lost, an exact retry returns
 the same plan hash and a newly rotated confirmation token. The previous token is
 invalidated. Reusing the task ID or logical key with different canonical input
 returns a state conflict instead of silently treating new intent as a duplicate.
+The optional `supersedes` value is carried through the canonical request,
+execution plan, Store, task row, and audit event; Store validation requires the
+same project and dedupe key with a strictly greater revision.
+
+CLI JSON and MCP task detail share normalized field names: `plan_hash` maps to
+the stored `dispatch_plan_sha256`, while
+`dispatch_confirmation.confirmed` is derived from the presence of
+`dispatch_confirmed_at`.
 
 Draft creation accepts only stable IDs, revision, `workflow_kind` (`analyze` or
 `implement`), goal, criteria, a bounded prompt, optional expiry, and (for an
-Implement task) an optional same-project `analysis_task_id` that must refer to
+Implement task) optional same-project `analysis_task_id` and `supersedes` values;
+`analysis_task_id` must refer to
 an already completed Analyze task. Analyze runs in the read-only Codex sandbox,
 must leave the repository unchanged, and completes without commit, push, or PR.
 When an Implement draft links Analyze, Core freezes the completed result and its

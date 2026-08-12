@@ -85,7 +85,7 @@ Every tool schema rejects unknown top-level fields. Strings have explicit
 length bounds, arrays have explicit item limits, and nested objects are scanned
 before Core persistence. The create tool accepts only:
 
-- stable task, project, dedupe, Analyze-link, and criterion identifiers;
+- stable task, project, dedupe, Analyze-link, supersession, and criterion identifiers;
 - revision, goal, and optional expiry;
 - acceptance criteria containing only `id`, `text`, and optional trusted
   `verification_id`;

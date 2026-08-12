@@ -61,4 +61,22 @@ def load_cli_contract() -> dict[str, Any]:
         for item in options.values()
     ):
         raise RuntimeError("invalid native onboarding option contract")
+    task_detail = value.get("operations", {}).get("task_detail", {})
+    if task_detail.get("command_path") != ["tasks", "show"]:
+        raise RuntimeError("invalid task detail command path")
+    if task_detail.get("options") != {"json": "--json"}:
+        raise RuntimeError("invalid task detail options")
+    if task_detail.get("canonical_fields") != [
+        "task_id", "status", "plan_hash", "supersedes", "revision",
+        "dispatch_confirmation",
+    ]:
+        raise RuntimeError("invalid task detail canonical fields")
+    if task_detail.get("dispatch_confirmation_fields") != [
+        "required", "confirmed", "confirmed_at"
+    ]:
+        raise RuntimeError("invalid dispatch confirmation fields")
+    if task_detail.get("plan_hash_source") != "dispatch_plan_sha256":
+        raise RuntimeError("invalid task detail plan hash source")
+    if task_detail.get("confirmed_source") != "dispatch_confirmed_at":
+        raise RuntimeError("invalid task detail confirmation source")
     return value

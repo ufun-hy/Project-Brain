@@ -71,6 +71,22 @@ class CLIContractTests(unittest.TestCase):
         self.assertEqual(operation["confirmation_schema_version"], 1)
         self.assertEqual(set(operation["options"]), {"json"})
 
+    def test_task_detail_contract_names_are_stable(self) -> None:
+        operation = load_cli_contract()["operations"]["task_detail"]
+        self.assertEqual(operation["command_path"], ["tasks", "show"])
+        self.assertEqual(operation["options"], {"json": "--json"})
+        self.assertEqual(
+            operation["canonical_fields"],
+            [
+                "task_id", "status", "plan_hash", "supersedes", "revision",
+                "dispatch_confirmation",
+            ],
+        )
+        self.assertEqual(
+            operation["dispatch_confirmation_fields"],
+            ["required", "confirmed", "confirmed_at"],
+        )
+
     def test_core_error_envelope_always_has_structured_recovery_fields(self) -> None:
         payload = _error_payload(InvalidTaskError("invalid local task"))
         self.assertEqual(payload["error_code"], "invalid_task")

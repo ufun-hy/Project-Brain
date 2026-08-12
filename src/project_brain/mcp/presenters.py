@@ -70,6 +70,7 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "project_id": value["project_id"],
         "project": bounded_text(value.get("project"), limit=256),
         "status": value["status"],
+        "revision": value.get("revision"),
         "attempt_phase": value.get("attempt_phase"),
         "attempt_count": value.get("attempt_count"),
         "created_at": value.get("created_at"),
@@ -104,12 +105,8 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "workflow_kind": value.get("workflow_kind", "implement"),
         "analysis_task_id": value.get("analysis_task_id"),
         "analysis_result_sha256": value.get("analysis_result_sha256"),
-        "plan_hash": value.get("dispatch_plan_sha256"),
-        "dispatch_confirmation": {
-            "required": bool(value.get("dispatch_confirmation_required")),
-            "confirmed": value.get("dispatch_confirmed_at") is not None,
-            "confirmed_at": value.get("dispatch_confirmed_at"),
-        },
+        "plan_hash": value.get("plan_hash"),
+        "dispatch_confirmation": value.get("dispatch_confirmation"),
     }
 
 

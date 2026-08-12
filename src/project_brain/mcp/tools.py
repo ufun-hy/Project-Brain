@@ -636,6 +636,7 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
         acceptance_criteria: Annotated[list[AcceptanceCriterionInput], Field(max_length=50)],
         prompt: PromptText,
         analysis_task_id: StableId | None = None,
+        supersedes: StableId | None = None,
         task_type: Literal["codex"] = "codex",
         expires_at: TimestampText | None = None,
     ) -> dict[str, Any]:
@@ -647,6 +648,7 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
                 "revision": revision,
                 "workflow_kind": workflow_kind,
                 "analysis_task_id": analysis_task_id,
+                "supersedes": supersedes,
                 "goal": goal,
                 "acceptance_criteria": [item.model_dump(exclude_none=True) for item in acceptance_criteria],
                 "prompt": prompt,
