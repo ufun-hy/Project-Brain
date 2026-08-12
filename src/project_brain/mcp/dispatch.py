@@ -241,6 +241,10 @@ class OneShotDispatcher:
         for task in self.store.list_tasks(limit=1000):
             if task["status"] not in claimable:
                 continue
+            if task.get("dispatch_confirmation_required") and not task.get(
+                "dispatch_confirmed_at"
+            ):
+                continue
             expiry = parse_timestamp(task.get("expires_at"))
             if expiry is None or expiry > now:
                 return True

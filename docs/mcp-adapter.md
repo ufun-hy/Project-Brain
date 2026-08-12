@@ -122,7 +122,10 @@ Current references:
 | --- | --- | --- |
 | `project_brain_system_health` | read | Bounded Core/runtime/dependency health |
 | `project_brain_projects_list` | read | Registered project identity and health, without paths or commands |
-| `project_brain_tasks_create` | write | Canonical `source_type=mcp`, Codex-only task intake |
+| `project_brain_tasks_create` | write | Create a default Implement draft; it cannot bypass confirmation |
+| `project_brain_tasks_create_draft` | write | Create an `analyze` or `implement` canonical task draft and return its execution plan |
+| `project_brain_tasks_confirm` | write | Persist explicit approval of the exact draft plan before it can be claimed |
+| `project_brain_tasks_redispatch` | write | Explicitly authorize one `needs_changes` retry at the exact current remote head; it does not dispatch |
 | `project_brain_queue_dispatch_next` | write | Start one fixed one-shot worker after lock/claim preflight |
 | `project_brain_tasks_list` | read | At most 100 task summaries |
 | `project_brain_tasks_get` | read | Bounded current evidence, reviews, archive metadata, and recent events |
@@ -138,13 +141,33 @@ probe accepts only the one-time `challenge` string. It records
 headers, source IP, Host, Origin, and User-Agent are not trusted source evidence.
 It is not an external-acceptance setter.
 
-Create accepts only stable IDs, revision, goal, criteria, a bounded prompt, and
-optional expiry/supersession. Every schema rejects unknown fields. Any nesting
+The Web Task Intake v1 flow is `projects_list` → `tasks_create_draft` → show
+the returned plan → `tasks_confirm` with the returned `expected_plan_hash` after
+the user explicitly approves →
+`queue_dispatch_next`. A draft is stored in the canonical `tasks` table with a
+claim gate, not in a second MCP task state machine. Its confirmation token is
+opaque, task-bound, stored only as a hash, and is never returned by task query
+tools. Unconfirmed drafts cannot be claimed by either the MCP dispatcher or a
+local Core worker. If the first create response is lost, an exact retry returns
+the same plan hash and a newly rotated confirmation token. The previous token is
+invalidated. Reusing the task ID or logical key with different canonical input
+returns a state conflict instead of silently treating new intent as a duplicate.
+
+Draft creation accepts only stable IDs, revision, `workflow_kind` (`analyze` or
+`implement`), goal, criteria, a bounded prompt, optional expiry, and (for an
+Implement task) an optional same-project `analysis_task_id` that must refer to
+an already completed Analyze task. Analyze runs in the read-only Codex sandbox,
+must leave the repository unchanged, and completes without commit, push, or PR.
+When an Implement draft links Analyze, Core freezes the completed result and its
+SHA-256 on the Implement task; Codex consumes that immutable snapshot rather than
+re-reading later source-task state. Task detail presents its bounded redacted summary
+and bounded agent-log summaries, along with status, verification evidence, and
+Draft PR. Every schema rejects unknown fields. Any nesting
 level containing `command`, `argv`, `shell`, `cwd`, `environment`, `repo_path`,
 `worktree_path`, or `codex_command` is rejected before persistence. Credential-
 like input is rejected, and response/log strings pass the Core redactor.
 
-Create, review, and dispatch writes produce append-only audit events. Review
+Create, draft confirmation, review, and dispatch writes produce append-only audit events. Review
 does not implicitly dispatch, accept, publish, or merge. Recovery preview never
 terminates an agent or changes SQLite; `--terminate-agent`,
 `--confirm-no-agent`, `--resume`, and `--cancel` remain local CLI-only actions.
@@ -165,13 +188,14 @@ response returns only the log ID, never its absolute local path.
 ## Manual acceptance checklist
 
 1. Start the server and complete local initialize/tools/list.
-2. Confirm all nine tool schemas and read/write annotations.
+2. Confirm every tool schema and its read/write annotation.
 3. Generate a challenge in Product Shell and use the connector to call only
    `project_brain_acceptance_probe`; confirm the App records an unattributed MCP
    transport probe while external ChatGPT acceptance remains Pending.
 4. Through Secure MCP Tunnel and a ChatGPT developer-mode draft app, list
-   projects and create a documentation-only real task.
-5. Dispatch, poll status, inspect bounded verification evidence and the Draft
+   projects and create a documentation-only Analyze or Implement task draft.
+   Inspect its execution plan, obtain explicit user approval, then confirm it.
+5. Dispatch, poll status, inspect bounded log/verification evidence and the Draft
    PR, then submit `needs_changes` for the exact head.
 6. Dispatch again and confirm the new canonical commit descends from the old
    commit; submit `approved` but do not merge.

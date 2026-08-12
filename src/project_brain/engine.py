@@ -6,8 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from .actions import run_named_command, write_files
-from .codex import CodexAdapter
-from .errors import ProjectBrainError, RecoveryError, VerificationFailedError
+from .codex import AnalysisExecution, CodexAdapter
+from .errors import (
+    ProjectBrainError,
+    PublicationConflictError,
+    RecoveryError,
+    VerificationFailedError,
+)
 from .git_history import GitHistoryNormalizer, NormalizedHistory
 from .commands import git
 from .errors import TaskHistoryError
@@ -51,9 +56,9 @@ class TaskEngine:
         recovery = RecoveryManager(self.store, self.worktrees).reconcile_for_claims(
             execute=True
         )
-        TerminalWorktreeReconciler(
-            self.store, self.runtime, self.worktrees
-        ).reconcile(execute=True)
+        TerminalWorktreeReconciler(self.store, self.runtime, self.worktrees).reconcile(
+            execute=True
+        )
         if not recovery.claim_safe:
             return {
                 "status": "blocked",
@@ -80,12 +85,58 @@ class TaskEngine:
                     expected_branch=worktree_record["branch"],
                     base_sha=worktree_record["base_sha"],
                 )
+                if self._workflow_kind(task) == "analyze":
+                    analysis = self.codex.execute(
+                        task=task,
+                        project=project,
+                        worktree=worktree,
+                        snapshot=snapshot,
+                    )
+                    if not isinstance(analysis, AnalysisExecution):
+                        raise ProjectBrainError(
+                            "Analyze task did not return the required result schema"
+                        )
+                    self.store.heartbeat_worktree(task["task_id"])
+                    task = self.store.set_analysis_result(task["task_id"], analysis.result)
+                    if (
+                        not isinstance(task.get("analysis_result"), dict)
+                        or task["analysis_result"].get("kind") != "analysis"
+                        or not isinstance(task.get("analysis_result_sha256"), str)
+                        or len(task["analysis_result_sha256"]) != 64
+                    ):
+                        raise ProjectBrainError(
+                            "Analyze result was not durably frozen before completion"
+                        )
+                    task = self.store.transition(
+                        task["task_id"],
+                        TaskStatus.COMPLETED,
+                        event_type="analysis_completed",
+                        payload={
+                            "changed_files": [],
+                            "result_schema_version": analysis.result["schema_version"],
+                        },
+                    )
+                    self.store.finish_attempt(task["task_id"], status="completed")
+                    return {
+                        "status": task["status"],
+                        "task": task,
+                        "evidence": [],
+                        "worktree_release": None,
+                    }
                 history = self._execute_action(task, project, worktree, snapshot)
                 self.store.heartbeat_worktree(task["task_id"])
-                task = self.store.set_task_fields(
-                    task["task_id"], head_sha=history.commit, commit=history.commit
+                task = self.store.record_candidate(
+                    task["task_id"],
+                    history.commit,
+                    publication_base_sha=(
+                        task.get("canonical_published_head_sha")
+                        or task.get("commit")
+                        or task.get("base_sha")
+                    ),
                 )
-                task = self.store.set_attempt_phase(task["task_id"], AttemptPhase.VERIFICATION)
+                task = self.store.set_attempt_phase(
+                    task["task_id"], AttemptPhase.VERIFICATION
+                )
             else:
                 history = self._resume_canonical(task, worktree_record, worktree)
 
@@ -125,28 +176,80 @@ class TaskEngine:
                 self.store.finalize_verification_set(
                     verification_set["verification_set_id"], status="completed"
                 )
-                task = self.store.set_attempt_phase(task["task_id"], AttemptPhase.PUBLICATION)
+                task = self.store.set_attempt_phase(
+                    task["task_id"], AttemptPhase.PUBLICATION
+                )
             else:
                 evidence = self.store.publication_evidence(task["task_id"])
 
-            publication: dict[str, Any] = {"pushed": False, "pr_url": task.get("pr_url")}
-            if project.get("auto_push", True):
+            delivery = (
+                task.get("delivery")
+                if self._workflow_kind(task) == "implement"
+                else None
+            )
+            should_push = (
+                bool(delivery.get("push"))
+                if isinstance(delivery, dict)
+                else bool(project.get("auto_push", True))
+            )
+            publication: dict[str, Any] = {
+                "pushed": False,
+                "pr_url": task.get("pr_url"),
+            }
+            if should_push:
                 publication_seal = RepositorySeal.capture(
                     worktree,
                     project=project,
                     expected_branch=worktree_record["branch"],
                     expected_head=history.commit,
                 )
+                publication_project = (
+                    {**project, "auto_pr": bool(delivery.get("draft_pr"))}
+                    if isinstance(delivery, dict)
+                    else project
+                )
                 publication = self.github.publish(
-                    task=task, project=project, worktree=worktree
+                    task={
+                        **task,
+                        "publication_context": {
+                            "changed_files": history.changed_files,
+                            "verification_evidence": evidence,
+                        },
+                    },
+                    project=publication_project,
+                    worktree=worktree,
                 )
                 self.store.heartbeat_worktree(task["task_id"])
                 publication_seal.verify(worktree, project=project)
+                task = self.store.record_publication(
+                    task["task_id"], history.commit, pr_url=publication.get("pr_url")
+                )
                 if publication.get("pr_url"):
-                    task = self.store.set_task_fields(
-                        task["task_id"], pr_url=publication["pr_url"]
-                    )
+                    task = self.store.get_task(task["task_id"])
+            elif self._workflow_kind(task) == "implement":
+                # Local-only tasks retain the historical review behavior. They do
+                # not claim a remote publication, but their local commit is the
+                # canonical review head for the local-only delivery profile.
+                task = self.store.set_task_fields(
+                    task["task_id"],
+                    head_sha=history.commit,
+                    commit=history.commit,
+                    local_candidate_sha=None,
+                )
             self.store.heartbeat_worktree(task["task_id"])
+            if self._workflow_kind(task) == "implement":
+                task = self.store.set_task_result(
+                    task["task_id"],
+                    {
+                        "schema_version": 1,
+                        "kind": "implementation",
+                        "changed_files": history.changed_files,
+                        "verification_count": len(evidence),
+                        "commit": history.commit,
+                        "branch": task.get("branch"),
+                        "draft_pr": publication.get("pr_url"),
+                    },
+                )
             self.store.set_attempt_phase(task["task_id"], AttemptPhase.REVIEW)
             task = self.store.transition(
                 task["task_id"],
@@ -195,6 +298,26 @@ class TaskEngine:
                     verification_set_id=task["verification_set_id"],
                 ),
             }
+        except PublicationConflictError as exc:
+            self.store.record_publication_conflict(task["task_id"], exc.conflict)
+            updated = self.store.transition(
+                task["task_id"],
+                TaskStatus.RECOVERY_BLOCKED,
+                event_type="publication_conflict",
+                payload={"category": exc.category, **exc.conflict},
+                last_error=str(exc),
+            )
+            self.store.finish_attempt(
+                task["task_id"],
+                status="failed",
+                error_category=exc.category,
+                error_message=str(exc),
+            )
+            return {
+                "status": updated["status"],
+                "task": updated,
+                "publication_conflict": updated.get("publication_conflict"),
+            }
         except Exception as exc:
             return self._handle_error(task, exc)
 
@@ -218,8 +341,17 @@ class TaskEngine:
             run_named_command(worktree, task["payload"], project)
         else:
             raise ProjectBrainError(f"Unsupported task type: {task['task_type']}")
-        message = task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        message = (
+            task["payload"].get("commit_message") or f"feat: complete {task['task_id']}"
+        )
         return self.normalizer.normalize(worktree, snapshot, message=str(message))
+
+    @staticmethod
+    def _workflow_kind(task: dict[str, Any]) -> str:
+        value = task.get("workflow_kind")
+        if value in {"analyze", "implement"}:
+            return str(value)
+        return "analyze" if task.get("local_task_type") == "analysis" else "implement"
 
     @staticmethod
     def _resume_canonical(
@@ -232,12 +364,13 @@ class TaskEngine:
         ).stdout.strip()
         head = git(worktree, "rev-parse", "HEAD").stdout.strip()
         status = git(worktree, "status", "--porcelain").stdout.strip()
-        if branch != worktree_record["branch"] or head != task["commit"] or status:
+        expected = task.get("local_candidate_sha") or task.get("commit")
+        if branch != worktree_record["branch"] or head != expected or status:
             raise TaskHistoryError(
                 "Cannot resume publication because the recorded canonical worktree changed"
             )
         return NormalizedHistory(
-            commit=task["commit"],
+            commit=expected,
             head_before=head,
             source_commits=[],
             changed_files=[],
@@ -248,9 +381,7 @@ class TaskEngine:
         retryable = bool(getattr(exc, "retryable", False))
         current = self.store.get_task(task["task_id"])
         if isinstance(exc, RecoveryError):
-            updated = self.store.block_running_task(
-                task["task_id"], reason=str(exc)
-            )
+            updated = self.store.block_running_task(task["task_id"], reason=str(exc))
             return {"status": updated["status"], "task": updated}
         if retryable and current["attempt_count"] < self.max_transient_attempts:
             target = TaskStatus.RETRY_PENDING

@@ -9,6 +9,24 @@ class ProjectBrainError(RuntimeError):
     category = "project_brain_error"
     retryable = False
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        field: str | None = None,
+        constraints: dict[str, object] | None = None,
+        retryable: bool | None = None,
+        next_action_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.field = field
+        self.constraints = constraints
+        if retryable is not None:
+            self.retryable = retryable
+        self.next_action_code = next_action_code
+
 
 class ConfigurationError(ProjectBrainError):
     category = "configuration"
@@ -50,6 +68,17 @@ class VerificationFailedError(ProjectBrainError):
 class TransientTaskError(ProjectBrainError):
     category = "transient"
     retryable = True
+
+
+class PublicationConflictError(ProjectBrainError):
+    """The remote task branch moved or disagreed during publication."""
+
+    category = "publication_conflict"
+    retryable = False
+
+    def __init__(self, message: str, *, conflict: dict[str, object]) -> None:
+        super().__init__(message, retryable=False, next_action_code="new_revision")
+        self.conflict = conflict
 
 
 class AlreadyRunningError(ProjectBrainError):

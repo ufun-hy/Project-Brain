@@ -1,0 +1,82 @@
+name: macOS Personal Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_sha:
+        description: Exact 40-character Git SHA to package for personal use
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-personal-artifact:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.build_sha }}
+      - name: Bind workflow to the requested immutable source
+        env:
+          BUILD_SHA: ${{ inputs.build_sha }}
+        run: |
+          test "$(printf '%s' "$BUILD_SHA" | wc -c | tr -d ' ')" = "40"
+          case "$BUILD_SHA" in *[!0-9a-f]*) exit 1 ;; esac
+          test "$(git rev-parse HEAD)" = "$BUILD_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e '.[packaging]'
+      - name: Build self-contained Core helper
+        env:
+          PROJECT_BRAIN_HELPER_DIST: ${{ runner.temp }}/helper-dist
+          PROJECT_BRAIN_HELPER_WORK: ${{ runner.temp }}/helper-work
+        run: scripts/build-macos-helper.sh
+      - name: Run full Core verification
+        run: scripts/verify-core.sh
+      - name: Verify real launchd lifecycle
+        env:
+          PROJECT_BRAIN_HELPER: ${{ runner.temp }}/helper-dist/project-brain
+        run: python scripts/verify-macos-launchd-lifecycle.py
+      - name: Run Swift package tests
+        run: swift test --package-path apps/macos/ProjectBrain
+      - name: Run Xcode tests
+        env:
+          PROJECT_BRAIN_BUNDLED_HELPER: ${{ runner.temp }}/helper-dist/project-brain
+        run: |
+          xcodebuild \
+            -project apps/macos/ProjectBrain/ProjectBrain.xcodeproj \
+            -scheme ProjectBrain \
+            -destination 'platform=macOS' \
+            -derivedDataPath "${{ runner.temp }}/PersonalTestDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+      - name: Build Build 10 unsigned personal artifact
+        env:
+          PROJECT_BRAIN_BUNDLED_HELPER: ${{ runner.temp }}/helper-dist/project-brain
+          PROJECT_BRAIN_RC_DERIVED_DATA: ${{ runner.temp }}/PersonalDerivedData
+          PROJECT_BRAIN_RC_OUTPUT_DIR: ${{ runner.temp }}/Project-Brain-Build10-Personal-Unsigned-arm64
+          PROJECT_BRAIN_CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/build-rc-artifact.sh
+      - name: Verify personal manifest and SHA-256 bindings
+        run: python scripts/verify-rc-artifact.py "${{ runner.temp }}/Project-Brain-Build10-Personal-Unsigned-arm64"
+      - name: Verify personal DMG installation layout
+        run: scripts/verify-rc-dmg-layout.sh "${{ runner.temp }}/Project-Brain-Build10-Personal-Unsigned-arm64/Project-Brain-Build10-Personal-Unsigned-arm64.dmg"
+      - name: Verify final embedded helper local Analyze task and schema upgrade
+        run: python scripts/verify-bundled-helper-local-task.py "${{ runner.temp }}/Project-Brain-Build10-Personal-Unsigned-arm64/Project-Brain-Build10-Personal-Unsigned-arm64.dmg" --evidence-output "${{ runner.temp }}/personal-build-timing-evidence.json"
+      - name: Verify final DMG and Applications copies remain single instance
+        run: scripts/verify-final-app-single-instance.sh "${{ runner.temp }}/Project-Brain-Build10-Personal-Unsigned-arm64/Project-Brain-Build10-Personal-Unsigned-arm64.dmg"
+      - name: Verify Gmail legacy isolation
+        run: git diff --exit-code 7259acfa1c38e30f3f8c2126eb7c7c3f8c271e3f -- experiments/gmail-inbox/
+      - name: Upload Build 10 unsigned personal artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Project-Brain-Build10-Personal-Unsigned-arm64
+          path: ${{ runner.temp }}/Project-Brain-Build10-Personal-Unsigned-arm64
+          if-no-files-found: error
+          retention-days: 30

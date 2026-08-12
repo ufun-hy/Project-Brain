@@ -48,6 +48,7 @@ class TaskStatus(str, Enum):
     READY_TO_MERGE = "ready_to_merge"
     MERGING = "merging"
     ACCEPTED = "accepted"
+    COMPLETED = "completed"
     MERGE_FAILED = "merge_failed"
     FAILED = "failed"
     SUPERSEDED = "superseded"
@@ -63,6 +64,7 @@ class AttemptPhase(str, Enum):
 
 TERMINAL_STATUSES = {
     TaskStatus.ACCEPTED,
+    TaskStatus.COMPLETED,
     TaskStatus.FAILED,
     TaskStatus.SUPERSEDED,
     TaskStatus.EXPIRED,
@@ -71,7 +73,6 @@ TERMINAL_STATUSES = {
 CLAIMABLE_STATUSES = {
     TaskStatus.PENDING,
     TaskStatus.RETRY_PENDING,
-    TaskStatus.NEEDS_CHANGES,
 }
 
 WORKTREE_RETAINED_STATUSES = {
@@ -96,12 +97,14 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.RUNNING: {
         TaskStatus.RECOVERY_BLOCKED,
         TaskStatus.AWAITING_REVIEW,
+        TaskStatus.COMPLETED,
         TaskStatus.VERIFICATION_FAILED,
         TaskStatus.RETRY_PENDING,
         TaskStatus.FAILED,
         TaskStatus.EXPIRED,
     },
     TaskStatus.RECOVERY_BLOCKED: {
+        TaskStatus.SUPERSEDED,
         TaskStatus.RETRY_PENDING,
         TaskStatus.FAILED,
         TaskStatus.EXPIRED,
@@ -119,7 +122,6 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.EXPIRED,
     },
     TaskStatus.NEEDS_CHANGES: {
-        TaskStatus.RUNNING,
         TaskStatus.SUPERSEDED,
         TaskStatus.EXPIRED,
         TaskStatus.FAILED,
@@ -142,6 +144,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.FAILED,
     },
     TaskStatus.ACCEPTED: set(),
+    TaskStatus.COMPLETED: set(),
     TaskStatus.FAILED: set(),
     TaskStatus.SUPERSEDED: set(),
     TaskStatus.EXPIRED: set(),
@@ -168,16 +171,20 @@ class Project:
 
     def as_record(self) -> dict[str, Any]:
         validate_stable_id("project_id", self.project_id)
-        if not isinstance(self.codex_command, list) or not self.codex_command or not all(
-            isinstance(item, str) and item for item in self.codex_command
+        if (
+            not isinstance(self.codex_command, list)
+            or not self.codex_command
+            or not all(isinstance(item, str) and item for item in self.codex_command)
         ):
             raise InvalidTaskError("codex_command must be a non-empty array of strings")
         if not isinstance(self.allowed_commands, dict):
             raise InvalidTaskError("allowed_commands must be an object")
         for name, command in self.allowed_commands.items():
             validate_stable_id("allowed command name", name)
-            if not isinstance(command, list) or not command or not all(
-                isinstance(item, str) and item for item in command
+            if (
+                not isinstance(command, list)
+                or not command
+                or not all(isinstance(item, str) and item for item in command)
             ):
                 raise InvalidTaskError(f"Invalid allowed command: {name}")
         if not isinstance(self.verification_commands, list):
@@ -196,8 +203,10 @@ class Project:
             if check_id in verification_ids:
                 raise InvalidTaskError(f"Duplicate verification command id: {check_id}")
             verification_ids.add(check_id)
-            if not isinstance(command, list) or not command or not all(
-                isinstance(item, str) and item for item in command
+            if (
+                not isinstance(command, list)
+                or not command
+                or not all(isinstance(item, str) and item for item in command)
             ):
                 raise InvalidTaskError(f"Invalid verification command: {check_id}")
         return asdict(self)
@@ -216,6 +225,7 @@ class CanonicalTask:
     acceptance_criteria: list[Any] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)
     expires_at: str | None = None
+    base_sha: str | None = None
     supersedes: str | None = None
 
     def validate(self) -> None:
@@ -227,6 +237,12 @@ class CanonicalTask:
         validate_stable_id("dedupe_key", self.dedupe_key)
         if self.supersedes is not None:
             validate_stable_id("supersedes", self.supersedes)
+        if self.base_sha is not None and (
+            not isinstance(self.base_sha, str)
+            or len(self.base_sha) != 40
+            or any(character not in "0123456789abcdef" for character in self.base_sha)
+        ):
+            raise InvalidTaskError("base_sha must be a lowercase Git commit SHA")
         if self.revision < 1:
             raise InvalidTaskError("revision must be at least 1")
         if self.task_type not in {"codex", "write_files", "command"}:
@@ -237,11 +253,15 @@ class CanonicalTask:
         for index, criterion in enumerate(self.acceptance_criteria, start=1):
             if isinstance(criterion, str):
                 if not criterion.strip():
-                    raise InvalidTaskError(f"acceptance criterion {index} must not be empty")
+                    raise InvalidTaskError(
+                        f"acceptance criterion {index} must not be empty"
+                    )
                 seen_criteria.add(f"criterion-{index}")
                 continue
             if not isinstance(criterion, dict):
-                raise InvalidTaskError(f"acceptance criterion {index} must be a string or object")
+                raise InvalidTaskError(
+                    f"acceptance criterion {index} must be a string or object"
+                )
             forbidden = {"command", "argv"}.intersection(criterion)
             if forbidden:
                 raise InvalidTaskError(
@@ -260,7 +280,9 @@ class CanonicalTask:
             seen_criteria.add(criterion_id)
             text = criterion.get("text") or criterion.get("criterion")
             if not isinstance(text, str) or not text.strip():
-                raise InvalidTaskError(f"acceptance criterion {criterion_id} requires text")
+                raise InvalidTaskError(
+                    f"acceptance criterion {criterion_id} requires text"
+                )
             verification_id = criterion.get("verification_id")
             if verification_id is not None:
                 validate_stable_id("verification_id", verification_id)
@@ -268,14 +290,18 @@ class CanonicalTask:
             raise InvalidTaskError("payload must be an object")
         timeout = self.payload.get("timeout_seconds")
         if timeout is not None and (
-            not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 3600
+            not isinstance(timeout, int)
+            or isinstance(timeout, bool)
+            or not 1 <= timeout <= 3600
         ):
             raise InvalidTaskError("timeout_seconds must be an integer from 1 to 3600")
         if self.task_type == "command":
             command_name = self.payload.get("command")
             validate_stable_id("command name", command_name)
             if "argv" in self.payload:
-                raise InvalidTaskError("command tasks may reference only an allowlisted command name")
+                raise InvalidTaskError(
+                    "command tasks may reference only an allowlisted command name"
+                )
         elif self.task_type == "codex":
             prompt = self.payload.get("prompt")
             if not isinstance(prompt, str) or not prompt.strip():

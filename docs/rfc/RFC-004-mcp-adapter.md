@@ -48,7 +48,7 @@ tunnel, reverse proxy, or port-forwarding recipe.
 
 MCP tools call a small adapter service that owns validation, redaction,
 presentation limits, and audit behavior. The service reuses `TaskStore`,
-`TaskImporter`, `RecoveryManager`, and the same status/health logic as the CLI;
+canonical `TaskStore` writes, `RecoveryManager`, and the same status/health logic as the CLI;
 it does not duplicate task state transitions or Git recovery rules.
 
 The adapter exposes only these versioned tool names:
@@ -57,16 +57,19 @@ The adapter exposes only these versioned tool names:
 | --- | --- | --- |
 | `project_brain_system_health` | read | Bounded health checks and task status counts |
 | `project_brain_projects_list` | read | Registered project identity/capability summary; no commands or local paths |
-| `project_brain_tasks_create` | write | Canonical Codex task intake with fixed `source_type=mcp` and `task_type=codex` |
+| `project_brain_tasks_create` | write | Default Implement draft with fixed `source_type=mcp` and `task_type=codex` |
+| `project_brain_tasks_create_draft` | write | Canonical Analyze/Implement intake plus an opaque dispatch-confirmation token |
+| `project_brain_tasks_confirm` | write | Persist explicit approval of an unclaimed task draft plan and matching plan hash |
 | `project_brain_queue_dispatch_next` | write | Start at most one fixed one-shot worker when the runtime and claim gate permit |
 | `project_brain_tasks_list` | read | Bounded task summaries; default 20, maximum 100 |
 | `project_brain_tasks_get` | read | One bounded task detail view with recent events/evidence/reviews |
 | `project_brain_tasks_review` | write | Atomically apply an exact-canonical-head review verdict |
 | `project_brain_tasks_recovery_preview` | read | Dry-run recovery evidence only; no resolution or cleanup controls |
 
-Read tools declare `readOnlyHint`. Create, review, and dispatch declare
-side-effect annotations and do not claim idempotency where the operation may
-create state or a process. Tool results use stable `status`, `code`, and
+Read tools declare `readOnlyHint`. Draft creation declares idempotency because
+an exact unconfirmed replay rotates a replacement one-purpose confirmation token;
+different intent under the same identity fails closed. Review and dispatch do not
+claim idempotency. Tool results use stable `status`, `code`, and
 bounded `data` fields. Expected failures are returned as structured adapter
 errors instead of tracebacks or unbounded Core objects.
 
@@ -82,7 +85,7 @@ Every tool schema rejects unknown top-level fields. Strings have explicit
 length bounds, arrays have explicit item limits, and nested objects are scanned
 before Core persistence. The create tool accepts only:
 
-- stable task, project, dedupe, supersession, and criterion identifiers;
+- stable task, project, dedupe, Analyze-link, and criterion identifiers;
 - revision, goal, and optional expiry;
 - acceptance criteria containing only `id`, `text`, and optional trusted
   `verification_id`;
@@ -92,13 +95,33 @@ The adapter fixes `source_type` to `mcp` and `task_type` to `codex`. At every
 nesting depth it rejects `command`, `argv`, `shell`, `cwd`, `environment`,
 `repo_path`, `worktree_path`, and `codex_command`. Credential-like input is
 rejected before persistence. `task_id` and the Core logical key
-`(project_id, dedupe_key, revision)` retain existing idempotent behavior.
+`(project_id, dedupe_key, revision)` are bound to a canonical request SHA-256;
+different content under either identity is a state conflict.
 
-Supersession remains a Store-owned state-machine operation inside the same
-`BEGIN IMMEDIATE` transaction as task creation. A replacement revision must be
-strictly greater, active execution/recovery/merge ownership cannot be
-superseded, terminal history is preserved, and only states whose
-`ALLOWED_TRANSITIONS` include `superseded` are rewritten.
+Web Task Intake v1 uses `tasks_create_draft`, presents the returned bounded
+plan, then calls `tasks_confirm` with the returned `expected_plan_hash` only after
+explicit user approval. The Core
+stores this as a confirmation gate on the canonical task record; it does not
+add an MCP state machine. The gate is checked both by dispatcher preflight and
+the transactional Core claim. `workflow_kind` is `analyze` or `implement`; an
+Implement draft may point to a same-project completed Analyze task. Analyze uses
+the read-only Codex sandbox, fails if the repository changes, and completes with
+no commit, push, or PR. Implement freezes the completed Analyze result plus its
+SHA-256 and injects only that immutable snapshot into Codex. Its bounded redacted
+summary is available from task detail. The opaque confirmation token is stored as
+a digest and never appears in later task views. An exact unconfirmed create replay
+rotates that digest and returns a replacement token so a lost response cannot
+strand the canonical task.
+
+MCP intake exposes one explicit superseding-draft path for a
+`recovery_blocked` publication conflict. The new draft must name the old task,
+use the same project and dedupe key with a strictly greater revision, inherit
+the old task's canonical publication base, and pass the normal confirmation
+gate before the old task is marked `superseded`. The old task, conflict, and
+forensic records remain immutable history. Review-driven `needs_changes`
+remains on the same canonical task, branch, and Draft PR only after an explicit
+`tasks_redispatch` authorization bound to the exact current remote head. It is
+not claimable by default.
 
 Review accepts only `task_id`, exact `head_sha`, `approved|needs_changes`, and
 bounded structured findings. It delegates the verdict, finding inserts, task
@@ -112,7 +135,8 @@ MCP responses deliberately omit project `repo_path`, `worktree_root`,
 `codex_command`, allowlisted argv, verification argv, raw task payloads, agent
 commands, and artifact contents. Task views expose identifiers, status,
 timestamps, canonical head, Draft PR URL, bounded criteria, bounded redacted
-errors, verification summaries, review summaries, and recent redacted events.
+errors, verification summaries, review summaries, bounded agent-log and linked
+Analyze-result summaries, and recent redacted events.
 All strings pass the Core redactor and are truncated to documented limits.
 
 No tool returns environment variables, arbitrary files, arbitrary SQL, shell
@@ -173,7 +197,8 @@ input. Operator recovery remains CLI-only.
 ## Verification
 
 Automated tests cover tool discovery and annotations, Streamable HTTP startup,
-loopback rejection, all eight tool contracts, create idempotency, exact-head
+loopback rejection, all tool contracts, create idempotency, explicit draft
+confirmation, exact-head
 review, recovery dry-run behavior, dispatcher busy/blocked/idle/start paths,
 fixed worker parameters, private permissions, deep forbidden fields, secret
 rejection, response redaction, and output bounds. Tests use temporary runtimes

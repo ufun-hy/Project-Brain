@@ -40,6 +40,21 @@ struct MenuBarView: View {
 
             if !model.projects.isEmpty {
                 Divider()
+                Menu {
+                    ForEach(model.projects) { project in
+                        Button {
+                            model.selectedProjectID = project.projectID
+                        } label: {
+                            if model.selectedProjectID == project.projectID {
+                                Label(project.name, systemImage: "checkmark")
+                            } else {
+                                Text(project.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(selectedProjectName, systemImage: "folder")
+                }
                 Menu("Project intake") {
                     ForEach(model.projects) { project in
                         Button(project.acceptingTasks ? "Pause \(project.name)" : "Resume \(project.name)") {
@@ -53,6 +68,19 @@ struct MenuBarView: View {
             }
 
             Divider()
+            Button("New Task…") {
+                model.selectedSection = .tasks
+                model.openNewTask(defaultProjectID: model.selectedProjectID)
+                openWindow(id: "management")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.projects.isEmpty)
+            .help(
+                model.projects.isEmpty
+                    ? String(localized: "Add a project first")
+                    : String(localized: "Create a local task")
+            )
+            .accessibilityIdentifier("menu-bar-new-task")
             HStack {
                 Button("Open Task Center") {
                     model.selectedSection = .tasks
@@ -78,6 +106,12 @@ struct MenuBarView: View {
     private var serviceSummary: String {
         let states = model.services?.services.map { "\($0.name): \($0.state)" } ?? []
         return states.isEmpty ? "Worker and MCP offline" : states.joined(separator: " · ")
+    }
+
+    private var selectedProjectName: String {
+        model.projects.first(where: { $0.projectID == model.selectedProjectID })?.name
+            ?? model.projects.first?.name
+            ?? String(localized: "No project")
     }
 
     @ViewBuilder private func count(_ title: String, statuses: Set<TaskStatus>) -> some View {

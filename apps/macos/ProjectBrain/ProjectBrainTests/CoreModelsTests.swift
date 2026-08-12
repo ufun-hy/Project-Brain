@@ -28,10 +28,11 @@ final class CoreModelsTests: XCTestCase {
     }
 
     func testEveryCoreTaskStatusHasAProductPresentation() {
-        XCTAssertEqual(Set(TaskStatus.allCases.map(\.rawValue)).count, 14)
+        XCTAssertEqual(Set(TaskStatus.allCases.map(\.rawValue)).count, 15)
         XCTAssertTrue(TaskStatus.allCases.allSatisfy { !$0.title.isEmpty })
         XCTAssertEqual(TaskStatus.awaitingReview.title, "Needs review")
         XCTAssertEqual(TaskStatus.accepted.title, "Succeeded")
+        XCTAssertEqual(TaskStatus.completed.title, "Completed")
     }
 
     func testMenuAggregationUsesPersistentTaskAndServiceState() {
@@ -73,4 +74,112 @@ final class CoreModelsTests: XCTestCase {
         XCTAssertEqual(detail.verification.first?.status, "passed")
         XCTAssertEqual(detail.acceptanceCriteria.first?.displayText, "Tests pass")
     }
+
+    func testLocalTaskRequestEncodesOnlyTheStrictSourceNeutralSchema() throws {
+        let request = LocalTaskRequest(
+            projectID: "project-brain",
+            taskType: .implement,
+            goal: "Implement the reviewed local task flow.",
+            acceptanceCriteria: ["Keep the main checkout unchanged"],
+            delivery: .init(commit: true, push: false, draftPR: false)
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
+                as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), [
+            "schema_version", "source", "project_id", "task_type", "goal",
+            "acceptance_criteria", "delivery",
+        ])
+        XCTAssertEqual(object["schema_version"] as? Int, 1)
+        XCTAssertEqual(object["source"] as? String, "local_app")
+        for forbidden in ["command", "argv", "cwd", "environment", "sql", "path"] {
+            XCTAssertNil(object[forbidden])
+        }
+    }
+
+    func testLocalAnalysisResultAndExecutionSnapshotDecodeForTaskCenter() throws {
+        let data = Data(#"""
+        {
+          "task_id":"local-1","project_id":"p","project":"P","goal":"Review readiness",
+          "source_type":"local_app","local_task_type":"analysis","status":"completed",
+          "attempt_phase":"implementation","attempt_count":1,"branch":null,"commit":null,
+          "head_sha":null,"pr_url":null,"last_error":null,"next_action":"Review result",
+          "acceptance_criteria":[],"verification":[],"reviews":[],"events":[],
+          "base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "project_config_revision":4,"project_config_sha256":"bbbbbbbbbbbbbbbb",
+          "delivery":{"commit":false,"push":false,"draft_pr":false},
+          "result":{"schema_version":1,"kind":"analysis","summary":"Repository is ready","changed_files":[]}
+        }
+        """#.utf8)
+        let detail = try JSONDecoder().decode(TaskDetail.self, from: data)
+        XCTAssertEqual(detail.sourceType, "local_app")
+        XCTAssertEqual(detail.localTaskType, .analysis)
+        XCTAssertEqual(detail.status, .completed)
+        XCTAssertEqual(detail.projectConfigRevision, 4)
+        XCTAssertEqual(detail.result?["summary"]?.displayText, "Repository is ready")
+        XCTAssertEqual(detail.delivery?.commit, false)
+    }
+    func testReadinessProblemsIdentifyAndDeduplicateMissingTools() {
+        let response = HealthResponse(
+            status: "unhealthy",
+            checks: [
+                HealthCheck(name: "core:git", status: "failed", detail: "not found"),
+                HealthCheck(
+                    name: "core:codex:Project-Brain",
+                    status: "failed",
+                    detail: "not found"
+                ),
+                HealthCheck(name: "core:gh", status: "failed", detail: "not found"),
+                HealthCheck(
+                    name: "project:Project-Brain:gh",
+                    status: "failed",
+                    detail: "failed"
+                ),
+                HealthCheck(
+                    name: "github_auth",
+                    status: "failed",
+                    detail: "GitHub CLI is not installed"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            response.readinessProblems.map(\.kind),
+            [.git, .codex, .githubCLI]
+        )
+        XCTAssertEqual(
+            response.readinessProblems.first(where: { $0.kind == .githubCLI })?.checkNames.count,
+            3
+        )
+    }
+
+    func testReadinessProblemsDistinguishGitHubLoginAndServices() {
+        let response = HealthResponse(
+            status: "unhealthy",
+            checks: [
+                HealthCheck(
+                    name: "github_auth",
+                    status: "failed",
+                    detail: "not authenticated"
+                ),
+                HealthCheck(
+                    name: "worker_service",
+                    status: "failed",
+                    detail: "not installed"
+                ),
+                HealthCheck(
+                    name: "mcp_transport",
+                    status: "failed",
+                    detail: "connection refused"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            response.readinessProblems.map(\.kind),
+            [.githubAuthentication, .worker, .mcpTransport]
+        )
+    }
+
 }

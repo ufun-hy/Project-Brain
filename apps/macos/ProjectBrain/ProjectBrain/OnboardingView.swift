@@ -71,9 +71,32 @@ struct OnboardingView: View {
             Text("Install the periodic one-task Worker and loopback-only MCP service. Both launchd definitions use fixed absolute arguments and no shell wrapper.")
             Label("Runtime and task history are preserved on uninstall", systemImage: "externaldrive.badge.checkmark")
         case .health:
-            Text("Run local checks for the runtime, database schema, lock, project repository, Git, Codex, GitHub CLI, Worker, and MCP service.")
-            if let health = model.health {
-                Text("Last result: \(health.status)").font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Run local checks for the runtime, database schema, lock, project repository, Git, Codex, GitHub CLI, Worker, and MCP service.")
+                    if let health = model.health {
+                        if health.readinessProblems.isEmpty, health.status == "healthy" {
+                            Label("All local checks passed", systemImage: "checkmark.circle.fill")
+                                .font(.headline)
+                                .foregroundStyle(.green)
+                        } else {
+                            Text(
+                                String(
+                                    format: String(localized: "Readiness blocker count format"),
+                                    health.readinessProblems.count
+                                )
+                            )
+                            .font(.headline)
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(health.readinessProblems) { problem in
+                                    ReadinessProblemNotice(problem: problem)
+                                }
+                            }
+                            .accessibilityIdentifier("readiness-problem-list")
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .ready:
             Text("Local Project Brain is ready to receive tasks.").font(.title2.bold())
@@ -170,6 +193,154 @@ struct PlanSummary: View {
         GridRow {
             Text(title).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
+        }
+    }
+}
+
+private struct ReadinessProblemNotice: View {
+    let problem: ReadinessProblem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(copy.title, systemImage: copy.symbol)
+                .font(.headline)
+            Text(copy.message)
+            Label(copy.nextAction, systemImage: "arrow.right.circle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityIdentifier("readiness-problem-\(problem.kind.rawValue)")
+    }
+
+    private var copy: (title: String, message: String, nextAction: String, symbol: String) {
+        switch problem.kind {
+        case .git:
+            return (
+                String(localized: "Git is not installed"),
+                String(localized: "Project Brain could not find the Git executable."),
+                String(localized: "Install Apple Command Line Tools or Git, then run the health check again."),
+                "arrow.triangle.branch"
+            )
+        case .codex:
+            return (
+                String(localized: "Codex CLI is not installed"),
+                String(localized: "Project Brain could not find an executable Codex CLI for this project."),
+                String(localized: "Install Codex CLI, reopen Project Brain, then run the health check again."),
+                "terminal"
+            )
+        case .githubCLI:
+            return (
+                String(localized: "GitHub CLI is not installed"),
+                String(localized: "Project Brain could not find the GitHub CLI."),
+                String(localized: "Install GitHub CLI, sign in to GitHub, then run the health check again."),
+                "chevron.left.forwardslash.chevron.right"
+            )
+        case .githubAuthentication:
+            return (
+                String(localized: "GitHub sign-in is required"),
+                String(localized: "GitHub CLI is installed, but no active GitHub login is available."),
+                String(localized: "Sign in to GitHub, then run the health check again."),
+                "person.crop.circle.badge.exclamationmark"
+            )
+        case .runtimeRoot:
+            return (
+                String(localized: "Local runtime is unavailable"),
+                String(localized: "Project Brain could not initialize or access its private runtime."),
+                String(localized: "Reinstall the local runtime, then run the health check again."),
+                "externaldrive.badge.exclamationmark"
+            )
+        case .database:
+            return (
+                String(localized: "Local database is not ready"),
+                String(localized: "The Project Brain database schema could not be validated."),
+                String(localized: "Reinstall or upgrade the local runtime, then run the health check again."),
+                "cylinder.split.1x2"
+            )
+        case .runtimeLock:
+            return (
+                String(localized: "Local runtime is busy"),
+                String(localized: "Another Project Brain operation currently holds the runtime lock."),
+                String(localized: "Wait for the active operation to finish, then run the health check again."),
+                "lock.fill"
+            )
+        case .repository:
+            return (
+                String(localized: "Project repository is not ready"),
+                String(localized: "The selected project folder is unavailable or is not a valid Git repository."),
+                String(localized: "Go back and choose a valid Git repository."),
+                "folder.badge.questionmark"
+            )
+        case .origin:
+            return (
+                String(localized: "Git origin is not configured"),
+                String(localized: "The selected repository does not have a usable origin remote."),
+                String(localized: "Configure the repository origin, then run the health check again."),
+                "network"
+            )
+        case .defaultBranch:
+            return (
+                String(localized: "Default branch is not ready"),
+                String(localized: "The configured default branch could not be validated."),
+                String(localized: "Correct the repository default branch, then run the health check again."),
+                "arrow.triangle.branch"
+            )
+        case .launchdConfiguration:
+            return (
+                String(localized: "Background-service configuration is unsafe"),
+                String(localized: "The project configuration contains a path that background services cannot use safely."),
+                String(localized: "Update the project configuration, then reinstall background services."),
+                "gearshape.2"
+            )
+        case .worktree:
+            return (
+                String(localized: "Managed worktree folder is not ready"),
+                String(localized: "Project Brain could not validate its isolated worktree boundary."),
+                String(localized: "Correct the worktree configuration, then run the health check again."),
+                "square.stack.3d.up"
+            )
+        case .worker:
+            return (
+                String(localized: "Worker service is not running"),
+                String(localized: "The background Worker is not installed or did not start successfully."),
+                String(localized: "Go back and reinstall or start background services."),
+                "gearshape.2"
+            )
+        case .mcpService:
+            return (
+                String(localized: "MCP service is not running"),
+                String(localized: "The local MCP service is not installed or did not start successfully."),
+                String(localized: "Go back and reinstall or start background services."),
+                "point.3.connected.trianglepath.dotted"
+            )
+        case .mcpTransport:
+            return (
+                String(localized: "Local MCP connection failed"),
+                String(localized: "Project Brain could not initialize communication with the local MCP service."),
+                String(localized: "Restart background services, then run the health check again."),
+                "cable.connector"
+            )
+        case .project:
+            return (
+                String(localized: "Project configuration is not ready"),
+                String(localized: "The registered project could not be validated."),
+                String(localized: "Go back and review the project configuration."),
+                "folder.badge.gearshape"
+            )
+        case .other:
+            let detail = problem.details.first.map(SecretRedactor.redact)
+                ?? String(localized: "No additional detail was provided.")
+            return (
+                String(localized: "A local readiness check failed"),
+                String(
+                    format: String(localized: "Readiness check detail format"),
+                    detail
+                ),
+                String(localized: "Review the detail above, correct the problem, then run the health check again."),
+                "exclamationmark.triangle.fill"
+            )
         }
     }
 }

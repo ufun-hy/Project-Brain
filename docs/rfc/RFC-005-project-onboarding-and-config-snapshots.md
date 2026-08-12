@@ -55,7 +55,7 @@ delete v5 columns or rewrite task snapshots in place.
 
 ## MCP boundary
 
-The adapter remains exactly eight tools and adds no configuration write tool.
+The adapter retains its bounded allowlisted tool surface and adds no configuration write tool.
 Project summaries expose revision and a short hash; task summaries expose their
 bound revision and short hash. Raw execution profiles, local paths, and argv are
 not returned.

@@ -7,7 +7,7 @@ them.
 
 The existing live Gmail Bridge under `experiments/gmail-inbox/` is frozen legacy
 behavior and is not part of the Core architecture. This change does not modify,
-migrate, launch, or replace it. Project Brain 0.7.0 adds a native macOS menu bar
+migrate, launch, or replace it. Project Brain 0.8.0 adds a native macOS menu bar
 and management app over the versioned Core configuration and controlled MCP
 adapter; it does not copy DevSpace's arbitrary file or terminal authority.
 
@@ -19,18 +19,33 @@ service management, automatic task/evidence observation, unified readiness,
 Keychain-backed managed Tunnel connection, and redacted diagnostic export
 without asking the user to run a CLI or maintain Python.
 
+The App can create tasks directly from the menu bar or Task Center. A user
+selects a registered project, chooses read-only **Analyze / Review** or
+worktree-based **Implement change**, reviews the exact Base SHA and execution
+snapshot, and confirms a token-bound plan. ChatGPT is an optional ingress, not
+a prerequisite for local tasks; Secure MCP Tunnel and external ChatGPT
+acceptance remain separate Pending gates.
+
 The app embeds a self-contained Core helper and can import a user-downloaded,
 reviewed Tunnel Client into its private App Support directory. Both installers
-use atomic replacement and rollback. RC1 Build 7 also binds the App and helper
+use atomic replacement and rollback. Build 10 keeps the App and helper
 to one immutable, versioned CLI contract, upgrades a stale same-version helper
-by SHA-256, and enforces one user process and one management window. Build 4
+by SHA-256, and enforces one user process and one management window. It uses a
+schema-v12 task record, including the Web Task Intake dispatch gate and fixed
+analysis snapshot, while storing only confirmation-token hashes. Local task
+confirmation submits only the opaque token plus reviewed plan hash. Build 8
+introduced strict local-task intake, guided first run, and persisted analysis
+results. Build 4
 added an MCP transport-probe
 wizard with explicit external-acceptance Pending state. The optional fixed
 one-document Draft PR task remains locked because the current Tunnel contract
 does not provide trusted ChatGPT control-plane attestation. The unsigned
-internal RC artifact, first-run guide, and current
+Build 10 Personal Build, deferred Developer ID release gate, first-run guide, and current
 external limits are documented in [`docs/product-shell.md`](docs/product-shell.md)
-and [`docs/product-shell-rc1-verification.md`](docs/product-shell-rc1-verification.md).
+and [`docs/product-shell-build10-personal-build.md`](docs/product-shell-build10-personal-build.md)
+and [`docs/product-shell-build10-signing-notarization.md`](docs/product-shell-build10-signing-notarization.md).
+Build 9 remains immutable internal-build history in
+[`docs/product-shell-build9-plan-confirm-verification.md`](docs/product-shell-build9-plan-confirm-verification.md).
 
 ![Project Brain first-run welcome](docs/images/product-shell-onboarding.png)
 
@@ -177,10 +192,24 @@ The Streamable HTTP endpoint is `http://127.0.0.1:7677/mcp`. The no-auth MVP
 rejects every non-loopback bind. ChatGPT access uses OpenAI Secure MCP Tunnel;
 do not expose the local endpoint as an unauthenticated public service.
 
-The nine allowlisted tools cover health, projects, canonical task create,
-asynchronous queue dispatch, bounded task list/detail, exact-head review, and
-read-only recovery preview. The ninth tool is a strict, one-field, no-side-effect
-MCP transport probe. Its source is explicitly unattributed and it cannot set
+The allowlisted tools cover health, projects, canonical task create, explicit
+Analyze/Implement task drafts and draft confirmation, asynchronous queue dispatch,
+bounded task list/detail (including redacted agent-log and linked Analyze-result
+summaries), exact-head review, and read-only recovery preview. Drafts use a
+task-bound confirmation gate in the canonical Core record; they cannot be claimed
+until the user has explicitly approved the returned plan and matching `plan_hash`.
+Review-driven `needs_changes` retries additionally require explicit exact-head
+redispatch authorization. A publication conflict preserves the canonical
+published head and local forensic candidate and requires an explicit new
+revision from that canonical head. The new revision uses the same project and
+dedupe key with a greater revision, passes the normal draft confirmation gate,
+and never mutates the old task's conflict or forensic history.
+An exact unconfirmed create replay rotates and returns a replacement confirmation
+token, while a reused task/logical identity with different intent fails closed.
+Analyze runs with a read-only Codex sandbox, rejects repository changes, and never
+commits, pushes, or creates a PR. A linked Implement task stores and consumes the
+completed Analyze result plus its SHA-256 as an immutable snapshot. The transport probe is a
+strict, one-field, no-side-effect MCP tool. Its source is explicitly unattributed and it cannot set
 external ChatGPT verification. The tools expose no shell, arbitrary files, cleanup,
 recovery resolution, manual acceptance setter, or merge operation. Dispatch starts a fixed
 one-shot Core worker and returns immediately; `RuntimeLock` and the global
@@ -266,15 +295,33 @@ symlink escape.
 scripts/verify-core.sh
 ```
 
-The same command runs in Linux CI. macOS CI additionally packages the frozen
+The same command runs in Linux CI. macOS PR CI additionally packages the frozen
 helper, runs a real isolated launchd lifecycle, runs Swift tests, builds
-`Project Brain.app`, creates an unsigned internal RC1 DMG/ZIP plus build
-manifest, verifies all artifact hashes, verifies the embedded helper and static
+`Project Brain.app`, creates and uploads a clearly non-distributable Build 10
+unsigned Personal Build, verifies all artifact hashes, verifies the embedded helper and static
 Tunnel compatibility manifest, executes existing-project onboarding through the
-final app's embedded helper, launches the final DMG and Applications copies to
+final app's embedded helper, migrates a preserved schema-v9 database and runs a
+no-change exact-Chinese-goal Analyze task through the final DMG App/Core adapter,
+launches the final DMG and Applications copies to
 verify one process/window, and checks Gmail legacy isolation. Tests use temporary repositories,
 bare remotes, and runtime roots; no Gmail, GitHub, Codex, or user-home
 credentials are needed.
+
+After this workflow exists on the default branch, the manual exact-SHA
+`macOS Personal Build` workflow can generate the same unsigned DMG, App ZIP,
+manifest, and checksums without Apple credentials. It is intended only for the
+owner's internal use and requires a per-artifact **Open Anyway** authorization;
+it never disables Gatekeeper and never claims public-distribution acceptance.
+
+The separate `macOS Developer ID release` workflow is manual and exact-SHA
+bound. It fails closed unless the protected `macos-release` environment
+provides a Developer ID Application identity and App Store Connect notary API
+key. It signs the embedded helper, other nested code, and App from the inside
+out with Hardened Runtime and secure timestamps, notarizes and staples the App and DMG, runs
+`codesign`, `spctl`, and `stapler` verification, and uploads only the signed
+`Project-Brain-Build10-arm64` result. Developer ID signing, Apple
+notarization/stapling, and Fresh-Mac public-distribution acceptance are
+**Deferred — personal use**. External ChatGPT acceptance remains Pending.
 
 Architecture and recovery details are in
 [`docs/rfc/RFC-003-core-v3.md`](docs/rfc/RFC-003-core-v3.md) and
@@ -287,3 +334,6 @@ Product Shell architecture and repository acceptance evidence are in
 and [`docs/product-shell-verification.md`](docs/product-shell-verification.md).
 RC1 installation, acceptance authority, artifact boundaries, and external
 Pending gates are in [`docs/rfc/RFC-007-zero-cli-rc1.md`](docs/rfc/RFC-007-zero-cli-rc1.md).
+Local App task intake, guided first run, plan snapshots, and Analyze/Implement
+semantics are in
+[`docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md`](docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md).

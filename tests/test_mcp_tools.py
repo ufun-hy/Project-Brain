@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from project_brain.models import TaskStatus
-from project_brain.mcp.dispatch import OneShotDispatcher
 from project_brain.mcp.tools import MCPAdapterService
+from project_brain.store import TaskStore
 
 from tests.helpers import CoreFixture, create_remote_clone, git
 
@@ -68,6 +69,55 @@ class MCPToolTests(unittest.TestCase):
             "prompt": "Update one documentation page and add tests.",
         }
 
+    def _prepare_recovery_blocked_task(self) -> tuple[str, str, str]:
+        old = self.fixture.add_task(
+            "blocked-publication",
+            dedupe_key="publication-flow",
+            revision=1,
+        )
+        old_task_id = str(old["task_id"])
+        self.fixture.store.claim_next()
+        published = "a" * 40
+        candidate = "c" * 40
+        self.fixture.store.set_task_fields(
+            old_task_id,
+            branch="brain/blocked-publication",
+            commit=published,
+            head_sha=published,
+        )
+        self.fixture.store.record_candidate(
+            old_task_id,
+            candidate,
+            publication_base_sha=published,
+        )
+        self.fixture.store.record_publication_conflict(
+            old_task_id,
+            {
+                "branch": "brain/blocked-publication",
+                "expected_remote_head_sha": published,
+                "observed_remote_head_sha": "b" * 40,
+                "publication_base_sha": published,
+                "candidate_sha": candidate,
+            },
+        )
+        self.fixture.store.block_running_task(
+            old_task_id,
+            reason="publication conflict requires a new revision",
+        )
+        return old_task_id, published, candidate
+
+    def _superseding_value(self, task_id: str) -> dict[str, object]:
+        replacement = self._create_value(task_id)
+        replacement.update(
+            {
+                "dedupe_key": "publication-flow",
+                "revision": 2,
+                "supersedes": "blocked-publication",
+                "workflow_kind": "implement",
+            }
+        )
+        return replacement
+
     def test_projects_and_health_omit_paths_commands_and_secrets(self) -> None:
         self.assertFalse(self.fixture.runtime.lock_file.exists())
         projects = self.service.projects_list()
@@ -85,8 +135,13 @@ class MCPToolTests(unittest.TestCase):
     def test_create_is_canonical_idempotent_and_audited(self) -> None:
         first = self.service.tasks_create(self._create_value())
         second = self.service.tasks_create(self._create_value())
-        self.assertEqual(first["status"], "created")
-        self.assertEqual(second["status"], "duplicate")
+        self.assertEqual(first["status"], "draft_created")
+        self.assertEqual(second["status"], "draft_replayed")
+        self.assertEqual(first["plan_hash"], second["plan_hash"])
+        self.assertNotEqual(
+            first["confirmation"]["confirmation_token"],
+            second["confirmation"]["confirmation_token"],
+        )
         task = self.fixture.store.get_task("mcp-task")
         self.assertEqual(task["source_type"], "mcp")
         self.assertEqual(task["task_type"], "codex")
@@ -94,14 +149,34 @@ class MCPToolTests(unittest.TestCase):
         self.assertNotIn("payload", json.dumps(first))
         self.assertEqual(first["task"]["project_config_revision"], 1)
         self.assertEqual(len(first["task"]["project_config_sha256"]), 12)
-        self.assertEqual(
-            [
-                event["payload"]["outcome"]
-                for event in self.fixture.store.list_events("mcp-task")
-                if event["event_type"] == "mcp_task_create_requested"
-            ],
-            ["duplicate"],
+        self.assertIn(
+            "mcp_task_confirmation_reissued",
+            [event["event_type"] for event in self.fixture.store.list_events("mcp-task")],
         )
+        stale = self.service.tasks_confirm(
+            {
+                "task_id": "mcp-task",
+                "confirmation_token": first["confirmation"]["confirmation_token"],
+                "expected_plan_hash": first["plan_hash"],
+            }
+        )
+        self.assertEqual(stale["code"], "validation")
+        confirmed = self.service.tasks_confirm(
+            {
+                "task_id": "mcp-task",
+                "confirmation_token": second["confirmation"]["confirmation_token"],
+                "expected_plan_hash": second["plan_hash"],
+            }
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+        replay_after_confirmation = self.service.tasks_create(self._create_value())
+        self.assertEqual(replay_after_confirmation["status"], "duplicate")
+        self.assertNotIn("confirmation", replay_after_confirmation)
+
+        changed = self._create_value()
+        changed["prompt"] = "A different request must not reuse the same identity."
+        conflict = self.service.tasks_create(changed)
+        self.assertEqual(conflict["code"], "state_conflict")
         self.assertEqual(
             self.fixture.store.list_events("mcp-task")[0]["payload"]["source_type"],
             "mcp",
@@ -123,7 +198,7 @@ class MCPToolTests(unittest.TestCase):
         head_before = git(repo, "rev-parse", "HEAD").stdout.strip()
         status_before = git(repo, "status", "--porcelain=v1", "--untracked-files=all").stdout
         result = self.service.tasks_create(self._create_value("control-plane-only"))
-        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["status"], "draft_created")
         self.assertEqual(git(repo, "rev-parse", "HEAD").stdout.strip(), head_before)
         self.assertEqual(
             git(repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
@@ -132,6 +207,92 @@ class MCPToolTests(unittest.TestCase):
         task = self.fixture.store.get_task("control-plane-only")
         self.assertIsNone(task["worktree_path"])
         self.assertEqual(list(self.fixture.runtime.worktrees_dir.rglob("*")), [])
+
+    def test_draft_requires_confirmation_and_can_link_analysis_to_implementation(self) -> None:
+        analyze = self._create_value("analyze-mcp")
+        analyze["workflow_kind"] = "analyze"
+        draft = self.service.tasks_create_draft(analyze)
+        self.assertEqual(draft["status"], "draft_created")
+        self.assertTrue(draft["confirmation"]["required"])
+        self.assertEqual(self.fixture.store.claim_next(), None)
+
+        token = draft["confirmation"]["confirmation_token"]
+        wrong_plan = self.service.tasks_confirm(
+            {
+                "task_id": "analyze-mcp",
+                "confirmation_token": token,
+                "expected_plan_hash": "0" * 64,
+            }
+        )
+        self.assertEqual(wrong_plan["code"], "state_conflict")
+        confirmed = self.service.tasks_confirm(
+            {
+                "task_id": "analyze-mcp",
+                "confirmation_token": token,
+                "expected_plan_hash": draft["plan_hash"],
+            }
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+        claimed = self.fixture.store.claim_next()
+        self.assertEqual(claimed["task_id"], "analyze-mcp")
+        analysis_result = {
+            "schema_version": 1,
+            "kind": "analysis",
+            "summary": "Implement the bounded MCP intake changes.",
+            "completed_at": "2026-08-09T00:00:00+00:00",
+        }
+        self.fixture.store.set_task_result("analyze-mcp", analysis_result)
+        self.fixture.store.transition(
+            "analyze-mcp",
+            TaskStatus.COMPLETED,
+            event_type="analysis_completed",
+        )
+        source_detail = self.service.tasks_get(task_id="analyze-mcp")
+        self.assertEqual(source_detail["data"]["analysis"]["task_id"], "analyze-mcp")
+        self.assertEqual(
+            source_detail["data"]["analysis"]["result_summary"],
+            analysis_result["summary"],
+        )
+        self.assertEqual(
+            len(source_detail["data"]["task"]["analysis_result_sha256"]), 64
+        )
+
+        implementation = self._create_value("implement-mcp")
+        implementation["workflow_kind"] = "implement"
+        implementation["analysis_task_id"] = "analyze-mcp"
+        linked = self.service.tasks_create_draft(implementation)
+        self.assertEqual(linked["status"], "draft_created")
+        detail = self.service.tasks_get(task_id="implement-mcp")
+        self.assertEqual(detail["data"]["task"]["analysis_task_id"], "analyze-mcp")
+        self.assertEqual(detail["data"]["analysis"]["task_id"], "analyze-mcp")
+        self.assertEqual(
+            detail["data"]["analysis"]["result_summary"],
+            analysis_result["summary"],
+        )
+        self.assertEqual(len(detail["data"]["analysis"]["fixed_result_sha256"]), 64)
+
+    def test_draft_confirmation_rejects_wrong_token_and_non_analysis_parent(self) -> None:
+        draft = self._create_value("gated-mcp")
+        draft["workflow_kind"] = "analyze"
+        result = self.service.tasks_create_draft(draft)
+        wrong = self.service.tasks_confirm(
+            {
+                "task_id": "gated-mcp",
+                "confirmation_token": "x" * 43,
+                "expected_plan_hash": result["plan_hash"],
+            }
+        )
+        self.assertEqual(wrong["code"], "validation")
+        self.assertEqual(self.fixture.store.claim_next(), None)
+
+        normal = self._create_value("not-analysis")
+        normal["workflow_kind"] = "implement"
+        self.service.tasks_create_draft(normal)
+        invalid = self._create_value("bad-analysis-link")
+        invalid["workflow_kind"] = "implement"
+        invalid["analysis_task_id"] = "not-analysis"
+        self.assertEqual(self.service.tasks_create_draft(invalid)["code"], "validation")
+        self.assertEqual(result["task"]["dispatch_confirmation"]["confirmed"], False)
 
     def test_create_rejects_deep_control_fields_before_persistence(self) -> None:
         forbidden_fields = (
@@ -176,18 +337,16 @@ class MCPToolTests(unittest.TestCase):
                 self.assertEqual(result["code"], code)
         self.assertEqual(self.fixture.store.list_tasks(), [])
 
-    def test_active_supersession_returns_state_conflict_and_preserves_dispatch_blocker(self) -> None:
+    def test_legacy_create_cannot_bypass_draft_confirmation_or_supersede(self) -> None:
         launches: list[list[str]] = []
 
         def unexpected_launch(argv, **_kwargs):
             launches.append(list(argv))
             raise AssertionError("blocked dispatch must not start a worker")
 
-        dispatcher = OneShotDispatcher(
-            self.fixture.store,
-            self.fixture.runtime,
-            popen_factory=unexpected_launch,
-        )
+        from project_brain.mcp.dispatch import OneShotDispatcher
+
+        dispatcher = OneShotDispatcher(self.fixture.store, self.fixture.runtime, popen_factory=unexpected_launch)
         service = MCPAdapterService(
             self.fixture.store,
             self.fixture.runtime,
@@ -196,15 +355,8 @@ class MCPToolTests(unittest.TestCase):
         original = self._create_value("mcp-owned")
         original["dedupe_key"] = "mcp-owned-flow"
         original["revision"] = 4
-        self.assertEqual(service.tasks_create(original)["status"], "created")
-        claimed = self.fixture.store.claim_next()
-        self.assertEqual(claimed["task_id"], "mcp-owned")
-        self.fixture.store.record_agent_session(
-            session_id="session-mcp-owned",
-            task_id="mcp-owned",
-            adapter="codex",
-            command=["codex", "exec"],
-        )
+        self.assertEqual(service.tasks_create(original)["status"], "draft_created")
+        self.assertEqual(self.fixture.store.claim_next(), None)
 
         replacement = self._create_value("mcp-owned-replacement")
         replacement["dedupe_key"] = "mcp-owned-flow"
@@ -215,7 +367,7 @@ class MCPToolTests(unittest.TestCase):
         self.assertEqual(conflict["code"], "state_conflict")
         self.assertEqual(
             self.fixture.store.get_task("mcp-owned")["status"],
-            TaskStatus.RUNNING.value,
+            TaskStatus.PENDING.value,
         )
         self.assertNotIn(
             "mcp-owned-replacement",
@@ -223,10 +375,262 @@ class MCPToolTests(unittest.TestCase):
         )
 
         dispatch = service.queue_dispatch_next(reason="confirm blocker remains visible")
-        self.assertEqual(dispatch["dispatch_status"], "blocked")
-        self.assertEqual(dispatch["code"], "recovery_blocked")
-        self.assertEqual(dispatch["claim_safety"]["blockers"][0]["task_id"], "mcp-owned")
+        self.assertEqual(dispatch["dispatch_status"], "idle")
         self.assertEqual(launches, [])
+
+    def test_recovery_blocked_public_superseding_draft_requires_confirmation(self) -> None:
+        old = self.fixture.add_task(
+            "blocked-publication",
+            dedupe_key="publication-flow",
+            revision=1,
+        )
+        self.fixture.store.claim_next()
+        published = "a" * 40
+        candidate = "c" * 40
+        self.fixture.store.set_task_fields(
+            old["task_id"],
+            branch="brain/blocked-publication",
+            commit=published,
+            head_sha=published,
+        )
+        self.fixture.store.record_candidate(
+            old["task_id"], candidate, publication_base_sha=published
+        )
+        self.fixture.store.record_publication_conflict(
+            old["task_id"],
+            {
+                "branch": "brain/blocked-publication",
+                "expected_remote_head_sha": published,
+                "observed_remote_head_sha": "b" * 40,
+                "publication_base_sha": published,
+                "candidate_sha": candidate,
+            },
+        )
+        self.fixture.store.block_running_task(
+            old["task_id"], reason="publication conflict requires a new revision"
+        )
+
+        replacement = self._create_value("publication-replacement")
+        replacement.update(
+            {
+                "dedupe_key": "publication-flow",
+                "revision": 2,
+                "supersedes": old["task_id"],
+                "workflow_kind": "implement",
+            }
+        )
+        draft = self.service.tasks_create_draft(replacement)
+        self.assertEqual(draft["status"], "draft_created")
+        self.assertEqual(
+            self.fixture.store.get_task(old["task_id"])["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        stored = self.fixture.store.get_task("publication-replacement")
+        self.assertEqual(stored["base_sha"], published)
+        self.assertIsNone(stored["canonical_published_head_sha"])
+        self.assertIsNone(self.fixture.store.claim_next())
+
+        confirmed = self.service.tasks_confirm(
+            {
+                "task_id": "publication-replacement",
+                "confirmation_token": draft["confirmation"]["confirmation_token"],
+                "expected_plan_hash": draft["plan_hash"],
+            }
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+        self.assertEqual(
+            self.fixture.store.get_task(old["task_id"])["status"],
+            TaskStatus.SUPERSEDED.value,
+        )
+        preserved = self.fixture.store.get_task(old["task_id"])
+        self.assertEqual(preserved["publication_conflict"]["candidate_sha"], candidate)
+        self.assertEqual(self.fixture.store.claim_next()["task_id"], "publication-replacement")
+
+    def test_recovery_blocked_superseding_draft_exact_replay_is_idempotent(self) -> None:
+        old_task_id, published, candidate = self._prepare_recovery_blocked_task()
+        replacement = self._superseding_value("publication-replay")
+
+        first = self.service.tasks_create_draft(replacement)
+        replay = self.service.tasks_create_draft(replacement)
+
+        self.assertEqual(first["status"], "draft_created")
+        self.assertEqual(replay["status"], "draft_replayed")
+        self.assertEqual(first["plan_hash"], replay["plan_hash"])
+        self.assertNotEqual(
+            first["confirmation"]["confirmation_token"],
+            replay["confirmation"]["confirmation_token"],
+        )
+        self.assertEqual(
+            self.fixture.store.get_task(old_task_id)["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        stored = self.fixture.store.get_task("publication-replay")
+        self.assertEqual(stored["base_sha"], published)
+        self.assertEqual(stored["supersedes"], old_task_id)
+        events = self.fixture.store.list_events("publication-replay")
+        self.assertEqual(
+            [event["event_type"] for event in events].count("mcp_task_draft_created"),
+            1,
+        )
+        self.assertEqual(
+            [event["event_type"] for event in events].count(
+                "mcp_task_confirmation_reissued"
+            ),
+            1,
+        )
+
+        stale = self.service.tasks_confirm(
+            {
+                "task_id": "publication-replay",
+                "confirmation_token": first["confirmation"]["confirmation_token"],
+                "expected_plan_hash": first["plan_hash"],
+            }
+        )
+        self.assertEqual(stale["code"], "validation")
+        confirmed = self.service.tasks_confirm(
+            {
+                "task_id": "publication-replay",
+                "confirmation_token": replay["confirmation"]["confirmation_token"],
+                "expected_plan_hash": replay["plan_hash"],
+            }
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+        duplicate = self.service.tasks_create_draft(replacement)
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertNotIn("confirmation", duplicate)
+
+        preserved = self.fixture.store.get_task(old_task_id)
+        self.assertEqual(preserved["status"], TaskStatus.SUPERSEDED.value)
+        self.assertEqual(preserved["publication_conflict"]["candidate_sha"], candidate)
+        self.assertEqual(
+            [
+                event["event_type"]
+                for event in self.fixture.store.list_events(old_task_id)
+            ].count("task_superseded"),
+            1,
+        )
+
+    def test_recovery_blocked_superseding_draft_survives_database_reopen(self) -> None:
+        old_task_id, published, candidate = self._prepare_recovery_blocked_task()
+        replacement = self._superseding_value("publication-reopen")
+        draft = self.service.tasks_create_draft(replacement)
+
+        reopened_store = TaskStore(self.fixture.runtime.database)
+        reopened_store.initialize()
+        reopened_service = MCPAdapterService(
+            reopened_store,
+            self.fixture.runtime,
+            dispatcher=self.dispatcher,  # type: ignore[arg-type]
+        )
+        self.assertEqual(
+            reopened_store.get_task(old_task_id)["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        reopened_draft = reopened_store.get_task("publication-reopen")
+        self.assertEqual(reopened_draft["status"], TaskStatus.PENDING.value)
+        self.assertEqual(reopened_draft["base_sha"], published)
+        self.assertEqual(reopened_draft["supersedes"], old_task_id)
+
+        replay = reopened_service.tasks_create_draft(replacement)
+        self.assertEqual(replay["status"], "draft_replayed")
+        stale = reopened_service.tasks_confirm(
+            {
+                "task_id": "publication-reopen",
+                "confirmation_token": draft["confirmation"]["confirmation_token"],
+                "expected_plan_hash": draft["plan_hash"],
+            }
+        )
+        self.assertEqual(stale["code"], "validation")
+        confirmed = reopened_service.tasks_confirm(
+            {
+                "task_id": "publication-reopen",
+                "confirmation_token": replay["confirmation"]["confirmation_token"],
+                "expected_plan_hash": replay["plan_hash"],
+            }
+        )
+        self.assertEqual(confirmed["status"], "confirmed")
+
+        verified_store = TaskStore(self.fixture.runtime.database)
+        verified_store.initialize()
+        preserved = verified_store.get_task(old_task_id)
+        verified_draft = verified_store.get_task("publication-reopen")
+        self.assertEqual(preserved["status"], TaskStatus.SUPERSEDED.value)
+        self.assertEqual(preserved["publication_conflict"]["candidate_sha"], candidate)
+        self.assertEqual(verified_draft["base_sha"], published)
+        self.assertIsNotNone(verified_draft["dispatch_confirmed_at"])
+        self.assertEqual(
+            [event["event_type"] for event in verified_store.list_events(old_task_id)].count(
+                "task_superseded"
+            ),
+            1,
+        )
+
+    def test_recovery_blocked_superseding_draft_is_concurrent_and_atomic(self) -> None:
+        old_task_id, published, candidate = self._prepare_recovery_blocked_task()
+        replacement = self._superseding_value("publication-concurrent")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            drafts = list(
+                executor.map(
+                    lambda _: self.service.tasks_create_draft(dict(replacement)),
+                    range(2),
+                )
+            )
+        self.assertEqual(
+            sorted(result["status"] for result in drafts),
+            ["draft_created", "draft_replayed"],
+        )
+        self.assertEqual(
+            self.fixture.store.get_task(old_task_id)["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+        stored = self.fixture.store.get_task("publication-concurrent")
+        self.assertEqual(stored["base_sha"], published)
+        self.assertEqual(stored["supersedes"], old_task_id)
+        self.assertEqual(
+            [
+                task["task_id"]
+                for task in self.fixture.store.list_tasks()
+                if task["dedupe_key"] == "publication-flow"
+                and task["revision"] == 2
+            ],
+            ["publication-concurrent"],
+        )
+
+        final_replay = self.service.tasks_create_draft(replacement)
+        confirmation = {
+            "task_id": "publication-concurrent",
+            "confirmation_token": final_replay["confirmation"]["confirmation_token"],
+            "expected_plan_hash": final_replay["plan_hash"],
+        }
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            confirmations = list(
+                executor.map(
+                    lambda _: self.service.tasks_confirm(dict(confirmation)),
+                    range(2),
+                )
+            )
+        self.assertEqual(
+            [result["status"] for result in confirmations],
+            ["confirmed", "confirmed"],
+        )
+        preserved = self.fixture.store.get_task(old_task_id)
+        self.assertEqual(preserved["status"], TaskStatus.SUPERSEDED.value)
+        self.assertEqual(preserved["publication_conflict"]["candidate_sha"], candidate)
+        self.assertEqual(
+            [
+                event["event_type"]
+                for event in self.fixture.store.list_events(old_task_id)
+            ].count("task_superseded"),
+            1,
+        )
+        new_events = self.fixture.store.list_events("publication-concurrent")
+        self.assertEqual(
+            [event["event_type"] for event in new_events].count(
+                "mcp_task_dispatch_confirmed"
+            ),
+            1,
+        )
 
     def test_tasks_list_clamps_limit_and_task_get_bounds_events(self) -> None:
         for index in range(105):
@@ -291,6 +695,52 @@ class MCPToolTests(unittest.TestCase):
         self.assertEqual(result["status"], TaskStatus.NEEDS_CHANGES.value)
         self.assertEqual(len(self.fixture.store.list_reviews("review-mcp")), 1)
         self.assertEqual(self.dispatcher.calls, [])
+
+    def test_redispatch_requires_current_remote_head_and_is_idempotent(self) -> None:
+        repo, remote = create_remote_clone(self.fixture.root, "redispatch-mcp")
+        project = self.fixture.add_project(
+            project_id="redispatch-project",
+            repo_path=str(repo),
+            remote_url=str(remote),
+        )
+        branch = "brain/redispatch-mcp"
+        published = git(repo, "rev-parse", "HEAD").stdout.strip()
+        git(repo, "branch", branch, published)
+        git(repo, "push", "origin", branch)
+        self.fixture.add_task(
+            "redispatch-mcp",
+            project_id=project["project_id"],
+        )
+        self.fixture.store.claim_next()
+        self.fixture.store.set_task_fields(
+            "redispatch-mcp",
+            branch=branch,
+            commit=published,
+            head_sha=published,
+        )
+        self.fixture.store.transition("redispatch-mcp", TaskStatus.AWAITING_REVIEW)
+        self.fixture.store.transition("redispatch-mcp", TaskStatus.NEEDS_CHANGES)
+        value = {
+            "task_id": "redispatch-mcp",
+            "expected_remote_head_sha": published,
+            "redispatch_plan_sha256": "1" * 64,
+            "idempotency_key": "redispatch-mcp-revision-2",
+        }
+        first = self.service.tasks_redispatch(value)
+        second = self.service.tasks_redispatch(value)
+        self.assertEqual(first["status"], "redispatch_authorized")
+        self.assertEqual(second["status"], "redispatch_authorized")
+        self.assertEqual(
+            self.fixture.store.get_task("redispatch-mcp")["status"],
+            TaskStatus.RETRY_PENDING.value,
+        )
+        self.assertEqual(
+            [
+                item["event_type"]
+                for item in self.fixture.store.list_events("redispatch-mcp")
+            ].count("explicit_redispatch_authorized"),
+            1,
+        )
 
     def test_recovery_preview_is_read_only_and_exposes_no_resolution(self) -> None:
         self.fixture.add_task("preview-mcp")

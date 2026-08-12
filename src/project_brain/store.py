@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import timedelta
+from hmac import compare_digest
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -29,12 +32,25 @@ from .models import (
 )
 from .security import contains_known_secret, redact_text
 from .migrations import DATA_MIGRATIONS
-from .project_config import canonical_profile_json, config_sha256, normalize_execution_profile
+from .project_config import (
+    canonical_profile_json,
+    config_sha256,
+    normalize_execution_profile,
+)
 from .schema import MIGRATIONS, SCHEMA_VERSION
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _loads(value: str | None, default: Any) -> Any:
@@ -54,8 +70,12 @@ class TaskStore:
     ) -> None:
         self.database = Path(database).expanduser().resolve()
         self.migrations = dict(MIGRATIONS if migrations is None else migrations)
-        self.data_migrations = dict(DATA_MIGRATIONS if data_migrations is None else data_migrations)
-        self.supported_schema_version = SCHEMA_VERSION if schema_version is None else schema_version
+        self.data_migrations = dict(
+            DATA_MIGRATIONS if data_migrations is None else data_migrations
+        )
+        self.supported_schema_version = (
+            SCHEMA_VERSION if schema_version is None else schema_version
+        )
 
     def connect(self) -> sqlite3.Connection:
         self.database.parent.mkdir(parents=True, exist_ok=True)
@@ -92,14 +112,19 @@ class TaskStore:
                     f"Database schema {user_version} is newer than supported "
                     f"{self.supported_schema_version}"
                 )
-            table_exists = connection.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'schema_migrations'"
-            ).fetchone() is not None
+            table_exists = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'schema_migrations'"
+                ).fetchone()
+                is not None
+            )
             if table_exists:
                 applied = {
                     int(row["version"])
-                    for row in connection.execute("SELECT version FROM schema_migrations")
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations"
+                    )
                 }
                 if applied and max(applied) > self.supported_schema_version:
                     raise MigrationError(
@@ -111,7 +136,10 @@ class TaskStore:
                     for version in self.migrations
                     if version <= self.supported_schema_version
                 }
-                if user_version == self.supported_schema_version and applied == expected:
+                if (
+                    user_version == self.supported_schema_version
+                    and applied == expected
+                ):
                     return
 
         with self.transaction(immediate=True) as connection:
@@ -217,7 +245,9 @@ class TaskStore:
                     (record["name"], record["project_id"]),
                 ).fetchone()
                 if name_owner is not None:
-                    raise InvalidTaskError(f"Project name is already registered: {record['name']}")
+                    raise InvalidTaskError(
+                        f"Project name is already registered: {record['name']}"
+                    )
                 path_owner = connection.execute(
                     "SELECT project_id FROM projects "
                     "WHERE repo_path = ? AND project_id != ? AND registered = 1",
@@ -228,11 +258,14 @@ class TaskStore:
                         "Repository path is already registered to another project"
                     )
                 existing = connection.execute(
-                    "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
+                    "SELECT * FROM projects WHERE project_id = ?",
+                    (record["project_id"],),
                 ).fetchone()
                 expected = (expected_plans or {}).get(record["project_id"])
                 if expected is not None:
-                    current_revision = int(existing["config_revision"]) if existing else None
+                    current_revision = (
+                        int(existing["config_revision"]) if existing else None
+                    )
                     current_sha256 = existing["config_sha256"] if existing else None
                     current_name = existing["name"] if existing else None
                     if (
@@ -252,7 +285,11 @@ class TaskStore:
                     revision = 1
                     created_at = now
                 else:
-                    action = "noop" if existing["config_sha256"] == record["config_sha256"] else "update"
+                    action = (
+                        "noop"
+                        if existing["config_sha256"] == record["config_sha256"]
+                        else "update"
+                    )
                     revision = int(existing["config_revision"]) + (action == "update")
                     created_at = existing["created_at"]
                     if action == "noop" and existing["name"] != record["name"]:
@@ -267,7 +304,9 @@ class TaskStore:
                         "Project mutation no longer matches the confirmed action"
                     )
                 if action == "noop":
-                    results.append({"action": action, "project": self._project(existing)})
+                    results.append(
+                        {"action": action, "project": self._project(existing)}
+                    )
                     continue
                 if action == "rename":
                     connection.execute(
@@ -275,13 +314,25 @@ class TaskStore:
                         (record["name"], now, record["project_id"]),
                     )
                     row = connection.execute(
-                        "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
+                        "SELECT * FROM projects WHERE project_id = ?",
+                        (record["project_id"],),
                     ).fetchone()
                     assert row is not None
                     results.append({"action": action, "project": self._project(row)})
                     connection.execute(
                         "INSERT INTO events(task_id,event_type,payload_json,created_at) VALUES(NULL,?,?,?)",
-                        ("project_config_applied", _json({"project_id": record["project_id"], "action": action, "config_revision": revision, "config_sha256": record["config_sha256"]}), now),
+                        (
+                            "project_config_applied",
+                            _json(
+                                {
+                                    "project_id": record["project_id"],
+                                    "action": action,
+                                    "config_revision": revision,
+                                    "config_sha256": record["config_sha256"],
+                                }
+                            ),
+                            now,
+                        ),
                     )
                     continue
                 connection.execute(
@@ -309,18 +360,34 @@ class TaskStore:
                         registered=1
                     """,
                     (
-                        record["project_id"], record["name"], record["repo_path"],
-                        record["remote_url"], record["default_branch"], record["worktree_root"],
-                        _json(record["codex_command"]), _json(record["verification_commands"]),
-                        _json(record["allowed_commands"]), int(record["auto_push"]),
-                        int(record["auto_pr"]), created_at, now, revision,
-                        record["config_sha256"], now, source,
-                        int(existing is None or reactivating or bool(existing["accepting_tasks"])),
+                        record["project_id"],
+                        record["name"],
+                        record["repo_path"],
+                        record["remote_url"],
+                        record["default_branch"],
+                        record["worktree_root"],
+                        _json(record["codex_command"]),
+                        _json(record["verification_commands"]),
+                        _json(record["allowed_commands"]),
+                        int(record["auto_push"]),
+                        int(record["auto_pr"]),
+                        created_at,
+                        now,
+                        revision,
+                        record["config_sha256"],
+                        now,
+                        source,
+                        int(
+                            existing is None
+                            or reactivating
+                            or bool(existing["accepting_tasks"])
+                        ),
                         1,
                     ),
                 )
                 row = connection.execute(
-                    "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
+                    "SELECT * FROM projects WHERE project_id = ?",
+                    (record["project_id"],),
                 ).fetchone()
                 assert row is not None
                 results.append({"action": action, "project": self._project(row)})
@@ -328,7 +395,14 @@ class TaskStore:
                     "INSERT INTO events(task_id,event_type,payload_json,created_at) VALUES(NULL,?,?,?)",
                     (
                         "project_config_applied",
-                        _json({"project_id": record["project_id"], "action": action, "config_revision": revision, "config_sha256": record["config_sha256"]}),
+                        _json(
+                            {
+                                "project_id": record["project_id"],
+                                "action": action,
+                                "config_revision": revision,
+                                "config_sha256": record["config_sha256"],
+                            }
+                        ),
                         now,
                     ),
                 )
@@ -348,7 +422,9 @@ class TaskStore:
         value["registered"] = bool(value.get("registered", 1))
         return value
 
-    def get_project(self, project_id: str, *, include_removed: bool = False) -> dict[str, Any]:
+    def get_project(
+        self, project_id: str, *, include_removed: bool = False
+    ) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT * FROM projects WHERE project_id = ?"
@@ -359,7 +435,9 @@ class TaskStore:
             raise InvalidTaskError(f"Unregistered project: {project_id}")
         return self._project(row)
 
-    def get_project_by_name(self, name: str, *, include_removed: bool = False) -> dict[str, Any]:
+    def get_project_by_name(
+        self, name: str, *, include_removed: bool = False
+    ) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT * FROM projects WHERE name = ?"
@@ -458,13 +536,36 @@ class TaskStore:
     @staticmethod
     def _task(row: sqlite3.Row) -> dict[str, Any]:
         value = dict(row)
-        value["acceptance_criteria"] = _loads(
-            value.pop("acceptance_criteria_json"), []
-        )
+        value["acceptance_criteria"] = _loads(value.pop("acceptance_criteria_json"), [])
         value["payload"] = _loads(value.pop("payload_json"), {})
         if "execution_profile_json" in value:
-            value["execution_profile"] = _loads(value.pop("execution_profile_json"), None)
+            value["execution_profile"] = _loads(
+                value.pop("execution_profile_json"), None
+            )
+        if "delivery_json" in value:
+            value["delivery"] = _loads(value.pop("delivery_json"), None)
+        if "result_json" in value:
+            value["result"] = _loads(value.pop("result_json"), None)
+        if "analysis_result_json" in value:
+            value["analysis_result"] = _loads(
+                value.pop("analysis_result_json"), None
+            )
+        if "publication_conflict_json" in value:
+            value["publication_conflict"] = _loads(
+                value.pop("publication_conflict_json"), None
+            )
+        if "dispatch_confirmation_required" in value:
+            value["dispatch_confirmation_required"] = bool(
+                value["dispatch_confirmation_required"]
+            )
+        # Confirmation and request digests are internal authorization state,
+        # not part of the Core, CLI, or MCP task view.
+        value.pop("dispatch_confirmation_token_sha256", None)
+        value.pop("mcp_request_sha256", None)
         value["commit"] = value.pop("commit_sha")
+        value["published_head_sha"] = (
+            value.get("canonical_published_head_sha") or value.get("commit")
+        )
         return value
 
     def task_execution_profile(self, task: str | dict[str, Any]) -> dict[str, Any]:
@@ -484,23 +585,488 @@ class TaskStore:
             raise InvalidTaskError("Task execution snapshot project mismatch")
         return normalized
 
-    def insert_task(self, task: CanonicalTask | dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    def insert_task(
+        self, task: CanonicalTask | dict[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
         canonical = task if isinstance(task, CanonicalTask) else CanonicalTask(**task)
         record = canonical.as_record()
         if contains_known_secret(record):
+            raise InvalidTaskError(
+                "Task contains a credential-like value and was not persisted"
+            )
+        now = utc_now()
+        with self.transaction(immediate=True) as connection:
+            return self._insert_task_record(connection, record, now=now)
+
+    def _insert_task_record(
+        self,
+        connection: sqlite3.Connection,
+        record: dict[str, Any],
+        *,
+        now: str,
+    ) -> tuple[dict[str, Any], bool]:
+        existing = connection.execute(
+            "SELECT * FROM tasks WHERE task_id = ?", (record["task_id"],)
+        ).fetchone()
+        if existing is not None:
+            return self._task(existing), False
+        superseded_row: sqlite3.Row | None = None
+        supersession_applied = False
+        if record.get("supersedes"):
+            superseded_row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (record["supersedes"],)
+            ).fetchone()
+            if superseded_row is None:
+                raise InvalidTaskError(
+                    f"Superseded task does not exist: {record['supersedes']}"
+                )
+            if (
+                superseded_row["project_id"] != record["project_id"]
+                or superseded_row["dedupe_key"] != record["dedupe_key"]
+            ):
+                raise InvalidTaskError(
+                    "supersedes must reference the same project and dedupe_key"
+                )
+            if record["revision"] <= superseded_row["revision"]:
+                raise StateTransitionError(
+                    "A superseding task revision must be greater than the referenced task"
+                )
+            superseded_status = TaskStatus(superseded_row["status"])
+            if superseded_status not in TERMINAL_STATUSES:
+                if TaskStatus.SUPERSEDED not in ALLOWED_TRANSITIONS[superseded_status]:
+                    raise StateTransitionError(
+                        "Task status cannot be superseded while it owns active or "
+                        f"protected state: {superseded_status.value}"
+                    )
+                if (
+                    superseded_status is TaskStatus.RECOVERY_BLOCKED
+                    and not superseded_row["canonical_published_head_sha"]
+                ):
+                    raise StateConflictError(
+                        "A recovery-blocked superseding task requires a canonical published head"
+                    )
+                supersession_applied = True
+        logical = connection.execute(
+            "SELECT * FROM tasks WHERE project_id = ? AND dedupe_key = ? AND revision = ?",
+            (record["project_id"], record["dedupe_key"], record["revision"]),
+        ).fetchone()
+        if logical is not None:
+            return self._task(logical), False
+        project_row = connection.execute(
+            "SELECT * FROM projects WHERE project_id = ?",
+            (record["project_id"],),
+        ).fetchone()
+        if project_row is None:
+            raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
+        if not bool(project_row["registered"]):
+            raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
+        if not bool(project_row["accepting_tasks"]):
+            raise InvalidTaskError(
+                f"Project is paused and not accepting new tasks: {record['project_id']}"
+            )
+        profile = normalize_execution_profile(self._project(project_row))
+        profile_json = canonical_profile_json(profile)
+        profile_hash = config_sha256(profile)
+        if (
+            project_row["config_sha256"] != profile_hash
+            or not project_row["config_revision"]
+        ):
+            raise InvalidTaskError("Active project configuration hash is invalid")
+        trusted_ids = {
+            check.get("id")
+            for check in _loads(project_row["verification_commands_json"], [])
+            if isinstance(check, dict) and check.get("id")
+        }
+        for criterion in record.get("acceptance_criteria", []):
+            if not isinstance(criterion, dict) or not criterion.get("verification_id"):
+                continue
+            if criterion["verification_id"] not in trusted_ids:
+                raise InvalidTaskError(
+                    f"Unknown trusted verification_id for {record['project_id']}: "
+                    f"{criterion['verification_id']}"
+                )
+        connection.execute(
+            """
+                INSERT INTO tasks(
+                    task_id, project_id, dedupe_key, revision, source_type,
+                    source_message_id, goal, acceptance_criteria_json, task_type,
+                    payload_json, status, attempt_count, created_at, updated_at,
+                    expires_at, supersedes, project_config_revision,
+                    project_config_sha256, execution_profile_json, base_sha,
+                    local_task_type, delivery_json, result_json, workflow_kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            (
+                record["task_id"],
+                record["project_id"],
+                record["dedupe_key"],
+                record["revision"],
+                record["source_type"],
+                record.get("source_message_id"),
+                record["goal"],
+                _json(record.get("acceptance_criteria", [])),
+                record["task_type"],
+                _json(record.get("payload", {})),
+                TaskStatus.PENDING.value,
+                now,
+                now,
+                record.get("expires_at"),
+                record.get("supersedes"),
+                int(project_row["config_revision"]),
+                profile_hash,
+                profile_json,
+                record.get("base_sha")
+                or (
+                    superseded_row["canonical_published_head_sha"]
+                    if superseded_row is not None
+                    else None
+                ),
+                record.get("local_task_type"),
+                (
+                    _json(record["delivery"])
+                    if record.get("delivery") is not None
+                    else None
+                ),
+                _json(record["result"]) if record.get("result") is not None else None,
+                record.get("workflow_kind")
+                or (
+                    "analyze"
+                    if record.get("local_task_type") == "analysis"
+                    else "implement"
+                ),
+            ),
+        )
+        self._event(
+            connection,
+            record["task_id"],
+            "task_created",
+            None,
+            TaskStatus.PENDING.value,
+            {
+                "revision": record["revision"],
+                "source_type": record["source_type"],
+                "project_config_revision": int(project_row["config_revision"]),
+                "project_config_sha256": profile_hash,
+                **(
+                    {"local_task_type": record["local_task_type"]}
+                    if record.get("local_task_type")
+                    else {}
+                ),
+                **(
+                    {
+                        "supersedes": record["supersedes"],
+                        "supersession_applied": supersession_applied,
+                    }
+                    if record.get("supersedes")
+                    else {}
+                ),
+            },
+        )
+        if superseded_row is not None and supersession_applied:
+            connection.execute(
+                "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                (TaskStatus.SUPERSEDED.value, now, superseded_row["task_id"]),
+            )
+            self._event(
+                connection,
+                superseded_row["task_id"],
+                "task_superseded",
+                superseded_row["status"],
+                TaskStatus.SUPERSEDED.value,
+                {"by_task_id": record["task_id"]},
+            )
+        created = connection.execute(
+            "SELECT * FROM tasks WHERE task_id = ?", (record["task_id"],)
+        ).fetchone()
+        assert created is not None
+        return self._task(created), True
+
+    def save_local_task_plan(
+        self,
+        *,
+        plan_token: str,
+        canonical_request_sha256: str,
+        canonical_request: dict[str, Any],
+        plan_sha256: str,
+        plan: dict[str, Any],
+        contract_version: str,
+    ) -> None:
+        if contains_known_secret(canonical_request) or contains_known_secret(plan):
+            raise InvalidTaskError("Local task plan contains a credential-like value")
+        token_sha256 = hashlib.sha256(plan_token.encode("utf-8")).hexdigest()
+        token_fingerprint = token_sha256[:12]
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE local_task_plans
+                SET superseded_at = ?
+                WHERE project_id = ? AND consumed_at IS NULL AND superseded_at IS NULL
+                """,
+                (plan["created_at"], plan["project_id"]),
+            )
+            connection.execute(
+                """
+                INSERT INTO local_task_plans(
+                    plan_token_sha256, schema_version, canonical_request_sha256,
+                    canonical_request_json, plan_json, project_id,
+                    project_config_revision, project_config_sha256, base_sha,
+                    created_at, expires_at, plan_sha256, token_fingerprint,
+                    contract_version
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token_sha256,
+                    canonical_request_sha256,
+                    _canonical_json(canonical_request),
+                    _canonical_json(plan),
+                    plan["project_id"],
+                    plan["execution_profile_revision"],
+                    plan["execution_profile_sha256"],
+                    plan.get("base_sha"),
+                    plan["created_at"],
+                    plan["expires_at"],
+                    plan_sha256,
+                    token_fingerprint,
+                    contract_version,
+                ),
+            )
+
+    @staticmethod
+    def _local_task_plan(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        value["canonical_request"] = _loads(
+            value.pop("canonical_request_json"), {}
+        )
+        value["plan"] = _loads(value.pop("plan_json"), {})
+        return value
+
+    def get_local_task_plan(self, plan_token: str) -> dict[str, Any]:
+        token_sha256 = hashlib.sha256(plan_token.encode("utf-8")).hexdigest()
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM local_task_plans WHERE plan_token_sha256 = ?",
+                (token_sha256,),
+            ).fetchone()
+        if row is None:
+            raise InvalidTaskError("Unknown local task plan token")
+        return self._local_task_plan(row)
+
+    def consume_local_task_plan(
+        self,
+        *,
+        plan_token: str,
+        expected_plan_sha256: str,
+        expected_project_revision: int,
+        expected_project_sha256: str,
+        task: CanonicalTask,
+        local_task_type: str,
+        delivery: dict[str, bool],
+        base_sha: str,
+        now: str,
+    ) -> tuple[dict[str, Any], bool]:
+        record = {
+            **task.as_record(),
+            "local_task_type": local_task_type,
+            "delivery": delivery,
+            "base_sha": base_sha,
+        }
+        if contains_known_secret(record):
+            raise InvalidTaskError(
+                "Task contains a credential-like value and was not persisted"
+            )
+        token_sha256 = hashlib.sha256(plan_token.encode("utf-8")).hexdigest()
+        with self.transaction(immediate=True) as connection:
+            plan_row = connection.execute(
+                "SELECT * FROM local_task_plans WHERE plan_token_sha256 = ?",
+                (token_sha256,),
+            ).fetchone()
+            if plan_row is None:
+                raise InvalidTaskError("Unknown local task plan token")
+            if plan_row["consumed_at"] is not None:
+                raise StateConflictError(
+                    "The local task plan was already consumed",
+                    error_code="local_task_plan_consumed",
+                    retryable=False,
+                    next_action_code="open_task_center",
+                )
+            if plan_row["superseded_at"] is not None:
+                raise StateConflictError(
+                    "The local task plan was superseded",
+                    error_code="local_task_plan_superseded",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                )
+            expiry = parse_timestamp(plan_row["expires_at"])
+            current = parse_timestamp(now)
+            if expiry is None or current is None or expiry <= current:
+                raise StateConflictError(
+                    "The local task plan expired; review a new plan",
+                    error_code="local_task_plan_expired",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                )
+            if (
+                plan_row["plan_sha256"] != expected_plan_sha256
+                or plan_row["project_id"] != record["project_id"]
+                or int(plan_row["project_config_revision"]) != expected_project_revision
+                or plan_row["project_config_sha256"] != expected_project_sha256
+                or plan_row["base_sha"] != base_sha
+            ):
+                raise StateConflictError(
+                    "The local task plan snapshot no longer matches",
+                    error_code="local_task_plan_snapshot_invalid",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                )
+            try:
+                canonical_request = json.loads(plan_row["canonical_request_json"])
+                plan_document = json.loads(plan_row["plan_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise StateConflictError(
+                    "The canonical local task plan is invalid",
+                    error_code="local_task_plan_snapshot_invalid",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                ) from exc
+            canonical_request_sha256 = hashlib.sha256(
+                _canonical_json(canonical_request).encode("utf-8")
+            ).hexdigest()
+            plan_material = {
+                key: value
+                for key, value in plan_document.items()
+                if key not in {"plan_hash", "token_fingerprint"}
+            }
+            persisted_plan_sha256 = hashlib.sha256(
+                _canonical_json(plan_material).encode("utf-8")
+            ).hexdigest()
+            if (
+                canonical_request_sha256
+                != plan_row["canonical_request_sha256"]
+                or persisted_plan_sha256 != plan_row["plan_sha256"]
+                or plan_document.get("plan_hash") != plan_row["plan_sha256"]
+                or plan_document.get("token_fingerprint") != token_sha256[:12]
+                or plan_document.get("contract_version")
+                != plan_row["contract_version"]
+                or canonical_request.get("project_id") != record["project_id"]
+                or canonical_request.get("goal") != record["goal"]
+                or canonical_request.get("task_type") != local_task_type
+                or canonical_request.get("acceptance_criteria")
+                != [
+                    item.get("text") if isinstance(item, dict) else item
+                    for item in record.get("acceptance_criteria", [])
+                ]
+                or canonical_request.get("delivery") != delivery
+                or plan_document.get("request_sha256")
+                != plan_row["canonical_request_sha256"]
+                or plan_document.get("canonical_goal") != record["goal"]
+                or plan_document.get("task_type") != local_task_type
+                or plan_document.get("delivery") != delivery
+            ):
+                raise StateConflictError(
+                    "The canonical local task request no longer matches",
+                    error_code="local_task_plan_snapshot_invalid",
+                    retryable=True,
+                    next_action_code="review_new_plan",
+                )
+            created, was_created = self._insert_task_record(connection, record, now=now)
+            connection.execute(
+                "UPDATE local_task_plans SET consumed_at = ?, task_id = ? "
+                "WHERE plan_token_sha256 = ? AND consumed_at IS NULL "
+                "AND superseded_at IS NULL",
+                (now, created["task_id"], token_sha256),
+            )
+            if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                raise StateConflictError(
+                    "The local task plan was consumed concurrently",
+                    error_code="local_task_plan_consumed",
+                    retryable=False,
+                    next_action_code="open_task_center",
+                )
+            self._event(
+                connection,
+                created["task_id"],
+                "local_task_plan_consumed",
+                None,
+                TaskStatus.PENDING.value,
+                {
+                    "plan_token_sha256": token_sha256,
+                    "plan_sha256": expected_plan_sha256,
+                    "request_sha256": plan_row["canonical_request_sha256"],
+                    "local_task_type": local_task_type,
+                },
+            )
+            return created, was_created
+
+    def create_mcp_draft(
+        self,
+        task: CanonicalTask | dict[str, Any],
+        *,
+        workflow_kind: str,
+        analysis_task_id: str | None,
+        confirmation_token: str,
+        request_sha256: str,
+        dispatch_plan_sha256: str,
+    ) -> tuple[dict[str, Any], bool, bool]:
+        """Create a canonical MCP task with an explicit claim gate.
+
+        The task is persisted in the same table and uses the existing Core
+        status machine.  The extra columns record only intake authorization;
+        they do not introduce a parallel MCP lifecycle.
+        """
+        if workflow_kind not in {"analyze", "implement"}:
+            raise InvalidTaskError("MCP workflow_kind must be analyze or implement")
+        if not isinstance(confirmation_token, str) or len(confirmation_token) < 32:
+            raise InvalidTaskError("MCP confirmation token is invalid")
+        for name, digest in (
+            ("request_sha256", request_sha256),
+            ("dispatch_plan_sha256", dispatch_plan_sha256),
+        ):
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise InvalidTaskError(f"MCP {name} is invalid")
+        canonical = task if isinstance(task, CanonicalTask) else CanonicalTask(**task)
+        record = canonical.as_record()
+        if record["source_type"] != "mcp" or record["task_type"] != "codex":
+            raise InvalidTaskError("MCP drafts must be canonical mcp Codex tasks")
+        if contains_known_secret(record):
             raise InvalidTaskError("Task contains a credential-like value and was not persisted")
+        token_hash = hashlib.sha256(confirmation_token.encode("utf-8")).hexdigest()
         now = utc_now()
         with self.transaction(immediate=True) as connection:
             existing = connection.execute(
                 "SELECT * FROM tasks WHERE task_id = ?", (record["task_id"],)
             ).fetchone()
             if existing is not None:
-                return self._task(existing), False
+                return self._replay_mcp_draft(
+                    connection,
+                    existing,
+                    request_sha256=request_sha256,
+                    dispatch_plan_sha256=dispatch_plan_sha256,
+                    confirmation_token_sha256=token_hash,
+                    now=now,
+                )
+            logical = connection.execute(
+                "SELECT * FROM tasks WHERE project_id = ? AND dedupe_key = ? AND revision = ?",
+                (record["project_id"], record["dedupe_key"], record["revision"]),
+            ).fetchone()
+            if logical is not None:
+                return self._replay_mcp_draft(
+                    connection,
+                    logical,
+                    request_sha256=request_sha256,
+                    dispatch_plan_sha256=dispatch_plan_sha256,
+                    confirmation_token_sha256=token_hash,
+                    now=now,
+                )
             superseded_row: sqlite3.Row | None = None
-            supersession_applied = False
+            supersession_base_sha: str | None = None
             if record.get("supersedes"):
                 superseded_row = connection.execute(
-                    "SELECT * FROM tasks WHERE task_id = ?", (record["supersedes"],)
+                    "SELECT * FROM tasks WHERE task_id = ?",
+                    (record["supersedes"],),
                 ).fetchone()
                 if superseded_row is None:
                     raise InvalidTaskError(
@@ -517,32 +1083,62 @@ class TaskStore:
                     raise StateTransitionError(
                         "A superseding task revision must be greater than the referenced task"
                     )
-                superseded_status = TaskStatus(superseded_row["status"])
-                if superseded_status not in TERMINAL_STATUSES:
-                    if TaskStatus.SUPERSEDED not in ALLOWED_TRANSITIONS[superseded_status]:
-                        raise StateTransitionError(
-                            "Task status cannot be superseded while it owns active or "
-                            f"protected state: {superseded_status.value}"
-                        )
-                    supersession_applied = True
-            logical = connection.execute(
-                "SELECT * FROM tasks WHERE project_id = ? AND dedupe_key = ? AND revision = ?",
-                (record["project_id"], record["dedupe_key"], record["revision"]),
-            ).fetchone()
-            if logical is not None:
-                return self._task(logical), False
+                if superseded_row["status"] != TaskStatus.RECOVERY_BLOCKED.value:
+                    raise StateTransitionError(
+                        "MCP superseding drafts are only available for recovery_blocked tasks"
+                    )
+                supersession_base_sha = superseded_row["canonical_published_head_sha"]
+                if not supersession_base_sha:
+                    raise StateConflictError(
+                        "A recovery-blocked superseding draft requires a canonical published head"
+                    )
             project_row = connection.execute(
-                "SELECT * FROM projects WHERE project_id = ?",
-                (record["project_id"],),
+                "SELECT * FROM projects WHERE project_id = ?", (record["project_id"],)
             ).fetchone()
-            if project_row is None:
-                raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
-            if not bool(project_row["registered"]):
+            if project_row is None or not bool(project_row["registered"]):
                 raise InvalidTaskError(f"Unregistered project: {record['project_id']}")
             if not bool(project_row["accepting_tasks"]):
                 raise InvalidTaskError(
                     f"Project is paused and not accepting new tasks: {record['project_id']}"
                 )
+            analysis_result: dict[str, Any] | None = None
+            analysis_result_sha256: str | None = None
+            if analysis_task_id is not None:
+                analysis = connection.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?",
+                    (analysis_task_id,),
+                ).fetchone()
+                if analysis is None:
+                    raise InvalidTaskError(f"Analysis task does not exist: {analysis_task_id}")
+                if analysis["project_id"] != record["project_id"]:
+                    raise InvalidTaskError("Analysis task must belong to the same project")
+                if analysis["workflow_kind"] != "analyze":
+                    raise InvalidTaskError("analysis_task_id must reference an analyze task")
+                if analysis["status"] != TaskStatus.COMPLETED.value:
+                    raise StateConflictError(
+                        "Analysis task must be completed before creating an implementation draft"
+                    )
+                analysis_result = _loads(analysis["analysis_result_json"], None)
+                analysis_result_sha256 = analysis["analysis_result_sha256"]
+                if (
+                    not isinstance(analysis_result, dict)
+                    or analysis_result.get("kind") != "analysis"
+                    or not isinstance(analysis_result_sha256, str)
+                ):
+                    raise InvalidTaskError(
+                        "Analysis task does not contain a valid frozen completed result"
+                    )
+                if contains_known_secret(analysis_result):
+                    raise InvalidTaskError(
+                        "Analysis result contains a credential-like value and cannot be linked"
+                    )
+                expected_analysis_result_sha256 = hashlib.sha256(
+                    _canonical_json(analysis_result).encode("utf-8")
+                ).hexdigest()
+                if analysis_result_sha256 != expected_analysis_result_sha256:
+                    raise InvalidTaskError(
+                        "Analysis task result hash does not match its frozen result"
+                    )
             profile = normalize_execution_profile(self._project(project_row))
             profile_json = canonical_profile_json(profile)
             profile_hash = config_sha256(profile)
@@ -554,9 +1150,10 @@ class TaskStore:
                 if isinstance(check, dict) and check.get("id")
             }
             for criterion in record.get("acceptance_criteria", []):
-                if not isinstance(criterion, dict) or not criterion.get("verification_id"):
-                    continue
-                if criterion["verification_id"] not in trusted_ids:
+                if isinstance(criterion, dict) and criterion.get("verification_id") not in {
+                    None,
+                    *trusted_ids,
+                }:
                     raise InvalidTaskError(
                         f"Unknown trusted verification_id for {record['project_id']}: "
                         f"{criterion['verification_id']}"
@@ -568,8 +1165,13 @@ class TaskStore:
                     source_message_id, goal, acceptance_criteria_json, task_type,
                     payload_json, status, attempt_count, created_at, updated_at,
                     expires_at, supersedes, project_config_revision,
-                    project_config_sha256, execution_profile_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+                    project_config_sha256, execution_profile_json, base_sha, local_task_type,
+                    delivery_json, workflow_kind, analysis_task_id,
+                    analysis_result_json, analysis_result_sha256,
+                    mcp_request_sha256, dispatch_plan_sha256,
+                    dispatch_confirmation_required,
+                    dispatch_confirmation_token_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     record["task_id"], record["project_id"], record["dedupe_key"],
@@ -579,47 +1181,200 @@ class TaskStore:
                     _json(record.get("payload", {})), TaskStatus.PENDING.value,
                     now, now, record.get("expires_at"), record.get("supersedes"),
                     int(project_row["config_revision"]), profile_hash, profile_json,
+                    supersession_base_sha,
+                    "analysis" if workflow_kind == "analyze" else "implement",
+                    _json(
+                        {
+                            "commit": workflow_kind == "implement",
+                            "push": workflow_kind == "implement"
+                            and bool(project_row["auto_push"]),
+                            "draft_pr": workflow_kind == "implement"
+                            and bool(project_row["auto_push"])
+                            and bool(project_row["auto_pr"]),
+                        }
+                    ),
+                    workflow_kind,
+                    analysis_task_id,
+                    _canonical_json(analysis_result)
+                    if analysis_result is not None
+                    else None,
+                    analysis_result_sha256,
+                    request_sha256,
+                    dispatch_plan_sha256,
+                    token_hash,
                 ),
             )
             self._event(
                 connection,
                 record["task_id"],
-                "task_created",
+                "mcp_task_draft_created",
                 None,
                 TaskStatus.PENDING.value,
                 {
                     "revision": record["revision"],
-                    "source_type": record["source_type"],
+                    "source_type": "mcp",
+                    "workflow_kind": workflow_kind,
+                    "analysis_task_id": analysis_task_id,
+                    "analysis_result_sha256": analysis_result_sha256,
+                    "dispatch_plan_sha256": dispatch_plan_sha256,
+                    "dispatch_confirmation_required": True,
                     "project_config_revision": int(project_row["config_revision"]),
                     "project_config_sha256": profile_hash,
                     **(
                         {
                             "supersedes": record["supersedes"],
-                            "supersession_applied": supersession_applied,
+                            "publication_base_sha": supersession_base_sha,
                         }
                         if record.get("supersedes")
                         else {}
                     ),
                 },
             )
-            if superseded_row is not None and supersession_applied:
-                connection.execute(
-                    "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
-                    (TaskStatus.SUPERSEDED.value, now, superseded_row["task_id"]),
-                )
-                self._event(
-                    connection,
-                    superseded_row["task_id"],
-                    "task_superseded",
-                    superseded_row["status"],
-                    TaskStatus.SUPERSEDED.value,
-                    {"by_task_id": record["task_id"]},
-                )
             created = connection.execute(
                 "SELECT * FROM tasks WHERE task_id = ?", (record["task_id"],)
             ).fetchone()
             assert created is not None
-            return self._task(created), True
+            return self._task(created), True, True
+
+    def _replay_mcp_draft(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        request_sha256: str,
+        dispatch_plan_sha256: str,
+        confirmation_token_sha256: str,
+        now: str,
+    ) -> tuple[dict[str, Any], bool, bool]:
+        """Rotate a lost confirmation capability only for an exact unclaimed replay."""
+        if (
+            row["source_type"] != "mcp"
+            or row["mcp_request_sha256"] != request_sha256
+            or row["dispatch_plan_sha256"] != dispatch_plan_sha256
+        ):
+            raise StateConflictError(
+                "MCP idempotency identity already exists with different task intent"
+            )
+        confirmation_reissued = bool(
+            row["status"] == TaskStatus.PENDING.value
+            and int(row["attempt_count"]) == 0
+            and bool(row["dispatch_confirmation_required"])
+            and row["dispatch_confirmed_at"] is None
+        )
+        if confirmation_reissued:
+            connection.execute(
+                "UPDATE tasks SET dispatch_confirmation_token_sha256 = ?, updated_at = ? "
+                "WHERE task_id = ?",
+                (confirmation_token_sha256, now, row["task_id"]),
+            )
+            self._event(
+                connection,
+                row["task_id"],
+                "mcp_task_confirmation_reissued",
+                TaskStatus.PENDING.value,
+                TaskStatus.PENDING.value,
+                {"dispatch_plan_sha256": dispatch_plan_sha256},
+            )
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (row["task_id"],)
+            ).fetchone()
+            assert row is not None
+        return self._task(row), False, confirmation_reissued
+
+    def confirm_mcp_draft(
+        self,
+        task_id: str,
+        confirmation_token: str,
+        expected_plan_hash: str,
+    ) -> dict[str, Any]:
+        """Persist an explicit user confirmation before this task can be claimed."""
+        if not isinstance(confirmation_token, str) or not confirmation_token:
+            raise InvalidTaskError("confirmation_token is required")
+        if (
+            not isinstance(expected_plan_hash, str)
+            or len(expected_plan_hash) != 64
+            or any(character not in "0123456789abcdef" for character in expected_plan_hash)
+        ):
+            raise InvalidTaskError("expected_plan_hash is required")
+        token_hash = hashlib.sha256(confirmation_token.encode("utf-8")).hexdigest()
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if row["source_type"] != "mcp" or not bool(row["dispatch_confirmation_required"]):
+                raise StateTransitionError("Task is not an MCP draft requiring confirmation")
+            if row["status"] != TaskStatus.PENDING.value or int(row["attempt_count"]) != 0:
+                raise StateTransitionError("Only an unclaimed pending MCP draft can be confirmed")
+            expected_hash = row["dispatch_confirmation_token_sha256"]
+            if not isinstance(expected_hash, str) or not compare_digest(expected_hash, token_hash):
+                raise InvalidTaskError("confirmation_token does not match this draft")
+            if not compare_digest(
+                str(row["dispatch_plan_sha256"] or ""), expected_plan_hash
+            ):
+                raise StateConflictError(
+                    "The confirmed MCP execution plan does not match the reviewed plan"
+                )
+            if row["dispatch_confirmed_at"] is None:
+                if row["supersedes"]:
+                    superseded = connection.execute(
+                        "SELECT * FROM tasks WHERE task_id = ?",
+                        (row["supersedes"],),
+                    ).fetchone()
+                    if superseded is None:
+                        raise InvalidTaskError(
+                            f"Superseded task does not exist: {row['supersedes']}"
+                        )
+                    if (
+                        superseded["status"] != TaskStatus.RECOVERY_BLOCKED.value
+                        or superseded["project_id"] != row["project_id"]
+                        or superseded["dedupe_key"] != row["dedupe_key"]
+                        or int(row["revision"]) <= int(superseded["revision"])
+                        or row["canonical_published_head_sha"] is not None
+                        or row["base_sha"] != superseded["canonical_published_head_sha"]
+                    ):
+                        raise StateConflictError(
+                            "Superseding draft identity or canonical publication base changed"
+                        )
+                    superseded_at = utc_now()
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                        (
+                            TaskStatus.SUPERSEDED.value,
+                            superseded_at,
+                            superseded["task_id"],
+                        ),
+                    )
+                    self._event(
+                        connection,
+                        superseded["task_id"],
+                        "task_superseded",
+                        TaskStatus.RECOVERY_BLOCKED.value,
+                        TaskStatus.SUPERSEDED.value,
+                        {
+                            "by_task_id": row["task_id"],
+                            "publication_base_sha": row["base_sha"],
+                        },
+                    )
+                confirmed_at = utc_now()
+                connection.execute(
+                    "UPDATE tasks SET dispatch_confirmed_at = ?, updated_at = ? WHERE task_id = ?",
+                    (confirmed_at, confirmed_at, task_id),
+                )
+                self._event(
+                    connection,
+                    task_id,
+                    "mcp_task_dispatch_confirmed",
+                    TaskStatus.PENDING.value,
+                    TaskStatus.PENDING.value,
+                    {
+                        "workflow_kind": row["workflow_kind"],
+                        "analysis_task_id": row["analysis_task_id"],
+                        "dispatch_plan_sha256": expected_plan_hash,
+                    },
+                )
+        return self.get_task(task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -705,6 +1460,14 @@ class TaskStore:
                     task_id,
                 ),
             )
+            if target is TaskStatus.NEEDS_CHANGES:
+                connection.execute(
+                    "UPDATE tasks SET redispatch_expected_remote_head_sha = NULL, "
+                    "redispatch_plan_sha256 = NULL, redispatch_idempotency_key = NULL, "
+                    "redispatch_authorized_at = NULL, redispatch_consumed_at = NULL "
+                    "WHERE task_id = ?",
+                    (task_id,),
+                )
             self._event(
                 connection,
                 task_id,
@@ -745,6 +1508,9 @@ class TaskStore:
                 )
             row = connection.execute(
                 f"SELECT * FROM tasks WHERE status IN ({','.join('?' for _ in claimable)}) "
+                "AND (dispatch_confirmation_required = 0 OR dispatch_confirmed_at IS NOT NULL) "
+                "AND (status != 'retry_pending' OR "
+                "redispatch_authorized_at IS NULL OR redispatch_consumed_at IS NULL) "
                 "ORDER BY created_at, task_id LIMIT 1",
                 claimable,
             ).fetchone()
@@ -752,18 +1518,23 @@ class TaskStore:
                 return None
             phase = (
                 AttemptPhase.IMPLEMENTATION.value
-                if row["status"] in {TaskStatus.PENDING.value, TaskStatus.NEEDS_CHANGES.value}
+                if row["status"]
+                in {TaskStatus.PENDING.value, TaskStatus.NEEDS_CHANGES.value}
                 else row["attempt_phase"]
             )
             attempt_number = int(row["attempt_count"]) + 1
             connection.execute(
                 "UPDATE tasks SET status = ?, attempt_count = ?, attempt_phase = ?, "
-                "updated_at = ?, last_error = NULL "
+                "updated_at = ?, last_error = NULL, "
+                "redispatch_consumed_at = CASE WHEN status = 'retry_pending' "
+                "AND redispatch_authorized_at IS NOT NULL THEN ? "
+                "ELSE redispatch_consumed_at END "
                 "WHERE task_id = ? AND status = ?",
                 (
                     TaskStatus.RUNNING.value,
                     attempt_number,
                     phase,
+                    claimed_at,
                     claimed_at,
                     row["task_id"],
                     row["status"],
@@ -771,15 +1542,23 @@ class TaskStore:
             )
             connection.execute(
                 "INSERT INTO task_attempts(task_id, attempt_number, status, phase, base_sha, "
-                "head_sha, verification_set_id, started_at) "
-                "VALUES (?, ?, 'running', ?, ?, ?, ?, ?)",
+                "head_sha, verification_set_id, publication_base_sha, candidate_sha, "
+                "observed_remote_head_sha, started_at) "
+                "VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["task_id"],
                     attempt_number,
                     phase,
-                    row["commit_sha"] or row["base_sha"],
-                    row["head_sha"],
+                    row["canonical_published_head_sha"]
+                    or row["commit_sha"]
+                    or row["base_sha"],
+                    row["local_candidate_sha"] or row["head_sha"],
                     row["verification_set_id"],
+                    row["canonical_published_head_sha"]
+                    or row["commit_sha"]
+                    or row["base_sha"],
+                    row["local_candidate_sha"],
+                    None,
                     claimed_at,
                 ),
             )
@@ -823,7 +1602,9 @@ class TaskStore:
                 ),
             )
 
-    def set_attempt_phase(self, task_id: str, phase: AttemptPhase | str) -> dict[str, Any]:
+    def set_attempt_phase(
+        self, task_id: str, phase: AttemptPhase | str
+    ) -> dict[str, Any]:
         phase_value = AttemptPhase(phase).value
         task = self.get_task(task_id)
         with self.transaction(immediate=True) as connection:
@@ -834,11 +1615,19 @@ class TaskStore:
             )
             connection.execute(
                 "UPDATE task_attempts SET phase = ?, base_sha = COALESCE(base_sha, ?), "
-                "head_sha = ? WHERE task_id = ? AND attempt_number = ?",
+                "head_sha = ?, publication_base_sha = COALESCE(publication_base_sha, ?), "
+                "candidate_sha = COALESCE(candidate_sha, ?) "
+                "WHERE task_id = ? AND attempt_number = ?",
                 (
                     phase_value,
-                    task.get("commit") or task.get("base_sha"),
-                    task.get("head_sha"),
+                    task.get("canonical_published_head_sha")
+                    or task.get("commit")
+                    or task.get("base_sha"),
+                    task.get("local_candidate_sha") or task.get("head_sha"),
+                    task.get("canonical_published_head_sha")
+                    or task.get("commit")
+                    or task.get("base_sha"),
+                    task.get("local_candidate_sha"),
                     task_id,
                     task["attempt_count"],
                 ),
@@ -857,10 +1646,15 @@ class TaskStore:
             "pr_url",
             "last_error",
             "attempt_phase",
+            "canonical_published_head_sha",
+            "local_candidate_sha",
+            "publication_conflict_json",
         }
         normalized = {aliases.get(key, key): value for key, value in fields.items()}
         if not normalized or any(key not in allowed for key in normalized):
             raise InvalidTaskError("Unsupported task field update")
+        if "commit_sha" in normalized and "canonical_published_head_sha" not in normalized:
+            normalized["canonical_published_head_sha"] = normalized["commit_sha"]
         normalized["updated_at"] = utc_now()
         assignments = ", ".join(f"{key} = ?" for key in normalized)
         with self.transaction(immediate=True) as connection:
@@ -873,6 +1667,299 @@ class TaskStore:
             ).fetchone()
             if row is None:
                 raise InvalidTaskError(f"Unknown task: {task_id}")
+            return self._task(row)
+
+    def record_candidate(
+        self, task_id: str, candidate_sha: str, *, publication_base_sha: str | None = None
+    ) -> dict[str, Any]:
+        """Persist an unpublished local candidate without changing the published head."""
+        if not isinstance(candidate_sha, str) or not candidate_sha:
+            raise InvalidTaskError("candidate_sha is required")
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            base = (
+                publication_base_sha
+                or row["canonical_published_head_sha"]
+                or row["commit_sha"]
+                or row["base_sha"]
+            )
+            now = utc_now()
+            connection.execute(
+                "UPDATE tasks SET local_candidate_sha = ?, updated_at = ? WHERE task_id = ?",
+                (candidate_sha, now, task_id),
+            )
+            connection.execute(
+                "UPDATE task_attempts SET candidate_sha = ?, "
+                "publication_base_sha = COALESCE(publication_base_sha, ?), "
+                "head_sha = ? WHERE task_id = ? AND attempt_number = ?",
+                (candidate_sha, base, candidate_sha, task_id, row["attempt_count"]),
+            )
+            self._event(
+                connection,
+                task_id,
+                "local_candidate_recorded",
+                row["status"],
+                row["status"],
+                {"candidate_sha": candidate_sha, "publication_base_sha": base},
+            )
+        return self.get_task(task_id)
+
+    def record_publication(
+        self, task_id: str, candidate_sha: str, *, pr_url: str | None = None
+    ) -> dict[str, Any]:
+        """Advance the canonical published head only after remote verification."""
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if row["local_candidate_sha"] != candidate_sha:
+                raise StateConflictError(
+                    "Published candidate does not match the stored local candidate"
+                )
+            now = utc_now()
+            connection.execute(
+                "UPDATE tasks SET canonical_published_head_sha = ?, commit_sha = ?, "
+                "head_sha = ?, local_candidate_sha = NULL, pr_url = COALESCE(?, pr_url), "
+                "publication_conflict_json = NULL, updated_at = ? WHERE task_id = ?",
+                (candidate_sha, candidate_sha, candidate_sha, pr_url, now, task_id),
+            )
+            connection.execute(
+                "UPDATE task_attempts SET observed_remote_head_sha = ?, "
+                "candidate_sha = ? WHERE task_id = ? AND attempt_number = ?",
+                (candidate_sha, candidate_sha, task_id, row["attempt_count"]),
+            )
+            self._event(
+                connection,
+                task_id,
+                "canonical_published_head_updated",
+                row["status"],
+                row["status"],
+                {"published_head_sha": candidate_sha},
+            )
+        return self.get_task(task_id)
+
+    def record_publication_conflict(
+        self, task_id: str, conflict: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not isinstance(conflict, dict):
+            raise InvalidTaskError("publication conflict must be an object")
+        allowed = {
+            "branch",
+            "expected_remote_head_sha",
+            "observed_remote_head_sha",
+            "publication_base_sha",
+            "candidate_sha",
+        }
+        safe = {
+            str(key): redact_text(str(value))[:128]
+            for key, value in conflict.items()
+            if str(key) in allowed and value is not None
+        }
+        if not safe.get("expected_remote_head_sha") or not safe.get("candidate_sha"):
+            raise InvalidTaskError(
+                "publication conflict requires expected head and candidate"
+            )
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            now = utc_now()
+            connection.execute(
+                "UPDATE tasks SET publication_conflict_json = ?, updated_at = ? WHERE task_id = ?",
+                (_json(safe), now, task_id),
+            )
+            connection.execute(
+                "UPDATE task_attempts SET candidate_sha = COALESCE(candidate_sha, ?), "
+                "observed_remote_head_sha = ? WHERE task_id = ? AND attempt_number = ?",
+                (
+                    row["local_candidate_sha"] or safe.get("candidate_sha"),
+                    safe.get("observed_remote_head_sha"),
+                    task_id,
+                    row["attempt_count"],
+                ),
+            )
+            self._event(
+                connection,
+                task_id,
+                "publication_conflict_recorded",
+                row["status"],
+                row["status"],
+                safe,
+            )
+        return self.get_task(task_id)
+
+    def authorize_redispatch(
+        self,
+        task_id: str,
+        *,
+        expected_remote_head_sha: str,
+        observed_remote_head_sha: str,
+        plan_sha256: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        if expected_remote_head_sha != observed_remote_head_sha:
+            raise StateConflictError("Observed remote head does not match the requested head")
+        if not isinstance(plan_sha256, str) or len(plan_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in plan_sha256
+        ):
+            raise InvalidTaskError("redispatch plan hash must be a lowercase SHA-256")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise InvalidTaskError("redispatch idempotency key is required")
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            if (
+                row["status"] == TaskStatus.RETRY_PENDING.value
+                and row["redispatch_idempotency_key"] == idempotency_key
+                and row["redispatch_plan_sha256"] == plan_sha256
+                and row["redispatch_expected_remote_head_sha"] == expected_remote_head_sha
+            ):
+                return self._task(row)
+            if row["status"] != TaskStatus.NEEDS_CHANGES.value:
+                raise StateTransitionError(
+                    "Only needs_changes tasks can be explicitly redispatched"
+                )
+            published = row["canonical_published_head_sha"] or row["commit_sha"]
+            if not published:
+                raise StateConflictError(
+                    "Cannot redispatch a task without a canonical published head"
+                )
+            if published != expected_remote_head_sha:
+                raise StateConflictError(
+                    "Redispatch head is stale; create a new revision from the current remote head"
+                )
+            now = utc_now()
+            connection.execute(
+                "UPDATE tasks SET status = ?, attempt_phase = ?, "
+                "redispatch_expected_remote_head_sha = ?, redispatch_plan_sha256 = ?, "
+                "redispatch_idempotency_key = ?, redispatch_authorized_at = ?, "
+                "redispatch_consumed_at = NULL, last_error = NULL, updated_at = ? "
+                "WHERE task_id = ?",
+                (
+                    TaskStatus.RETRY_PENDING.value,
+                    AttemptPhase.IMPLEMENTATION.value,
+                    expected_remote_head_sha,
+                    plan_sha256,
+                    idempotency_key,
+                    now,
+                    now,
+                    task_id,
+                ),
+            )
+            self._event(
+                connection,
+                task_id,
+                "explicit_redispatch_authorized",
+                TaskStatus.NEEDS_CHANGES.value,
+                TaskStatus.RETRY_PENDING.value,
+                {
+                    "expected_remote_head_sha": expected_remote_head_sha,
+                    "observed_remote_head_sha": observed_remote_head_sha,
+                    "redispatch_plan_sha256": plan_sha256,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+        return self.get_task(task_id)
+
+    def set_task_result(self, task_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Persist a task result, freezing Analyze results when applicable."""
+        return self._set_task_result(task_id, result, require_analysis=False)
+
+    def set_analysis_result(self, task_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Atomically persist and freeze a completed Analyze result."""
+        return self._set_task_result(task_id, result, require_analysis=True)
+
+    def _set_task_result(
+        self,
+        task_id: str,
+        result: dict[str, Any],
+        *,
+        require_analysis: bool,
+    ) -> dict[str, Any]:
+        if not isinstance(result, dict) or contains_known_secret(result):
+            raise InvalidTaskError(
+                "Task result is invalid or contains a credential-like value"
+            )
+        with self.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            is_analysis = (
+                row["workflow_kind"] == "analyze"
+                or row["local_task_type"] == "analysis"
+            )
+            if require_analysis and not is_analysis:
+                raise InvalidTaskError("Only Analyze tasks can store an analysis result")
+            if is_analysis:
+                if result.get("kind") != "analysis":
+                    raise InvalidTaskError("Analyze result must have kind=analysis")
+                canonical_result = _canonical_json(result)
+                analysis_result_sha256 = hashlib.sha256(
+                    canonical_result.encode("utf-8")
+                ).hexdigest()
+                if (
+                    row["analysis_result_json"] is not None
+                    or row["analysis_result_sha256"] is not None
+                ):
+                    if (
+                        row["analysis_result_json"] != canonical_result
+                        or row["analysis_result_sha256"] != analysis_result_sha256
+                    ):
+                        raise InvalidTaskError("Analysis result is already frozen")
+                result_json = _json(result)
+                assignments = (
+                    "result_json = ?, analysis_result_json = ?, "
+                    "analysis_result_sha256 = ?, updated_at = ?"
+                )
+                parameters: tuple[Any, ...] = (
+                    result_json,
+                    canonical_result,
+                    analysis_result_sha256,
+                    utc_now(),
+                    task_id,
+                )
+            else:
+                assignments = "result_json = ?, updated_at = ?"
+                parameters = (_json(result), utc_now(), task_id)
+            connection.execute(
+                f"UPDATE tasks SET {assignments} WHERE task_id = ?",
+                parameters,
+            )
+            if connection.execute("SELECT changes()").fetchone()[0] != 1:
+                raise InvalidTaskError(f"Unknown task: {task_id}")
+            self._event(
+                connection,
+                task_id,
+                "task_result_recorded",
+                None,
+                None,
+                {
+                    "schema_version": result.get("schema_version"),
+                    "kind": result.get("kind"),
+                    **(
+                        {"analysis_result_sha256": analysis_result_sha256}
+                        if is_analysis
+                        else {}
+                    ),
+                },
+            )
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            assert row is not None
             return self._task(row)
 
     def record_worktree(
@@ -939,10 +2026,14 @@ class TaskStore:
             connection.execute(
                 """
                 UPDATE tasks
-                SET branch = ?, base_sha = ?, head_sha = ?, worktree_path = ?, updated_at = ?
+                SET branch = ?, base_sha = ?, head_sha = ?, worktree_path = ?,
+                    canonical_published_head_sha = COALESCE(
+                        canonical_published_head_sha, ?
+                    ),
+                    updated_at = ?
                 WHERE task_id = ? AND project_id = ?
                 """,
-                (branch, base_sha, base_sha, path, now, task_id, project_id),
+                (branch, base_sha, base_sha, path, base_sha, now, task_id, project_id),
             )
             if connection.execute("SELECT changes()").fetchone()[0] != 1:
                 raise InvalidTaskError(f"Unable to bind worktree to task: {task_id}")
@@ -1035,7 +2126,9 @@ class TaskStore:
             or child_identity.get("pid") != child_pid
             or child_identity.get("pgid") != child_pgid
         ):
-            raise InvalidTaskError("Agent session requires matching child process identity")
+            raise InvalidTaskError(
+                "Agent session requires matching child process identity"
+            )
         now = utc_now()
         with self.transaction(immediate=True) as connection:
             connection.execute(
@@ -1102,6 +2195,21 @@ class TaskStore:
         value["child_identity"] = _loads(value.pop("child_identity_json"), None)
         return value
 
+    def list_agent_sessions(self, task_id: str) -> list[dict[str, Any]]:
+        """Return task-owned sessions for bounded presentation only."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_sessions WHERE task_id = ? ORDER BY started_at, session_id",
+                (task_id,),
+            ).fetchall()
+        values: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            value["command"] = _loads(value.pop("command_json"), [])
+            value["child_identity"] = _loads(value.pop("child_identity_json"), None)
+            values.append(value)
+        return values
+
     def active_agent_session(self, task_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
@@ -1153,18 +2261,32 @@ class TaskStore:
             if task["status"] != TaskStatus.RUNNING.value:
                 raise StateTransitionError(f"Task is not running: {task_id}")
             if task["attempt_phase"] != AttemptPhase.VERIFICATION.value:
-                raise StateTransitionError(f"Task is not in verification phase: {task_id}")
-            if canonical_head_sha != task["commit_sha"]:
+                raise StateTransitionError(
+                    f"Task is not in verification phase: {task_id}"
+                )
+            current_candidate = (
+                task["local_candidate_sha"]
+                or task["commit_sha"]
+                or task["head_sha"]
+            )
+            if canonical_head_sha != current_candidate:
                 raise InvalidTaskError(
-                    "verification set head must match the task canonical commit"
+                    "verification set head must match the current attempt candidate"
                 )
             cursor = connection.execute(
                 """
                 INSERT INTO verification_sets(
-                    task_id, canonical_head_sha, source_attempt_number, status, created_at
-                ) VALUES (?, ?, ?, 'running', ?)
+                    task_id, canonical_head_sha, source_attempt_number, status,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, 'running', ?, ?)
                 """,
-                (task_id, canonical_head_sha, task["attempt_count"], now),
+                (
+                    task_id,
+                    canonical_head_sha,
+                    task["attempt_count"],
+                    now,
+                    (parse_timestamp(now) + timedelta(hours=24)).isoformat(),
+                ),
             )
             verification_set_id = int(cursor.lastrowid)
             connection.execute(
@@ -1207,9 +2329,13 @@ class TaskStore:
             raise InvalidTaskError(f"Unknown verification set: {verification_set_id}")
         return dict(row)
 
-    def finalize_verification_set(self, verification_set_id: int, *, status: str) -> None:
+    def finalize_verification_set(
+        self, verification_set_id: int, *, status: str
+    ) -> None:
         if status not in {"completed", "failed"}:
-            raise InvalidTaskError("verification set status must be completed or failed")
+            raise InvalidTaskError(
+                "verification set status must be completed or failed"
+            )
         now = utc_now()
         with self.transaction(immediate=True) as connection:
             connection.execute(
@@ -1244,7 +2370,11 @@ class TaskStore:
                 verification_set["task_id"] != task_id
                 or verification_set["status"] != "running"
                 or task["verification_set_id"] != verification_set_id
-                or task["commit_sha"] != verification_set["canonical_head_sha"]
+                or (
+                    task["local_candidate_sha"]
+                    or task["commit_sha"]
+                    or task["head_sha"]
+                ) != verification_set["canonical_head_sha"]
                 or task["attempt_count"] != verification_set["source_attempt_number"]
             ):
                 raise StateTransitionError(
@@ -1325,11 +2455,23 @@ class TaskStore:
             if (
                 verification_set is None
                 or verification_set["task_id"] != task_id
-                or verification_set["canonical_head_sha"] != task["commit_sha"]
+                or verification_set["canonical_head_sha"]
+                != (
+                    task["local_candidate_sha"]
+                    or task["commit_sha"]
+                    or task["head_sha"]
+                )
                 or verification_set["status"] != "completed"
+                or (
+                    verification_set["expires_at"] is not None
+                    and (
+                        parse_timestamp(verification_set["expires_at"]) is None
+                        or parse_timestamp(verification_set["expires_at"]) <= parse_timestamp(utc_now())
+                    )
+                )
             ):
                 raise StateTransitionError(
-                    "Publication evidence is not a completed set for the canonical head"
+                    "Publication evidence is not a current completed set for the canonical head"
                 )
         return self.list_verifications(
             task_id, verification_set_id=int(verification_set_id)
@@ -1411,7 +2553,9 @@ class TaskStore:
         for index, finding in enumerate(findings, start=1):
             if not isinstance(finding, dict):
                 raise InvalidTaskError(f"review finding {index} must be an object")
-            unknown = set(finding).difference({"severity", "file", "evidence", "requirement"})
+            unknown = set(finding).difference(
+                {"severity", "file", "evidence", "requirement"}
+            )
             if unknown:
                 raise InvalidTaskError(
                     f"Unsupported review finding fields: {', '.join(sorted(unknown))}"
@@ -1466,10 +2610,64 @@ class TaskStore:
                     "verification_failed task requires a needs_changes verdict"
                 )
             canonical_head = task["commit_sha"] or task["head_sha"]
+            canonical_head = task["canonical_published_head_sha"] or canonical_head
             if not canonical_head or head_sha != canonical_head:
                 raise InvalidTaskError(
                     "review head_sha must exactly match the task canonical commit"
                 )
+            if verdict == "approved":
+                if task["local_candidate_sha"]:
+                    raise StateConflictError(
+                        "Cannot approve while an unpublished local candidate exists"
+                    )
+                verification_set_id = task["verification_set_id"]
+                if verification_set_id is None:
+                    raise InvalidTaskError(
+                        "Approval requires a completed verification set for the exact head"
+                    )
+                verification_set = connection.execute(
+                    "SELECT * FROM verification_sets WHERE verification_set_id = ?",
+                    (verification_set_id,),
+                ).fetchone()
+                if (
+                    verification_set is None
+                    or verification_set["status"] != "completed"
+                    or verification_set["canonical_head_sha"] != canonical_head
+                    or (
+                        verification_set["expires_at"] is not None
+                        and (
+                            parse_timestamp(verification_set["expires_at"]) is None
+                            or parse_timestamp(verification_set["expires_at"]) <= parse_timestamp(now)
+                        )
+                    )
+                ):
+                    raise InvalidTaskError(
+                        "Approval requires non-expired completed evidence for the exact published head"
+                    )
+                criteria = _loads(task["acceptance_criteria_json"], [])
+                required_ids = [
+                    str(item.get("id") or f"criterion-{index}")
+                    if isinstance(item, dict)
+                    else f"criterion-{index}"
+                    for index, item in enumerate(criteria, start=1)
+                ]
+                evidence_rows = connection.execute(
+                    "SELECT criterion_id, status FROM verification_results "
+                    "WHERE task_id = ? AND verification_set_id = ? "
+                    "ORDER BY verification_id",
+                    (task_id, verification_set_id),
+                ).fetchall()
+                latest = {str(item["criterion_id"]): item["status"] for item in evidence_rows}
+                incomplete = [
+                    criterion_id
+                    for criterion_id in required_ids
+                    if latest.get(criterion_id) != "passed"
+                ]
+                if incomplete:
+                    raise InvalidTaskError(
+                        "Approval requires passed evidence for every criterion: "
+                        + ", ".join(incomplete)
+                    )
             target = (
                 TaskStatus.NEEDS_CHANGES
                 if verdict == "needs_changes"
@@ -1585,7 +2783,9 @@ class TaskStore:
             TaskStatus.AWAITING_REVIEW,
             TaskStatus.FAILED,
         }:
-            raise InvalidTaskError(f"Unsupported recovery target: {target_status.value}")
+            raise InvalidTaskError(
+                f"Unsupported recovery target: {target_status.value}"
+            )
         with self.transaction(immediate=True) as connection:
             row = connection.execute(
                 "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
@@ -1702,6 +2902,10 @@ class TaskStore:
                 raise InvalidTaskError(f"Unknown task: {task_id}")
             if row["status"] != TaskStatus.RECOVERY_BLOCKED.value:
                 raise StateTransitionError(f"Task is not recovery blocked: {task_id}")
+            if row["publication_conflict_json"] is not None and resolution != "cancel":
+                raise StateTransitionError(
+                    "publication_conflict tasks require a new revision from the latest remote head"
+                )
             now = utc_now()
             message = (
                 "Operator confirmed that no matching agent process is running"
@@ -1760,7 +2964,8 @@ class TaskStore:
             if task_id:
                 if bounded_limit is None:
                     rows = connection.execute(
-                        "SELECT * FROM events WHERE task_id = ? ORDER BY event_id", (task_id,)
+                        "SELECT * FROM events WHERE task_id = ? ORDER BY event_id",
+                        (task_id,),
                     ).fetchall()
                 else:
                     rows = connection.execute(
@@ -1770,7 +2975,9 @@ class TaskStore:
                     ).fetchall()
             else:
                 if bounded_limit is None:
-                    rows = connection.execute("SELECT * FROM events ORDER BY event_id").fetchall()
+                    rows = connection.execute(
+                        "SELECT * FROM events ORDER BY event_id"
+                    ).fetchall()
                 else:
                     rows = connection.execute(
                         "SELECT * FROM (SELECT * FROM events ORDER BY event_id DESC LIMIT ?) "
