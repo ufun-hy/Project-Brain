@@ -63,6 +63,12 @@ def task_view(
         "project": projects.get(task["project_id"], {}).get("name", task["project_id"]),
         "elapsed_seconds": elapsed,
         "next_action": next_action,
+        "plan_hash": task.get("dispatch_plan_sha256"),
+        "dispatch_confirmation": {
+            "required": bool(task.get("dispatch_confirmation_required")),
+            "confirmed": task.get("dispatch_confirmed_at") is not None,
+            "confirmed_at": task.get("dispatch_confirmed_at"),
+        },
     }
 
 

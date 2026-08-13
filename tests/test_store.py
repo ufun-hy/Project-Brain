@@ -12,6 +12,8 @@ from project_brain.errors import InvalidTaskError, StateConflictError, StateTran
 from project_brain.models import CanonicalTask, TaskStatus
 from project_brain.store import SCHEMA_VERSION, TaskStore
 from project_brain.runtime import RuntimePaths
+from project_brain.worktrees import WorktreeManager
+from tests.helpers import create_remote_clone
 
 from tests.helpers import CoreFixture
 
@@ -33,6 +35,19 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(reopened.schema_version(), SCHEMA_VERSION)
         self.assertEqual(reopened.list_projects()[0]["project_id"], "project-one")
         self.assertEqual(after, before)
+
+    def test_new_worktree_does_not_mark_unpublished_base_as_canonical_head(self) -> None:
+        repo, remote = create_remote_clone(self.fixture.root, "first-publication")
+        project = self.fixture.add_project(
+            repo_path=str(repo), remote_url=str(remote), auto_push=True, auto_pr=False
+        )
+        task = self.fixture.add_task("first-publication-task")
+        WorktreeManager(self.fixture.store, self.fixture.runtime).create(task, project)
+        self.assertIsNone(
+            self.fixture.store.get_task("first-publication-task")[
+                "canonical_published_head_sha"
+            ]
+        )
 
     def test_task_id_is_idempotent(self) -> None:
         task = CanonicalTask(

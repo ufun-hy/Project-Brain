@@ -299,9 +299,11 @@ class TaskEngineTests(unittest.TestCase):
                     "remote branch moved",
                     conflict={
                         "branch": task["branch"],
-                        "expected_remote_head_sha": task["canonical_published_head_sha"],
+                        "expected_remote_head_sha": task["canonical_published_head_sha"]
+                        or task["base_sha"],
                         "observed_remote_head_sha": "b" * 40,
-                        "publication_base_sha": task["canonical_published_head_sha"],
+                        "publication_base_sha": task["canonical_published_head_sha"]
+                        or task["base_sha"],
                         "candidate_sha": task["local_candidate_sha"],
                     },
                 )
@@ -314,7 +316,7 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(result["status"], TaskStatus.RECOVERY_BLOCKED.value)
         task = result["task"]
         self.assertIsNone(task["commit"])
-        self.assertEqual(task["canonical_published_head_sha"], task["base_sha"])
+        self.assertIsNone(task["canonical_published_head_sha"])
         self.assertIsNotNone(task["local_candidate_sha"])
         self.assertEqual(task["publication_conflict"]["observed_remote_head_sha"], "b" * 40)
         self.assertEqual(

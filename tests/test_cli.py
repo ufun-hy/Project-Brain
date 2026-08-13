@@ -66,6 +66,35 @@ class CLITests(unittest.TestCase):
         self.assertIn("forensic_archive", value)
         self.assertIn("events", value)
 
+    def test_task_detail_uses_canonical_dispatch_field_names(self) -> None:
+        task, _, _ = self.fixture.store.create_mcp_draft(
+            {
+                "task_id": "cli-mcp-detail",
+                "project_id": "project-one",
+                "dedupe_key": "cli-mcp-detail",
+                "revision": 1,
+                "source_type": "mcp",
+                "goal": "Inspect the canonical task detail contract",
+                "task_type": "codex",
+                "payload": {"prompt": "Read only"},
+            },
+            workflow_kind="analyze",
+            analysis_task_id=None,
+            confirmation_token="a" * 43,
+            request_sha256="b" * 64,
+            dispatch_plan_sha256="c" * 64,
+        )
+        code, output = self.invoke("tasks", "show", task["task_id"], "--json")
+        value = json.loads(output)
+        self.assertEqual(code, 0)
+        self.assertEqual(value["plan_hash"], "c" * 64)
+        self.assertIsNone(value["supersedes"])
+        self.assertEqual(value["revision"], 1)
+        self.assertEqual(
+            value["dispatch_confirmation"],
+            {"required": True, "confirmed": False, "confirmed_at": None},
+        )
+
     def test_acceptance_cli_has_lifecycle_but_no_pass_override(self) -> None:
         code, created_output = self.invoke(
             "acceptance",
