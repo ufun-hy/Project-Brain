@@ -65,7 +65,10 @@ class RecoveryManager:
         tasks = (
             [self.store.get_task(task_id)]
             if task_id
-            else self.store.list_tasks(status=TaskStatus.RUNNING.value, limit=1000)
+            else [
+                *self.store.list_tasks(status=TaskStatus.RUNNING.value, limit=1000),
+                *self.store.list_tasks(status=TaskStatus.RETRY_PENDING.value, limit=1000),
+            ]
         )
         results: list[dict[str, Any]] = []
         for task in tasks:
@@ -79,6 +82,9 @@ class RecoveryManager:
                         cancel=cancel,
                     )
                 )
+                continue
+            if task["status"] == TaskStatus.RETRY_PENDING.value:
+                results.append(self._guard_retry_pending(task, execute=execute))
                 continue
             if task["status"] != TaskStatus.RUNNING.value:
                 results.append(
@@ -98,6 +104,88 @@ class RecoveryManager:
             )
         return results
 
+    def _guard_retry_pending(
+        self, task: dict[str, Any], *, execute: bool
+    ) -> dict[str, Any]:
+        """Never let a retry start before a retained worktree is canonical."""
+        record = self.store.get_worktree(task["task_id"])
+        if record is None:
+            return {
+                "task_id": task["task_id"],
+                "action": "unchanged",
+                "safe_retry": True,
+                "reason": "retry has no registered worktree and may follow the normal transient retry policy",
+            }
+        record_path = Path(str(record.get("path") or ""))
+        if record.get("status") == "cleaned":
+            return {
+                "task_id": task["task_id"],
+                "action": "unchanged",
+                "safe_retry": True,
+                "reason": "retry worktree is absent only after controlled release and can be reconstructed",
+            }
+        if not record_path.exists():
+            state = {
+                "canonical_clean": False,
+                "worktree_present": False,
+                "classification": "missing_active_worktree",
+                "dirty": False,
+                "conflict": False,
+                "changed_path_count": 0,
+                "changed_paths": [],
+            }
+            result = {
+                "task_id": task["task_id"],
+                "from_status": task["status"],
+                "to_status": TaskStatus.RECOVERY_BLOCKED.value,
+                "action": "recovery_blocked" if execute else "would_recovery_block",
+                "reason": "retry_pending worktree is registered active but missing",
+                "recovery_evidence": state,
+            }
+            if execute:
+                self.store.record_recovery_evidence(
+                    task["task_id"], category="retry_pending_missing_worktree", evidence=state
+                )
+                self.store.transition(
+                    task["task_id"], TaskStatus.RECOVERY_BLOCKED,
+                    event_type="retry_pending_recovery_blocked",
+                    payload={"reason": result["reason"]}, last_error=result["reason"],
+                )
+            return result
+        try:
+            project = self.store.task_execution_profile(task)
+            state = self.worktrees.inspect_task_state(task, project, record)
+        except Exception:
+            state = {"canonical_clean": False, "classification": "uninspectable"}
+        if state.get("canonical_clean"):
+            return {
+                "task_id": task["task_id"],
+                "action": "unchanged",
+                "safe_retry": True,
+                "reason": "retry worktree is canonical and clean",
+                "recovery_evidence": state,
+            }
+        result = {
+            "task_id": task["task_id"],
+            "from_status": task["status"],
+            "to_status": TaskStatus.RECOVERY_BLOCKED.value,
+            "action": "recovery_blocked" if execute else "would_recovery_block",
+            "reason": "retry_pending worktree is not canonical and clean",
+            "recovery_evidence": state,
+        }
+        if execute:
+            self.store.record_recovery_evidence(
+                task["task_id"], category="retry_pending_worktree_guard", evidence=state
+            )
+            self.store.transition(
+                task["task_id"],
+                TaskStatus.RECOVERY_BLOCKED,
+                event_type="retry_pending_recovery_blocked",
+                payload={"reason": result["reason"]},
+                last_error=result["reason"],
+            )
+        return result
+
     def reconcile_for_claims(self, *, execute: bool) -> RecoveryReport:
         """Reconcile interrupted work, then expose the global single-agent gate."""
         actions = self.reconcile(execute=execute)
@@ -105,6 +193,25 @@ class RecoveryManager:
         blockers: list[dict[str, Any]] = []
         for task in self.store.list_claim_blocking_tasks():
             action = action_by_task.get(task["task_id"], {})
+            blockers.append(
+                {
+                    "task_id": task["task_id"],
+                    "status": task["status"],
+                    "attempt_count": task["attempt_count"],
+                    "agent_session_id": task.get("agent_session_id"),
+                    "reason": action.get("reason") or task.get("last_error"),
+                }
+            )
+        for task in self.store.list_tasks(status=TaskStatus.RETRY_PENDING.value, limit=1000):
+            action = action_by_task.get(task["task_id"], {})
+            if self.store.get_worktree(task["task_id"]) is None:
+                continue
+            if action.get("safe_retry"):
+                continue
+            if action.get("action") == "unchanged" and action.get("recovery_evidence", {}).get(
+                "canonical_clean"
+            ):
+                continue
             blockers.append(
                 {
                     "task_id": task["task_id"],
@@ -133,6 +240,19 @@ class RecoveryManager:
                 task["status"] == TaskStatus.RUNNING.value
                 and action.get("action") == "would_recover"
             ):
+                continue
+            blockers.append(
+                {
+                    "task_id": task["task_id"],
+                    "status": task["status"],
+                    "attempt_count": task["attempt_count"],
+                    "agent_session_id": task.get("agent_session_id"),
+                    "reason": action.get("reason") or task.get("last_error"),
+                }
+            )
+        for task in self.store.list_tasks(status=TaskStatus.RETRY_PENDING.value, limit=1000):
+            action = action_by_task.get(task["task_id"], {})
+            if action.get("safe_retry"):
                 continue
             blockers.append(
                 {
@@ -206,6 +326,27 @@ class RecoveryManager:
                 ),
             }
         resolution = "cancel" if cancel else ("resume" if resume else "confirm_no_agent")
+        if resolution != "cancel":
+            task_state = self._inspect_recovery_worktree(task)
+            if not task_state["canonical_clean"]:
+                reason = (
+                    "Recovery remains blocked because the registered worktree is not "
+                    "canonical and clean; cancel the task or create a new revision"
+                )
+                result = {
+                    "task_id": task["task_id"],
+                    "from_status": TaskStatus.RECOVERY_BLOCKED.value,
+                    "to_status": TaskStatus.RECOVERY_BLOCKED.value,
+                    "action": "recovery_blocked" if execute else "would_recovery_block",
+                    "resolution": resolution,
+                    "reason": reason,
+                    "recovery_evidence": task_state,
+                }
+                if execute:
+                    self.store.record_recovery_evidence(
+                        task["task_id"], category="resume_blocked", evidence=task_state
+                    )
+                return result
         target = TaskStatus.FAILED if cancel else TaskStatus.RETRY_PENDING
         result = {
             "task_id": task["task_id"],
@@ -337,9 +478,20 @@ class RecoveryManager:
             "reason": reason,
         }
         if execute:
-            self.store.recover_running_task(
-                task["task_id"], target=target, reason=reason
-            )
+            if target is TaskStatus.RECOVERY_BLOCKED:
+                try:
+                    project = self.store.task_execution_profile(task)
+                    evidence = self.worktrees.inspect_task_state(task, project, record)
+                except Exception:
+                    evidence = {"canonical_clean": False, "classification": "uninspectable"}
+                self.store.record_recovery_evidence(
+                    task["task_id"], category="interrupted_worktree", evidence=evidence
+                )
+                self.store.block_running_task(task["task_id"], reason=reason)
+            else:
+                self.store.recover_running_task(
+                    task["task_id"], target=target, reason=reason
+                )
         return result
 
     def _classify(
@@ -349,13 +501,13 @@ class RecoveryManager:
     ) -> tuple[TaskStatus, str]:
         phase = AttemptPhase(task["attempt_phase"])
         if record is None:
-            return TaskStatus.FAILED, "Interrupted task has no registered worktree"
+            return TaskStatus.RECOVERY_BLOCKED, "Interrupted task has no registered worktree"
         try:
             project = self.store.task_execution_profile(task)
             path = self.worktrees.validate_managed_path(project, record["path"])
             assert_registered_origin(project["repo_path"], project["remote_url"])
         except (InvalidPathError, InvalidTaskError, WorktreeError) as exc:
-            return TaskStatus.FAILED, f"Unsafe interrupted worktree metadata: {exc}"
+            return TaskStatus.RECOVERY_BLOCKED, f"Unsafe interrupted worktree metadata: {exc}"
         if not path.exists():
             if phase is AttemptPhase.REVIEW and task.get("commit"):
                 remote = git(
@@ -371,25 +523,34 @@ class RecoveryManager:
                         TaskStatus.AWAITING_REVIEW,
                         "Published canonical commit is intact on the registered remote",
                     )
-            if task.get("branch") == record["branch"] and (
-                task.get("commit") or phase is AttemptPhase.IMPLEMENTATION
-            ):
-                return (
-                    TaskStatus.RETRY_PENDING,
-                    "Interrupted registered worktree is missing and will be reconstructed",
-                )
-            return TaskStatus.FAILED, "Interrupted worktree is missing without recoverable Git state"
-        branch = git(path, "branch", "--show-current", check=False).stdout.strip()
-        head = git(path, "rev-parse", "HEAD", check=False).stdout.strip()
-        status = git(path, "status", "--porcelain=v1", "--untracked-files=all", check=False).stdout
-        conflicts = git(path, "diff", "--name-only", "--diff-filter=U", check=False).stdout
-        expected = task.get("commit") or record["base_sha"]
-        if branch != record["branch"] or head != expected or status or conflicts:
+            return TaskStatus.RECOVERY_BLOCKED, "Interrupted worktree is missing without a controlled clean release"
+        state = self.worktrees.inspect_task_state(task, project, record)
+        if not state["canonical_clean"]:
             return (
-                TaskStatus.FAILED,
-                "Interrupted worktree has branch, HEAD, file, or conflict mutations; "
+                TaskStatus.RECOVERY_BLOCKED,
+                "Interrupted worktree has implementation traces or cannot be proven canonical; "
                 "forensic archival is required before cleanup",
             )
         if phase is AttemptPhase.REVIEW:
             return TaskStatus.AWAITING_REVIEW, "Review publication completed before interruption"
         return TaskStatus.RETRY_PENDING, f"Clean interrupted {phase.value} phase can be retried"
+
+    def _inspect_recovery_worktree(self, task: dict[str, Any]) -> dict[str, Any]:
+        record = self.store.get_worktree(task["task_id"])
+        try:
+            project = self.store.task_execution_profile(task)
+            return self.worktrees.inspect_task_state(task, project, record)
+        except Exception:
+            return {
+                "expected_branch": record.get("branch") if record else None,
+                "observed_branch": None,
+                "expected_head": None,
+                "observed_head": None,
+                "dirty": False,
+                "conflict": False,
+                "changed_path_count": 0,
+                "changed_paths": [],
+                "worktree_present": False,
+                "canonical_clean": False,
+                "classification": "uninspectable",
+            }

@@ -15,6 +15,7 @@ from .models import TERMINAL_STATUSES, TaskStatus
 from .process_supervision import agent_process_group_alive, process_alive
 from .repository import assert_registered_origin
 from .runtime import RuntimePaths
+from .security import redact_text
 from .store import TaskStore
 
 
@@ -170,6 +171,87 @@ class WorktreeManager:
             raise WorktreeError(
                 "Registered task worktree differs from its canonical branch, HEAD, or clean status"
             )
+
+    def inspect_task_state(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        record: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return bounded, content-free evidence for interrupted worktree recovery."""
+        record = record or self.store.get_worktree(task["task_id"])
+        expected_branch = record.get("branch") if record else task.get("branch")
+        expected_head = (
+            task.get("local_candidate_sha")
+            or task.get("commit")
+            or (record.get("base_sha") if record else None)
+        )
+        evidence: dict[str, Any] = {
+            "expected_branch": redact_text(expected_branch)[:256] if expected_branch else None,
+            "observed_branch": None,
+            "expected_head": redact_text(expected_head)[:128] if expected_head else None,
+            "observed_head": None,
+            "dirty": False,
+            "conflict": False,
+            "changed_path_count": 0,
+            "changed_paths": [],
+            "worktree_present": False,
+            "canonical_clean": False,
+        }
+        if record is None:
+            evidence["classification"] = "missing_registration"
+            return evidence
+        try:
+            path = self.validate_managed_path(project, record["path"])
+        except (InvalidPathError, WorktreeError):
+            evidence["classification"] = "unsafe_path"
+            return evidence
+        evidence["worktree_present"] = path.exists() and not path.is_symlink()
+        if not evidence["worktree_present"]:
+            evidence["classification"] = "missing_worktree"
+            return evidence
+        branch_result = git(path, "branch", "--show-current", check=False)
+        head_result = git(path, "rev-parse", "HEAD", check=False)
+        status_result = git(
+            path, "status", "--porcelain=v1", "--untracked-files=all", check=False
+        )
+        conflict_result = git(
+            path, "diff", "--name-only", "--diff-filter=U", check=False
+        )
+        observed_branch = branch_result.stdout.strip()
+        observed_head = head_result.stdout.strip()
+        status_lines = [line for line in status_result.stdout.splitlines() if line]
+        conflict_lines = [line for line in conflict_result.stdout.splitlines() if line]
+        paths: list[str] = []
+        for line in status_lines:
+            path_text = line[3:].strip() if len(line) >= 3 else line.strip()
+            if path_text and path_text not in paths and len(paths) < 20:
+                paths.append(redact_text(path_text)[:256])
+        evidence.update(
+            {
+                "observed_branch": redact_text(observed_branch)[:256] or None,
+                "observed_head": redact_text(observed_head)[:128] or None,
+                "dirty": bool(status_lines),
+                "conflict": bool(conflict_lines),
+                "changed_path_count": len(status_lines),
+                "changed_paths": paths,
+                "canonical_clean": bool(
+                    observed_branch
+                    and observed_head
+                    and observed_branch == expected_branch
+                    and observed_head == expected_head
+                    and not status_lines
+                    and not conflict_lines
+                ),
+                "classification": "clean_canonical"
+                if not status_lines
+                and not conflict_lines
+                and observed_branch == expected_branch
+                and observed_head == expected_head
+                else "implementation_trace",
+            }
+        )
+        return evidence
 
     def _recover_registered(
         self,

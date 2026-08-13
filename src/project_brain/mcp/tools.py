@@ -29,6 +29,7 @@ from project_brain.runtime import RuntimePaths
 from project_brain.security import contains_known_secret
 from project_brain.store import TaskStore
 from project_brain.worktrees import WorktreeManager
+from project_brain.project_config import project_execution_profile, verification_coverage
 
 from .dispatch import OneShotDispatcher
 from .presenters import (
@@ -263,6 +264,9 @@ class MCPAdapterService:
                     and _canonical_sha256(result) == digest
                 ):
                     analysis_result_sha256 = digest
+            project_profile = project_execution_profile(
+                self.store.get_project(request.project_id)
+            )
             execution_plan = {
                 "workflow_kind": request.workflow_kind,
                 "analysis_task_id": request.analysis_task_id,
@@ -284,6 +288,10 @@ class MCPAdapterService:
                     "The completed analysis result is immutable and may be linked to a later Implement draft."
                     if request.workflow_kind == "analyze"
                     else "Needs changes continues the same canonical task, branch, and Draft PR."
+                ),
+                "verification_coverage": verification_coverage(
+                    project_profile,
+                    [item.model_dump(exclude_none=True) for item in request.acceptance_criteria],
                 ),
             }
             plan_hash = _canonical_sha256(execution_plan)

@@ -11,7 +11,7 @@ from typing import Any
 from .errors import ConfigurationError
 from .executables import find_executable
 from .models import STABLE_ID_PATTERN
-from .security import command_contains_secret, contains_known_secret
+from .security import command_contains_secret, contains_known_secret, redact_text
 
 
 EXECUTION_FIELDS = (
@@ -176,3 +176,71 @@ def short_config_hash(value: str | None) -> str | None:
 
 def project_execution_profile(project: dict[str, Any]) -> dict[str, Any]:
     return normalize_execution_profile({key: project[key] for key in ("project_id", *EXECUTION_FIELDS)})
+
+
+def verification_catalog(profile: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Expose only the stable, non-sensitive identity of trusted checks."""
+    if not isinstance(profile, dict):
+        return []
+    catalog: list[dict[str, Any]] = []
+    for check in profile.get("verification_commands") or []:
+        if not isinstance(check, dict) or not check.get("id"):
+            continue
+        catalog.append(
+            {
+                "id": str(check["id"]),
+                "text": redact_text(
+                    str(check.get("text") or check.get("name") or check["id"])
+                )[:2000],
+                "always_run": bool(check.get("always_run", True)),
+            }
+        )
+    return catalog
+
+
+def verification_coverage(
+    profile: dict[str, Any] | None,
+    acceptance_criteria: list[Any] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Derive redacted criterion coverage from the frozen execution profile."""
+    catalog = {item["id"]: item for item in verification_catalog(profile)}
+    criteria: list[dict[str, Any]] = []
+    referenced: set[str] = set()
+    for index, criterion in enumerate(acceptance_criteria or [], start=1):
+        if isinstance(criterion, dict):
+            criterion_id = str(criterion.get("id") or f"criterion-{index}")
+            text = str(criterion.get("text") or criterion.get("criterion") or f"Criterion {index}")[:2000]
+            verification_id = criterion.get("verification_id")
+        else:
+            criterion_id = f"criterion-{index}"
+            text = str(criterion)[:2000]
+            verification_id = None
+        check = catalog.get(str(verification_id)) if verification_id else None
+        if check is not None:
+            referenced.add(str(verification_id))
+        criteria.append(
+            {
+                "criterion_id": criterion_id,
+                "criterion_text": text,
+                "verification_id": verification_id,
+                "evidence_type": "trusted_project_command" if check else "manual_required",
+                "trusted_project_command": check is not None,
+                "manual_required": check is None,
+                "covered_by_frozen_project_configuration": check is not None,
+            }
+        )
+    supplemental = [
+        {
+            "criterion_id": f"supplemental:{check_id}",
+            "criterion_text": str(check["text"])[:2000],
+            "verification_id": check_id,
+            "evidence_type": "trusted_project_command",
+            "trusted_project_command": True,
+            "manual_required": False,
+            "covered_by_frozen_project_configuration": True,
+            "supplemental": True,
+        }
+        for check_id, check in catalog.items()
+        if check.get("always_run") and check_id not in referenced
+    ]
+    return {"criteria": criteria, "supplemental": supplemental}

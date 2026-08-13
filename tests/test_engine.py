@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 from project_brain.engine import TaskEngine
 from project_brain.errors import (
+    CodexTimeoutError,
     FetchError,
     PublicationConflictError,
     RecoveryError,
@@ -29,6 +30,15 @@ class TaskEngineTests(unittest.TestCase):
             auto_push=False,
             auto_pr=False,
         )
+        self.project["verification_commands"] = [
+            {
+                "id": "stable-check",
+                "text": "Stable check",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "always_run": True,
+            }
+        ]
+        self.fixture.store.register_project(self.project)
 
     def tearDown(self) -> None:
         self.fixture.close()
@@ -125,6 +135,52 @@ class TaskEngineTests(unittest.TestCase):
             TaskStatus.RECOVERY_BLOCKED.value,
         )
         self.assertTrue(Path(result["task"]["worktree_path"]).exists())
+        self.assertEqual(result["recovery_evidence"]["classification"], "clean_canonical")
+
+    def test_timeout_before_edit_allows_clean_retry(self) -> None:
+        self.fixture.add_task("timeout-clean", payload={"prompt": "timeout"})
+        codex = Mock()
+        codex.execute.side_effect = CodexTimeoutError("deadline reached")
+        result = TaskEngine(self.fixture.store, self.fixture.runtime, codex=codex).apply_once()
+        self.assertEqual(result["status"], TaskStatus.RETRY_PENDING.value)
+        self.assertEqual(self.fixture.store.get_worktree("timeout-clean")["status"], "active")
+        self.assertTrue(
+            any(
+                event["event_type"] == "recovery_evidence_recorded"
+                for event in self.fixture.store.list_events("timeout-clean")
+            )
+        )
+
+    def test_timeout_after_uncommitted_edit_is_recovery_blocked(self) -> None:
+        self.fixture.add_task("timeout-dirty", payload={"prompt": "timeout"})
+        codex = Mock()
+
+        def edit_then_timeout(**kwargs):
+            Path(kwargs["worktree"], "partial.txt").write_text("partial\n", encoding="utf-8")
+            raise CodexTimeoutError("deadline reached")
+
+        codex.execute.side_effect = edit_then_timeout
+        result = TaskEngine(self.fixture.store, self.fixture.runtime, codex=codex).apply_once()
+        self.assertEqual(result["status"], TaskStatus.RECOVERY_BLOCKED.value)
+        self.assertTrue(result["recovery_evidence"]["dirty"])
+        self.assertEqual(self.fixture.store.get_task("timeout-dirty")["status"], TaskStatus.RECOVERY_BLOCKED.value)
+
+    def test_timeout_after_local_commit_is_blocked_and_not_adopted(self) -> None:
+        self.fixture.add_task("timeout-commit", payload={"prompt": "timeout"})
+        codex = Mock()
+
+        def commit_then_timeout(**kwargs):
+            path = Path(kwargs["worktree"])
+            path.joinpath("partial.txt").write_text("partial\n", encoding="utf-8")
+            git(path, "add", "partial.txt")
+            git(path, "commit", "-m", "unwanted candidate")
+            raise CodexTimeoutError("deadline reached")
+
+        codex.execute.side_effect = commit_then_timeout
+        result = TaskEngine(self.fixture.store, self.fixture.runtime, codex=codex).apply_once()
+        self.assertEqual(result["status"], TaskStatus.RECOVERY_BLOCKED.value)
+        self.assertEqual(result["task"]["local_candidate_sha"], None)
+        self.assertNotEqual(result["recovery_evidence"]["observed_head"], result["recovery_evidence"]["expected_head"])
 
     def test_each_criterion_has_independent_evidence(self) -> None:
         project = self.fixture.store.get_project("project-one")
@@ -158,6 +214,39 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in evidence], ["passed", "not_verified"])
         self.assertEqual(evidence[0]["criterion_id"], "file-exists")
         self.assertIsNotNone(evidence[0]["artifact_path"])
+
+    def test_always_run_is_supplemental_evidence(self) -> None:
+        self._write_task(
+            "supplemental",
+            acceptance_criteria=[{"id": "manual", "text": "Human review"}],
+        )
+        result = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
+        self.assertEqual(result["status"], TaskStatus.AWAITING_REVIEW.value)
+        evidence = self.fixture.store.list_verifications("supplemental")
+        self.assertEqual([item["status"] for item in evidence], ["not_verified", "passed"])
+        self.assertEqual(evidence[1]["criterion_id"], "supplemental:stable-check")
+
+    def test_always_run_id_collision_does_not_pass_manual_criterion(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["verification_commands"] = [
+            {
+                "id": "manual",
+                "text": "Unrelated supplemental check",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "always_run": True,
+            }
+        ]
+        self.fixture.store.register_project(project)
+        self._write_task(
+            "supplemental-collision",
+            acceptance_criteria=[{"id": "manual", "text": "Human review"}],
+        )
+        result = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
+        self.assertEqual(result["status"], TaskStatus.AWAITING_REVIEW.value)
+        evidence = self.fixture.store.list_verifications("supplemental-collision")
+        by_id = {item["criterion_id"]: item for item in evidence}
+        self.assertEqual(by_id["manual"]["status"], "not_verified")
+        self.assertEqual(by_id["supplemental:manual"]["status"], "passed")
 
     def test_failed_verification_enters_verification_failed_and_retains_worktree(self) -> None:
         project = self.fixture.store.get_project("project-one")

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import (
+    CodexTimeoutError,
     ExternalCommandError,
     InvalidTaskError,
     RecoveryError,
@@ -176,7 +177,7 @@ class CodexAdapter:
                     f"Timed out after {timeout}s; process_group_terminated={terminated}"
                 ),
             )
-            raise TransientTaskError(f"Codex timed out after {timeout}s") from exc
+            raise CodexTimeoutError(f"Codex timed out after {timeout}s") from exc
         except (KeyboardInterrupt, SystemExit):
             if process is not None:
                 terminated = terminate_process_group(

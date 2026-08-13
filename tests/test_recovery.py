@@ -70,6 +70,55 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(actions[0]["action"], "would_recover")
         self.assertEqual(self.fixture.store.get_task("dry-run")["status"], "running")
 
+    def _running_task_with_worktree(self, task_id: str) -> tuple[dict, WorktreeManager, dict]:
+        project = self.fixture.add_project(
+            repo_path=str(self.repo), remote_url=str(self.remote), auto_push=False, auto_pr=False
+        )
+        self.fixture.add_task(task_id)
+        task = self.fixture.store.claim_next()
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        record = manager.create(task, project)
+        with self.fixture.store.transaction(immediate=True) as connection:
+            connection.execute("UPDATE worktrees SET owner_pid = 99999999 WHERE task_id = ?", (task_id,))
+        return self.fixture.store.get_task(task_id), manager, record
+
+    def test_interrupted_dirty_worktree_is_recovery_blocked_with_bounded_evidence(self) -> None:
+        task, manager, record = self._running_task_with_worktree("dirty-interrupted")
+        Path(record["path"], "uncommitted.txt").write_text("implementation trace\n", encoding="utf-8")
+        action = RecoveryManager(self.fixture.store, manager).reconcile(
+            task["task_id"], execute=True
+        )[0]
+        self.assertEqual(action["to_status"], TaskStatus.RECOVERY_BLOCKED.value)
+        self.assertEqual(self.fixture.store.get_task(task["task_id"])["status"], TaskStatus.RECOVERY_BLOCKED.value)
+        events = self.fixture.store.list_events(task["task_id"])
+        evidence = next(item for item in events if item["event_type"] == "recovery_evidence_recorded")
+        self.assertTrue(evidence["payload"]["dirty"])
+        self.assertNotIn("implementation trace", json.dumps(evidence))
+
+    def test_dirty_recovery_block_cannot_resume_or_confirm_no_agent(self) -> None:
+        task, manager, record = self._running_task_with_worktree("dirty-resume")
+        Path(record["path"], "uncommitted.txt").write_text("trace\n", encoding="utf-8")
+        RecoveryManager(self.fixture.store, manager).reconcile(task["task_id"], execute=True)
+        for option in ("resume", "confirm_no_agent"):
+            result = RecoveryManager(self.fixture.store, manager).reconcile(
+                task["task_id"], execute=True, **{option: True}
+            )[0]
+            self.assertEqual(result["to_status"], TaskStatus.RECOVERY_BLOCKED.value)
+        self.assertEqual(self.fixture.store.get_task(task["task_id"])["status"], TaskStatus.RECOVERY_BLOCKED.value)
+
+    def test_retry_pending_dirty_worktree_is_blocked_before_next_codex(self) -> None:
+        task, manager, record = self._running_task_with_worktree("legacy-retry-dirty")
+        self.fixture.store.transition(task["task_id"], TaskStatus.RETRY_PENDING)
+        Path(record["path"], "untracked.txt").write_text("trace\n", encoding="utf-8")
+        action = RecoveryManager(self.fixture.store, manager).reconcile(
+            task["task_id"], execute=True
+        )[0]
+        self.assertEqual(action["to_status"], TaskStatus.RECOVERY_BLOCKED.value)
+        self.assertEqual(
+            self.fixture.store.get_task(task["task_id"])["status"],
+            TaskStatus.RECOVERY_BLOCKED.value,
+        )
+
     def test_missing_pid_remains_running_during_startup_grace(self) -> None:
         manager, session_id = self._starting_session_without_pid("startup-grace")
         action = RecoveryManager(

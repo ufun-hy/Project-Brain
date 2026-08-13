@@ -117,6 +117,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     },
     TaskStatus.RETRY_PENDING: {
         TaskStatus.RUNNING,
+        TaskStatus.RECOVERY_BLOCKED,
         TaskStatus.FAILED,
         TaskStatus.SUPERSEDED,
         TaskStatus.EXPIRED,

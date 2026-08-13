@@ -12,6 +12,7 @@ from project_brain.application import health_report, task_view
 from project_brain.runtime import RuntimePaths
 from project_brain.security import redact_text
 from project_brain.project_config import short_config_hash
+from project_brain.project_config import verification_catalog, verification_coverage
 from project_brain.store import TaskStore
 
 
@@ -51,6 +52,18 @@ SAFE_EVENT_PAYLOAD_FIELDS = {
     "verification_count",
     "verification_set_id",
     "verdict",
+    "expected_branch",
+    "observed_branch",
+    "expected_head",
+    "observed_head",
+    "dirty",
+    "conflict",
+    "changed_path_count",
+    "classification",
+    "worktree_present",
+    "canonical_clean",
+    "timeout_category",
+    "source_attempt_number",
 }
 
 
@@ -107,6 +120,9 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
         "analysis_result_sha256": value.get("analysis_result_sha256"),
         "plan_hash": value.get("plan_hash"),
         "dispatch_confirmation": value.get("dispatch_confirmation"),
+        "verification_coverage": verification_coverage(
+            task.get("execution_profile"), task.get("acceptance_criteria")
+        ),
     }
 
 
@@ -128,6 +144,7 @@ def projects_view(store: TaskStore) -> list[dict[str, Any]]:
                 "auto_pr": project["auto_pr"],
                 "config_revision": project.get("config_revision"),
                 "config_sha256": short_config_hash(project.get("config_sha256")),
+                "verification_catalog": verification_catalog(project),
                 "health": {
                     "repository_available": repo.exists() and (repo / ".git").exists(),
                     "codex_configured": bool(executable),
@@ -268,6 +285,9 @@ def task_detail_view(
         else {"id": f"criterion-{index}", "text": bounded_text(criterion, limit=MAX_SUMMARY)}
         for index, criterion in enumerate(task.get("acceptance_criteria", [])[:50], start=1)
     ]
+    summary["verification_coverage"] = verification_coverage(
+        task.get("execution_profile"), task.get("acceptance_criteria")
+    )
     attempts = [
         {
             "attempt_number": item.get("attempt_number"),
@@ -296,6 +316,15 @@ def task_detail_view(
                 "evidence_type": item.get("evidence_type"),
                 "evidence_summary": bounded_text(item.get("evidence_summary"), limit=MAX_SUMMARY),
                 "exit_code": item.get("exit_code"),
+                "verification_set_id": item.get("verification_set_id"),
+                "source_attempt_number": verification_set.get("source_attempt_number")
+                if verification_set
+                else None,
+                "canonical_head_sha": bounded_text(
+                    verification_set.get("canonical_head_sha"), limit=128
+                )
+                if verification_set
+                else None,
                 "artifact_available": bool(item.get("artifact_path")),
                 "created_at": item.get("created_at"),
             }

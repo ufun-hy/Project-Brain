@@ -8,6 +8,7 @@ from typing import Any
 from .actions import run_named_command, write_files
 from .codex import AnalysisExecution, CodexAdapter
 from .errors import (
+    CodexTimeoutError,
     ProjectBrainError,
     PublicationConflictError,
     RecoveryError,
@@ -381,8 +382,60 @@ class TaskEngine:
         retryable = bool(getattr(exc, "retryable", False))
         current = self.store.get_task(task["task_id"])
         if isinstance(exc, RecoveryError):
+            try:
+                project = self.store.task_execution_profile(current)
+                recovery_state = self.worktrees.inspect_task_state(
+                    current, project, self.store.get_worktree(current["task_id"])
+                )
+            except Exception:
+                recovery_state = {
+                    "canonical_clean": False,
+                    "classification": "uninspectable",
+                    "dirty": False,
+                    "conflict": False,
+                    "changed_path_count": 0,
+                    "changed_paths": [],
+                }
+            self.store.record_recovery_evidence(
+                current["task_id"], category="process_exit_unconfirmed", evidence=recovery_state
+            )
             updated = self.store.block_running_task(task["task_id"], reason=str(exc))
-            return {"status": updated["status"], "task": updated}
+            return {
+                "status": updated["status"],
+                "task": updated,
+                "recovery_evidence": recovery_state,
+            }
+        if isinstance(exc, CodexTimeoutError):
+            try:
+                project = self.store.task_execution_profile(current)
+                recovery_state = self.worktrees.inspect_task_state(
+                    current, project, self.store.get_worktree(current["task_id"])
+                )
+            except Exception:
+                recovery_state = {
+                    "canonical_clean": False,
+                    "classification": "uninspectable",
+                    "dirty": False,
+                    "conflict": False,
+                    "changed_path_count": 0,
+                    "changed_paths": [],
+                }
+            self.store.record_recovery_evidence(
+                current["task_id"], category="timeout_after_process_group_termination", evidence=recovery_state
+            )
+            if not recovery_state.get("canonical_clean"):
+                updated = self.store.block_running_task(
+                    current["task_id"],
+                    reason=(
+                        "Codex timed out after process-group termination, but the worktree "
+                        "contains implementation traces or is not provably canonical"
+                    ),
+                )
+                return {
+                    "status": updated["status"],
+                    "task": updated,
+                    "recovery_evidence": recovery_state,
+                }
         if retryable and current["attempt_count"] < self.max_transient_attempts:
             target = TaskStatus.RETRY_PENDING
             attempt_status = "retry_pending"

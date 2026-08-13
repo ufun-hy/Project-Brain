@@ -12,6 +12,7 @@ from .models import utc_now
 from .runtime import RuntimePaths
 from .security import redact_text
 from .store import TaskStore
+from .project_config import verification_coverage
 from .acceptance_tasks import ACCEPTANCE_DOCUMENT_PATH, ACCEPTANCE_SOURCE_TYPE
 from .commands import git
 
@@ -30,8 +31,17 @@ class VerificationRunner:
         verification_set: dict[str, Any],
     ) -> list[dict[str, Any]]:
         specs: list[dict[str, Any]] = []
+        coverage = verification_coverage(
+            task.get("execution_profile"), task.get("acceptance_criteria")
+        )
         trusted: dict[str, dict[str, Any]] = {}
-        for index, check in enumerate(project.get("verification_commands") or [], start=1):
+        frozen_profile = task.get("execution_profile")
+        trusted_checks = (
+            frozen_profile.get("verification_commands")
+            if isinstance(frozen_profile, dict)
+            else project.get("verification_commands")
+        )
+        for index, check in enumerate(trusted_checks or [], start=1):
             if isinstance(check, list):
                 trusted[f"project-check-{index}"] = {
                     "id": f"project-check-{index}",
@@ -48,7 +58,9 @@ class VerificationRunner:
                     "always_run": bool(check.get("always_run", True)),
                 }
         referenced: set[str] = set()
-        for index, criterion in enumerate(task.get("acceptance_criteria") or [], start=1):
+        for item in coverage["criteria"]:
+            index = len(specs) + 1
+            criterion = item
             if isinstance(criterion, str):
                 specs.append(
                     {
@@ -70,13 +82,19 @@ class VerificationRunner:
                         referenced.add(str(verification_id))
                 specs.append(
                     {
-                        "criterion_id": str(criterion.get("id") or f"criterion-{index}"),
+                        "criterion_id": str(
+                            criterion.get("criterion_id") or criterion.get("id") or f"criterion-{index}"
+                        ),
                         "criterion_text": str(
-                            criterion.get("text") or criterion.get("criterion") or f"Criterion {index}"
+                            criterion.get("criterion_text") or criterion.get("text")
+                            or criterion.get("criterion") or f"Criterion {index}"
                         ),
                         "verification_id": verification_id,
                         "command": command,
                         "evidence_type": evidence_type,
+                        "covered_by_frozen_project_configuration": bool(
+                            criterion.get("covered_by_frozen_project_configuration")
+                        ),
                     }
                 )
             else:
@@ -88,16 +106,20 @@ class VerificationRunner:
                         "evidence_type": "manual_required",
                     }
                 )
-        for check_id, check in trusted.items():
-            if check_id in referenced or not check["always_run"]:
+        for item in coverage["supplemental"]:
+            check_id = str(item["verification_id"])
+            check = trusted.get(check_id)
+            if check is None:
                 continue
             specs.append(
                 {
-                    "criterion_id": check_id,
+                    "criterion_id": str(item["criterion_id"]),
                     "criterion_text": check["text"],
                     "verification_id": check_id,
                     "command": check["command"],
                     "evidence_type": "trusted_project_command",
+                    "covered_by_frozen_project_configuration": True,
+                    "supplemental": True,
                 }
             )
 
@@ -204,11 +226,18 @@ class VerificationRunner:
         ):
             return {
                 **spec,
-                "status": "not_verified",
-                "evidence_summary": "No criterion-specific executable evidence was provided.",
+                "status": "failed" if spec.get("evidence_type") == "trusted_project_command" else "not_verified",
+                "evidence_summary": (
+                    "Trusted project verification command is missing or invalid."
+                    if spec.get("evidence_type") == "trusted_project_command"
+                    else "No criterion-specific executable evidence was provided."
+                ),
                 "command": None,
-                "exit_code": None,
-                "artifact_path": None,
+                "exit_code": None if spec.get("evidence_type") != "trusted_project_command" else 127,
+                "artifact_path": self._write_bounded_artifact(
+                    task_id, verification_set, artifact_index, spec["criterion_id"],
+                    "Trusted project verification command is missing or invalid."
+                ) if spec.get("evidence_type") == "trusted_project_command" else None,
                 "created_at": created_at,
             }
         try:
@@ -268,3 +297,28 @@ class VerificationRunner:
             "artifact_path": str(artifact),
             "created_at": created_at,
         }
+
+    def _write_bounded_artifact(
+        self,
+        task_id: str,
+        verification_set: dict[str, Any],
+        artifact_index: int,
+        criterion_id: str,
+        output: str,
+    ) -> str:
+        artifact_dir = self.runtime.verification_set_dir(
+            task_id,
+            attempt_number=verification_set["source_attempt_number"],
+            verification_set_id=verification_set["verification_set_id"],
+            create=True,
+        )
+        safe_id = "".join(
+            character if character.isalnum() or character in "-_" else "-"
+            for character in criterion_id
+        )
+        artifact = artifact_dir / f"verification-{artifact_index:03d}-{safe_id}.txt"
+        descriptor = os.open(artifact, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(redact_text(output)[-20000:] + "\n")
+        os.chmod(artifact, 0o600)
+        return str(artifact)
