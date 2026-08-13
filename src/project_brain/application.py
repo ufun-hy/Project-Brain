@@ -15,6 +15,7 @@ from .runtime import RuntimePaths
 from .security import redact_text
 from .store import SCHEMA_VERSION, TaskStore
 from .project_config import executable_available
+from .project_config import verification_coverage
 
 NEXT_ACTION = {
     TaskStatus.PENDING.value: "Run project-brain apply.",
@@ -69,6 +70,9 @@ def task_view(
             "confirmed": task.get("dispatch_confirmed_at") is not None,
             "confirmed_at": task.get("dispatch_confirmed_at"),
         },
+        "verification_coverage": verification_coverage(
+            task.get("execution_profile"), task.get("acceptance_criteria")
+        ),
     }
 
 

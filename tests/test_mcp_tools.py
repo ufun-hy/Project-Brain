@@ -132,6 +132,37 @@ class MCPToolTests(unittest.TestCase):
         self.assertEqual(projects["projects"][0]["config_revision"], 1)
         self.assertEqual(len(projects["projects"][0]["config_sha256"]), 12)
 
+    def test_project_verification_catalog_exposes_no_command_or_path(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["verification_commands"] = [
+            {
+                "id": "safe-check",
+                "text": "Safe check",
+                "command": ["/private/check", "--secret-from-env"],
+                "always_run": True,
+            }
+        ]
+        self.fixture.store.register_project(project)
+        projects = self.service.projects_list()
+        catalog = projects["projects"][0]["verification_catalog"]
+        self.assertEqual(catalog, [{"id": "safe-check", "text": "Safe check", "always_run": True}])
+        rendered = json.dumps(projects)
+        self.assertNotIn("/private/check", rendered)
+        self.assertNotIn("command", rendered)
+
+    def test_draft_coverage_is_derived_from_frozen_profile(self) -> None:
+        value = self._create_value("coverage")
+        value["workflow_kind"] = "implement"
+        value["acceptance_criteria"] = [
+            {"id": "manual", "text": "Human review"},
+            {"id": "trusted", "text": "Trusted check", "verification_id": "core-tests"},
+        ]
+        result = self.service.tasks_create_draft(value)
+        coverage = result["execution_plan"]["verification_coverage"]
+        self.assertEqual(coverage["criteria"][0]["evidence_type"], "manual_required")
+        self.assertEqual(coverage["criteria"][1]["evidence_type"], "trusted_project_command")
+        self.assertTrue(coverage["criteria"][1]["covered_by_frozen_project_configuration"])
+
     def test_create_is_canonical_idempotent_and_audited(self) -> None:
         first = self.service.tasks_create(self._create_value())
         second = self.service.tasks_create(self._create_value())

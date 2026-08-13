@@ -70,6 +70,12 @@ class TransientTaskError(ProjectBrainError):
     retryable = True
 
 
+class CodexTimeoutError(TransientTaskError):
+    """Codex stopped cleanly after a deadline; the worktree still needs inspection."""
+
+    category = "codex_timeout"
+
+
 class PublicationConflictError(ProjectBrainError):
     """The remote task branch moved or disagreed during publication."""
 
@@ -110,6 +116,10 @@ class MigrationError(ProjectBrainError):
 
 class RecoveryError(ProjectBrainError):
     category = "recovery"
+
+    def __init__(self, message: str, *, recovery_evidence: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.recovery_evidence = recovery_evidence or {}
 
 
 class ExternalCommandError(ProjectBrainError):

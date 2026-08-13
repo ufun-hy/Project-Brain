@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from project_brain.models import AttemptPhase, TaskStatus
 from project_brain.verification import VerificationRunner
@@ -107,6 +108,91 @@ class VerificationSetTests(unittest.TestCase):
             Path(persisted_second[0]["artifact_path"]).read_bytes(),
             second_artifact.read_bytes(),
         )
+
+    def test_missing_trusted_command_is_failed_evidence(self) -> None:
+        self.fixture.add_task(
+            "missing-trusted",
+            task_type="write_files",
+            acceptance_criteria=[
+                {
+                    "id": "missing",
+                    "text": "Missing trusted check",
+                    "verification_id": "stable-check",
+                }
+            ],
+        )
+        task = self.fixture.store.claim_next()
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        record = manager.create(task, self.project)
+        task = self.fixture.store.set_task_fields(
+            "missing-trusted", commit=record["base_sha"], head_sha=record["base_sha"]
+        )
+        task = self.fixture.store.set_attempt_phase("missing-trusted", AttemptPhase.VERIFICATION)
+        verification_set = self.fixture.store.create_verification_set(
+            "missing-trusted", canonical_head_sha=record["base_sha"]
+        )
+        broken = dict(task["execution_profile"])
+        broken["verification_commands"] = [
+            {"id": "stable-check", "text": "Stable check", "command": None}
+        ]
+        task["execution_profile"] = broken
+        results = VerificationRunner(self.fixture.store, self.fixture.runtime).run(
+            task=task,
+            project=self.project,
+            worktree=record["path"],
+            verification_set=verification_set,
+        )
+        self.assertEqual(results[0]["status"], "failed")
+
+    def test_running_or_empty_verification_set_cannot_be_publication_evidence(self) -> None:
+        self.fixture.add_task("incomplete-set", task_type="write_files")
+        task = self.fixture.store.claim_next()
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        record = manager.create(task, self.project)
+        task = self.fixture.store.set_task_fields(
+            "incomplete-set", commit=record["base_sha"], head_sha=record["base_sha"]
+        )
+        self.fixture.store.set_attempt_phase("incomplete-set", AttemptPhase.VERIFICATION)
+        verification_set = self.fixture.store.create_verification_set(
+            "incomplete-set", canonical_head_sha=record["base_sha"]
+        )
+        self.fixture.store.finalize_verification_set(
+            verification_set["verification_set_id"], status="completed"
+        )
+        with self.assertRaisesRegex(Exception, "no persisted criterion results"):
+            self.fixture.store.publication_evidence("incomplete-set")
+
+    def test_timeout_trusted_command_is_failed_evidence_with_private_artifact(self) -> None:
+        self.fixture.add_task(
+            "timeout-check",
+            task_type="write_files",
+            acceptance_criteria=[
+                {"id": "timeout", "text": "Timeout check", "verification_id": "stable-check"}
+            ],
+        )
+        task = self.fixture.store.claim_next()
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        record = manager.create(task, self.project)
+        task = self.fixture.store.set_task_fields(
+            "timeout-check", commit=record["base_sha"], head_sha=record["base_sha"]
+        )
+        self.fixture.store.set_attempt_phase("timeout-check", AttemptPhase.VERIFICATION)
+        verification_set = self.fixture.store.create_verification_set(
+            "timeout-check", canonical_head_sha=record["base_sha"]
+        )
+        with patch(
+            "project_brain.verification.subprocess.run",
+            side_effect=__import__("subprocess").TimeoutExpired(["check"], 900),
+        ):
+            results = VerificationRunner(self.fixture.store, self.fixture.runtime).run(
+                task=task,
+                project=self.project,
+                worktree=record["path"],
+                verification_set=verification_set,
+            )
+        self.assertEqual(results[0]["status"], "failed")
+        self.assertIsNotNone(results[0]["artifact_path"])
+        self.assertEqual(Path(results[0]["artifact_path"]).stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

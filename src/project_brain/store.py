@@ -2470,6 +2470,36 @@ class TaskStore:
                 raise StateTransitionError(
                     "Publication evidence is not a current completed set for the canonical head"
                 )
+            evidence_count = connection.execute(
+                "SELECT COUNT(*) FROM verification_results WHERE task_id = ? AND verification_set_id = ?",
+                (task_id, verification_set_id),
+            ).fetchone()[0]
+            if int(evidence_count) == 0:
+                raise StateTransitionError(
+                    "Publication evidence set has no persisted criterion results"
+                )
+            task_criteria = _loads(task["acceptance_criteria_json"], [])
+            required_ids = {
+                str(item.get("id") or f"criterion-{index}")
+                for index, item in enumerate(task_criteria, start=1)
+                if isinstance(item, dict)
+            }
+            required_ids.update(
+                f"criterion-{index}"
+                for index, item in enumerate(task_criteria, start=1)
+                if isinstance(item, str)
+            )
+            recorded_ids = {
+                str(item["criterion_id"])
+                for item in connection.execute(
+                    "SELECT criterion_id FROM verification_results WHERE task_id = ? AND verification_set_id = ?",
+                    (task_id, verification_set_id),
+                ).fetchall()
+            }
+            if not required_ids.issubset(recorded_ids):
+                raise StateTransitionError(
+                    "Publication evidence set is missing an acceptance criterion result"
+                )
         return self.list_verifications(
             task_id, verification_set_id=int(verification_set_id)
         )
@@ -2777,6 +2807,7 @@ class TaskStore:
         target_status = TaskStatus(target)
         if target_status not in {
             TaskStatus.RETRY_PENDING,
+            TaskStatus.RECOVERY_BLOCKED,
             TaskStatus.AWAITING_REVIEW,
             TaskStatus.FAILED,
         }:
@@ -2876,6 +2907,36 @@ class TaskStore:
                 {"reason": message, "phase": row["attempt_phase"]},
             )
         return self.get_task(task_id)
+
+    def record_recovery_evidence(
+        self,
+        task_id: str,
+        *,
+        category: str,
+        evidence: dict[str, Any],
+    ) -> None:
+        """Persist bounded, redacted recovery facts without file contents."""
+        allowed = {
+            "expected_branch", "observed_branch", "expected_head", "observed_head",
+            "dirty", "conflict", "changed_path_count", "changed_paths",
+            "worktree_present", "canonical_clean", "classification",
+        }
+        bounded: dict[str, Any] = {}
+        for key in allowed:
+            value = evidence.get(key)
+            if key == "changed_paths":
+                bounded[key] = [redact_text(str(item))[:256] for item in (value or [])[:20]]
+            elif isinstance(value, str):
+                bounded[key] = redact_text(value)[:256]
+            elif isinstance(value, (bool, int)) or value is None:
+                bounded[key] = value
+        bounded["category"] = redact_text(category)[:128]
+        bounded["task_id"] = task_id
+        self.record_event(
+            task_id=task_id,
+            event_type="recovery_evidence_recorded",
+            payload=bounded,
+        )
 
     def resolve_recovery_block(
         self,
