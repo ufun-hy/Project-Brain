@@ -137,7 +137,10 @@ class MCPToolTests(unittest.TestCase):
         project["verification_commands"] = [
             {
                 "id": "safe-check",
-                "text": "Safe check",
+                "text": (
+                    "Safe check /Users/alice/private alice@example.com "
+                    "api_key=sk-abcdefghijklmnopqrstuvwxyz123456"
+                ),
                 "command": ["/private/check", "--secret-from-env"],
                 "always_run": True,
             }
@@ -145,10 +148,25 @@ class MCPToolTests(unittest.TestCase):
         self.fixture.store.register_project(project)
         projects = self.service.projects_list()
         catalog = projects["projects"][0]["verification_catalog"]
-        self.assertEqual(catalog, [{"id": "safe-check", "text": "Safe check", "always_run": True}])
+        self.assertEqual(
+            catalog,
+            [
+                {
+                    "id": "safe-check",
+                    "text": (
+                        "Safe check /Users/[REDACTED_USER]/private "
+                        "[REDACTED_EMAIL] api_key=[REDACTED]"
+                    ),
+                    "always_run": True,
+                }
+            ],
+        )
         rendered = json.dumps(projects)
         self.assertNotIn("/private/check", rendered)
         self.assertNotIn("command", rendered)
+        self.assertNotIn("/Users/alice", rendered)
+        self.assertNotIn("alice@example.com", rendered)
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz123456", rendered)
 
     def test_draft_coverage_is_derived_from_frozen_profile(self) -> None:
         value = self._create_value("coverage")

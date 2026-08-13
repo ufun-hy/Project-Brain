@@ -41,7 +41,11 @@ def _default_pr_body(task: dict[str, Any]) -> str:
     evidence = {
         str(item.get("criterion_id")): item
         for item in context.get("verification_evidence", [])[:100]
-        if isinstance(item, dict) and item.get("criterion_id")
+        if (
+            isinstance(item, dict)
+            and item.get("criterion_id")
+            and not item.get("supplemental")
+        )
     }
     criteria: list[str] = []
     for index, criterion in enumerate(task.get("acceptance_criteria", [])[:50], start=1):

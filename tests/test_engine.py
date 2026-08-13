@@ -224,7 +224,29 @@ class TaskEngineTests(unittest.TestCase):
         self.assertEqual(result["status"], TaskStatus.AWAITING_REVIEW.value)
         evidence = self.fixture.store.list_verifications("supplemental")
         self.assertEqual([item["status"] for item in evidence], ["not_verified", "passed"])
-        self.assertEqual(evidence[1]["criterion_id"], "stable-check")
+        self.assertEqual(evidence[1]["criterion_id"], "supplemental:stable-check")
+
+    def test_always_run_id_collision_does_not_pass_manual_criterion(self) -> None:
+        project = self.fixture.store.get_project("project-one")
+        project["verification_commands"] = [
+            {
+                "id": "manual",
+                "text": "Unrelated supplemental check",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "always_run": True,
+            }
+        ]
+        self.fixture.store.register_project(project)
+        self._write_task(
+            "supplemental-collision",
+            acceptance_criteria=[{"id": "manual", "text": "Human review"}],
+        )
+        result = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
+        self.assertEqual(result["status"], TaskStatus.AWAITING_REVIEW.value)
+        evidence = self.fixture.store.list_verifications("supplemental-collision")
+        by_id = {item["criterion_id"]: item for item in evidence}
+        self.assertEqual(by_id["manual"]["status"], "not_verified")
+        self.assertEqual(by_id["supplemental:manual"]["status"], "passed")
 
     def test_failed_verification_enters_verification_failed_and_retains_worktree(self) -> None:
         project = self.fixture.store.get_project("project-one")

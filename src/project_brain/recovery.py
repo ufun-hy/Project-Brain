@@ -161,6 +161,7 @@ class RecoveryManager:
             return {
                 "task_id": task["task_id"],
                 "action": "unchanged",
+                "safe_retry": True,
                 "reason": "retry worktree is canonical and clean",
                 "recovery_evidence": state,
             }

@@ -7,13 +7,17 @@ import sys
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from project_brain.errors import InvalidTaskError
 from project_brain.locking import RuntimeLock
 from project_brain.application import worker_result_view
 from project_brain.mcp.dispatch import OneShotDispatcher
+from project_brain.models import TaskStatus
+from project_brain.recovery import RecoveryManager
+from project_brain.worktrees import WorktreeManager
 
-from tests.helpers import CoreFixture, executable_script
+from tests.helpers import CoreFixture, create_remote_clone, executable_script
 
 
 class FakeProcess:
@@ -94,6 +98,50 @@ class MCPDispatcherTests(unittest.TestCase):
             popen_factory=capture,
             environment={"PATH": os.environ.get("PATH", ""), "EVIL_REQUEST_VALUE": "nope"},
         )
+
+    def _prepare_retry_pending(self, task_id: str) -> tuple[dict, WorktreeManager]:
+        repo, remote = create_remote_clone(self.fixture.root, task_id)
+        project = self.fixture.add_project(
+            project_id=f"{task_id}-project",
+            repo_path=str(repo),
+            remote_url=str(remote),
+            auto_push=False,
+            auto_pr=False,
+        )
+        self.fixture.add_task(task_id, project_id=project["project_id"])
+        task = self.fixture.store.claim_next()
+        assert task is not None
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        manager.create(task, project)
+        self.fixture.store.transition(task_id, TaskStatus.RETRY_PENDING)
+        return self.fixture.store.get_task(task_id), manager
+
+    def test_canonical_clean_retry_pending_passes_preview_and_dispatches(self) -> None:
+        task, manager = self._prepare_retry_pending("retry-clean-dispatch")
+        preview = RecoveryManager(self.fixture.store, manager).preview_for_dispatch()
+        self.assertTrue(preview.claim_safe)
+        self.assertEqual(preview.claim_blockers, [])
+        action = next(item for item in preview.actions if item["task_id"] == task["task_id"])
+        self.assertTrue(action["safe_retry"])
+
+        capture = CapturingPopen()
+        result = self._dispatcher(capture).dispatch(reason="retry clean task")
+        self.assertEqual(result["dispatch_status"], "started")
+        self.assertEqual(len(capture.calls), 1)
+
+    def test_dirty_retry_pending_remains_a_dispatch_blocker(self) -> None:
+        task, manager = self._prepare_retry_pending("retry-dirty-dispatch")
+        record = self.fixture.store.get_worktree(task["task_id"])
+        assert record is not None
+        Path(record["path"], "untracked.txt").write_text("implementation trace\n", encoding="utf-8")
+
+        preview = RecoveryManager(self.fixture.store, manager).preview_for_dispatch()
+        self.assertFalse(preview.claim_safe)
+        self.assertEqual(preview.claim_blockers[0]["task_id"], task["task_id"])
+        capture = CapturingPopen()
+        result = self._dispatcher(capture).dispatch()
+        self.assertEqual(result["dispatch_status"], "blocked")
+        self.assertEqual(capture.calls, [])
 
     def test_dispatch_starts_only_fixed_worker_and_returns_immediately(self) -> None:
         self.fixture.add_task("dispatch-me")

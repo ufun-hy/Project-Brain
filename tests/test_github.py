@@ -13,7 +13,7 @@ from project_brain.errors import (
     TaskHistoryError,
     TransientTaskError,
 )
-from project_brain.github import GitHubAdapter
+from project_brain.github import GitHubAdapter, _default_pr_body
 
 
 class GitHubAdapterTests(unittest.TestCase):
@@ -37,6 +37,33 @@ class GitHubAdapterTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_supplemental_evidence_cannot_check_manual_criterion(self) -> None:
+        body = _default_pr_body(
+            {
+                **self.task,
+                "source_type": "mcp",
+                "acceptance_criteria": [
+                    {"id": "manual", "text": "Human review"},
+                ],
+                "publication_context": {
+                    "verification_evidence": [
+                        {
+                            "criterion_id": "manual",
+                            "status": "not_verified",
+                            "verification_id": None,
+                        },
+                        {
+                            "criterion_id": "supplemental:manual",
+                            "status": "passed",
+                            "verification_id": "manual",
+                            "supplemental": True,
+                        },
+                    ]
+                },
+            }
+        )
+        self.assertIn("- [ ] `manual` Human review — `not_verified`", body)
 
     @patch("project_brain.github.git")
     @patch("project_brain.github.run_command")

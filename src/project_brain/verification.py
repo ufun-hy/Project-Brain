@@ -113,7 +113,7 @@ class VerificationRunner:
                 continue
             specs.append(
                 {
-                    "criterion_id": check_id,
+                    "criterion_id": str(item["criterion_id"]),
                     "criterion_text": check["text"],
                     "verification_id": check_id,
                     "command": check["command"],

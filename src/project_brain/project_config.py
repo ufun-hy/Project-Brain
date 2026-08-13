@@ -11,7 +11,7 @@ from typing import Any
 from .errors import ConfigurationError
 from .executables import find_executable
 from .models import STABLE_ID_PATTERN
-from .security import command_contains_secret, contains_known_secret
+from .security import command_contains_secret, contains_known_secret, redact_text
 
 
 EXECUTION_FIELDS = (
@@ -189,7 +189,9 @@ def verification_catalog(profile: dict[str, Any] | None) -> list[dict[str, Any]]
         catalog.append(
             {
                 "id": str(check["id"]),
-                "text": str(check.get("text") or check.get("name") or check["id"])[:2000],
+                "text": redact_text(
+                    str(check.get("text") or check.get("name") or check["id"])
+                )[:2000],
                 "always_run": bool(check.get("always_run", True)),
             }
         )
@@ -229,7 +231,7 @@ def verification_coverage(
         )
     supplemental = [
         {
-            "criterion_id": check_id,
+            "criterion_id": f"supplemental:{check_id}",
             "criterion_text": str(check["text"])[:2000],
             "verification_id": check_id,
             "evidence_type": "trusted_project_command",
