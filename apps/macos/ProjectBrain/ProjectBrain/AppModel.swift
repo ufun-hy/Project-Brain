@@ -115,13 +115,31 @@ private actor ProductShellBackend {
         )
         _ = try client.initializeRuntime()
         self.client = client
-        return try loadSnapshot(client: client, selectedTaskID: nil)
+        return try Self.loadSnapshot(
+            client: client,
+            selectedTaskID: nil,
+            tunnelInstaller: tunnelInstaller
+        )
     }
 
-    func refresh(selectedTaskID: String?) throws -> ProductSnapshot {
-        try loadSnapshot(client: requireClient(), selectedTaskID: selectedTaskID)
+    func refresh(selectedTaskID: String?) async throws -> ProductSnapshot {
+        let client = try requireClient()
+        let tunnelInstaller = tunnelInstaller
+        return try await Task.detached(priority: .utility) {
+            try Self.loadSnapshot(
+                client: client,
+                selectedTaskID: selectedTaskID,
+                tunnelInstaller: tunnelInstaller
+            )
+        }.value
     }
-    func task(_ identifier: String) throws -> TaskDetail { try requireClient().task(identifier) }
+
+    func task(_ identifier: String) async throws -> TaskDetail {
+        let client = try requireClient()
+        return try await Task.detached(priority: .userInitiated) {
+            try client.task(identifier)
+        }.value
+    }
     func planProject(_ draft: ProjectDraft) throws -> ProjectMutationResponse {
         try requireClient().planProject(draft)
     }
@@ -281,7 +299,11 @@ private actor ProductShellBackend {
         return tunnelInstaller
     }
 
-    private func loadSnapshot(client: CoreClient, selectedTaskID: String?) throws -> ProductSnapshot {
+    private static func loadSnapshot(
+        client: CoreClient,
+        selectedTaskID: String?,
+        tunnelInstaller: TunnelClientInstaller?
+    ) throws -> ProductSnapshot {
         ProductSnapshot(
             tasks: try client.tasks(),
             projects: try client.projects(),
@@ -335,6 +357,7 @@ final class AppModel: ObservableObject {
     @Published var isNewTaskPresented = false
     @Published var shouldShowFirstTaskGuide = false
     @Published private(set) var isBusy = false
+    @Published private(set) var loadingTaskID: String?
     @Published var issue: UserFacingIssue?
 
     private let backend: ProductShellBackend
@@ -349,6 +372,7 @@ final class AppModel: ObservableObject {
     private var onboardingExistingProjectID: String?
     private var localTaskOperation: Task<Void, Never>?
     private var localTaskOperationID = UUID()
+    private var taskSelectionOperation: Task<Void, Never>?
 
     init(
         installer: HelperInstaller = HelperInstaller(),
@@ -667,9 +691,28 @@ final class AppModel: ObservableObject {
     }
 
     func selectTask(_ task: TaskSummary) {
-        runOperation {
-            try await self.backend.task(task.taskID)
-        } onSuccess: { self.selectedTask = $0 }
+        let requestedID = task.taskID
+        taskSelectionOperation?.cancel()
+        selectedTask = TaskDetail(summary: task)
+        loadingTaskID = requestedID
+        let backend = backend
+        taskSelectionOperation = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(80))
+                try Task.checkCancellation()
+                let detail = try await backend.task(requestedID)
+                try Task.checkCancellation()
+                guard let self, self.selectedTask?.taskID == requestedID else { return }
+                self.selectedTask = detail
+            } catch is CancellationError {
+                // A newer selection owns the visible detail and loading state.
+            } catch {
+                guard let self, self.selectedTask?.taskID == requestedID else { return }
+                self.present(error)
+            }
+            guard let self, self.loadingTaskID == requestedID else { return }
+            self.loadingTaskID = nil
+        }
     }
 
     func openNewTask(defaultProjectID: String? = nil) {
@@ -1166,9 +1209,9 @@ final class AppModel: ObservableObject {
         let backend = backend
         Task {
             await observation.start(
-                selection: { [weak self] in await self?.selectedTaskIdentifier() },
-                refresh: { identifier in
-                    let snapshot = try await backend.refresh(selectedTaskID: identifier)
+                selection: { nil },
+                refresh: { _ in
+                    let snapshot = try await backend.refresh(selectedTaskID: nil)
                     return ObservationUpdate(
                         value: snapshot,
                         serviceOnline: snapshot.serviceOnline
@@ -1178,8 +1221,6 @@ final class AppModel: ObservableObject {
             )
         }
     }
-
-    private func selectedTaskIdentifier() -> String? { selectedTask?.taskID }
 
     private func refreshSilently() {
         let identifier = selectedTask?.taskID

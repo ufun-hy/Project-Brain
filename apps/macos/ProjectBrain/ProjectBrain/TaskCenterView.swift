@@ -36,7 +36,10 @@ struct TaskCenterView: View {
             }
         } detail: {
             if let detail = model.selectedTask {
-                TaskDetailView(task: detail)
+                TaskDetailView(
+                    task: detail,
+                    isLoading: model.loadingTaskID == detail.taskID
+                )
             } else {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Create and follow a task").font(.title2.bold())
@@ -99,6 +102,7 @@ private struct TaskRow: View {
 
 private struct TaskDetailView: View {
     let task: TaskDetail
+    let isLoading: Bool
 
     var body: some View {
         ScrollView {
@@ -109,6 +113,11 @@ private struct TaskDetailView: View {
                         Text("\(task.project) · \(task.taskID)").foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Loading task details")
+                    }
                     StatusBadge(status: task.status, text: task.status.title)
                 }
 

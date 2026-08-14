@@ -169,7 +169,6 @@ public final class CoreClient: @unchecked Sendable {
     public let runtimeRoot: URL
     public let cliContract: CoreCLIContract
     private let runner: any CoreProcessRunning
-    private let decoder: JSONDecoder
 
     public init(
         executable: URL,
@@ -190,7 +189,6 @@ public final class CoreClient: @unchecked Sendable {
         self.runtimeRoot = runtimeRoot.standardizedFileURL
         self.cliContract = cliContract
         self.runner = runner
-        self.decoder = JSONDecoder()
     }
 
     public func execute<T: Decodable>(_ command: CoreCommand, as type: T.Type = T.self) throws -> T {
@@ -215,7 +213,7 @@ public final class CoreClient: @unchecked Sendable {
         }
         guard command.acceptedExitCodes.contains(result.exitCode) else {
             let bounded = Data(result.stderr.prefix(8_192))
-            if let envelope = try? decoder.decode(CoreErrorEnvelope.self, from: bounded) {
+            if let envelope = try? JSONDecoder().decode(CoreErrorEnvelope.self, from: bounded) {
                 let message = SecretRedactor.redact(
                     envelope.error ?? "Core operation failed."
                 )
@@ -246,7 +244,7 @@ public final class CoreClient: @unchecked Sendable {
             throw CoreClientError.invalidResponse("Core returned no JSON document.")
         }
         do {
-            return try decoder.decode(type, from: bounded)
+            return try JSONDecoder().decode(type, from: bounded)
         } catch {
             throw CoreClientError.invalidResponse("Core returned JSON that this app cannot read.")
         }

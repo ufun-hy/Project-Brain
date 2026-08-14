@@ -6,8 +6,23 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 DIST_ROOT="${PROJECT_BRAIN_HELPER_DIST:-$ROOT/build/macos-helper/dist}"
 WORK_ROOT="${PROJECT_BRAIN_HELPER_WORK:-$ROOT/build/macos-helper/work}"
 SPEC="$ROOT/packaging/pyinstaller/project-brain.spec"
+if [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]; then
+  echo "helper build requires an exact clean Git source" >&2
+  exit 1
+fi
+BUILD_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+if [ "${#BUILD_SHA}" -ne 40 ]; then
+  echo "invalid helper build SHA: $BUILD_SHA" >&2
+  exit 1
+fi
+case "$BUILD_SHA" in
+  *[!0-9a-f]*)
+    echo "invalid helper build SHA: $BUILD_SHA" >&2
+    exit 1
+    ;;
+esac
 
-"$PYTHON_BIN" -m PyInstaller \
+PROJECT_BRAIN_BUILD_SHA="$BUILD_SHA" "$PYTHON_BIN" -m PyInstaller \
   --noconfirm \
   --clean \
   --distpath "$DIST_ROOT" \

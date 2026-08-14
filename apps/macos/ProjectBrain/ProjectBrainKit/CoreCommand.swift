@@ -110,7 +110,10 @@ public enum CoreCommand: Equatable, Sendable {
         case .tasks:
             value += ["tasks", "list", "--limit", "200", "--json"]
         case .task(let identifier):
-            value += ["tasks", "show", identifier, "--json"]
+            value += [
+                "tasks", "show", identifier,
+                "--compact", "--event-limit", "50", "--json",
+            ]
         case .projects:
             value += ["projects", "list", "--json"]
         case .health:

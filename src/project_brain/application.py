@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+from .build_info import core_build_sha
 from .locking import RuntimeLock
 from .executables import find_executable
 from .models import TaskStatus, parse_timestamp
@@ -135,6 +137,9 @@ def health_report(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
             executable or "not configured",
         )
     return {
+        "core_version": __version__,
+        "core_build_sha": core_build_sha(),
+        "schema_version": store.schema_version(),
         "status": (
             "healthy"
             if all(item["status"] == "passed" for item in checks)
