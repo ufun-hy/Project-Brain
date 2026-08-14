@@ -922,13 +922,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             task = task_view(store.get_task(args.task_id), projects)
             if args.compact:
                 task.pop("analysis_result", None)
-                result = task.get("result")
-                if isinstance(result, dict):
-                    task["result"] = {
-                        key: redact_text(str(result[key]))[:16_000]
-                        for key in ("kind", "summary")
-                        if result.get(key) is not None
-                    }
             else:
                 task["attempts"] = store.list_attempts(args.task_id)
             task["verification"] = store.list_verifications(args.task_id)

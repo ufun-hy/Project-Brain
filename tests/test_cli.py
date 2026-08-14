@@ -95,11 +95,17 @@ class CLITests(unittest.TestCase):
             {"required": True, "confirmed": False, "confirmed_at": None},
         )
 
-    def test_compact_task_detail_bounds_events_and_omits_forensic_payloads(self) -> None:
+    def test_compact_task_detail_preserves_result_and_omits_forensic_payloads(self) -> None:
         self.fixture.add_task("compact-detail")
-        self.fixture.store.set_task_result(
-            "compact-detail", {"kind": "implementation", "summary": "x" * 20_000}
-        )
+        result = {
+            "schema_version": 1,
+            "kind": "implementation",
+            "summary": "x" * 20_000,
+            "changed_files": ["src/project_brain/cli.py"],
+            "metadata": {"duration_ms": 12.5},
+            "successful": True,
+        }
+        self.fixture.store.set_task_result("compact-detail", result)
         for index in range(75):
             self.fixture.store.record_event(
                 task_id="compact-detail",
@@ -119,8 +125,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(value["events"]), 10)
         self.assertEqual(value["events"][0]["payload"]["index"], 65)
-        self.assertEqual(value["result"]["kind"], "implementation")
-        self.assertEqual(len(value["result"]["summary"]), 16_000)
+        self.assertEqual(value["result"], result)
         self.assertNotIn("attempts", value)
         self.assertNotIn("forensic_archive", value)
         self.assertNotIn("analysis_result", value)
