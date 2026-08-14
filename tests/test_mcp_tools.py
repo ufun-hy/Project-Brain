@@ -128,6 +128,8 @@ class MCPToolTests(unittest.TestCase):
         self.assertNotIn("worktree_root", rendered)
         self.assertNotIn("codex_command", rendered)
         self.assertNotIn(str(self.fixture.root), rendered)
+        self.assertEqual(health["data"]["core_version"], "0.8.0")
+        self.assertIn("core_build_sha", health["data"])
         self.assertEqual(projects["projects"][0]["project_id"], "project-one")
         self.assertEqual(projects["projects"][0]["config_revision"], 1)
         self.assertEqual(len(projects["projects"][0]["config_sha256"]), 12)

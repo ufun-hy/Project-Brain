@@ -152,6 +152,18 @@ final class CoreClientTests: XCTestCase {
         }
     }
 
+    func testTaskDetailCommandUsesBoundedPresentation() throws {
+        let arguments = CoreCommand.task("task-1").arguments(
+            runtimeRoot: URL(filePath: "/Users/example/.project-brain"),
+            cliContract: try repositoryCLIContractDocument().contract
+        )
+        XCTAssertTrue(arguments.contains("--compact"))
+        XCTAssertEqual(
+            Array(arguments.suffix(4)),
+            ["--compact", "--event-limit", "50", "--json"]
+        )
+    }
+
     func testLocalTaskUsesFixedArgvAndStructuredStdin() throws {
         let response = #"{"status":"planned","plan":{"schema_version":1,"contract_version":"1.2.0","plan_id":"p","plan_token":"local-v2:t","plan_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","token_fingerprint":"dddddddddddd","project_id":"project-1","project_name":"Project","repository_path":"/repo","default_branch":"main","base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","task_type":"analysis","canonical_goal":"Review repository","canonical_goal_length":17,"goal_constraints":{"minimum":10,"maximum":8000},"goal_summary":"Review repository","acceptance_criteria":[],"execution_profile_revision":1,"execution_profile_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","codex_adapter":"codex","codex_executable":"codex","worktree_root":"/worktrees","verification":[],"delivery":{"commit":false,"push":false,"draft_pr":false},"readiness":{"status":"healthy","ready":true,"checks":[],"blockers":[],"external_chatgpt_acceptance":"pending"},"created_at":"2026-07-19T00:00:00Z","expires_at":"2026-07-19T00:10:00Z","external_chatgpt_acceptance":"pending"},"timing_ms":{"core_operation_total":1.0}}"#
         let runner = CapturingCoreRunner(result: .init(

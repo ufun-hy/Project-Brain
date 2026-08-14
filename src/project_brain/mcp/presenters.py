@@ -9,6 +9,7 @@ from typing import Any
 
 from project_brain import __version__
 from project_brain.application import health_report, task_view
+from project_brain.build_info import core_build_sha
 from project_brain.runtime import RuntimePaths
 from project_brain.security import redact_text
 from project_brain.project_config import short_config_hash
@@ -174,6 +175,7 @@ def health_view(store: TaskStore, runtime: RuntimePaths) -> dict[str, Any]:
         counts[task["status"]] = counts.get(task["status"], 0) + 1
     return {
         "core_version": __version__,
+        "core_build_sha": core_build_sha(),
         "schema_version": store.schema_version(),
         "status": report["status"],
         "runtime": {

@@ -47,6 +47,28 @@ class ProductShellOnboardingSourceTests(unittest.TestCase):
         self.assertIn("name == \"core:gh\"", core_models)
         self.assertNotIn("Last result: \\(health.status)", onboarding)
 
+    def test_task_selection_is_local_latest_wins_and_observation_is_summary_only(
+        self,
+    ) -> None:
+        model = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/AppModel.swift"
+        ).read_text(encoding="utf-8")
+        task_center = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrain/TaskCenterView.swift"
+        ).read_text(encoding="utf-8")
+        command = (
+            self.root / "apps/macos/ProjectBrain/ProjectBrainKit/CoreCommand.swift"
+        ).read_text(encoding="utf-8")
+        self.assertIn("@Published private(set) var loadingTaskID", model)
+        self.assertIn("taskSelectionOperation?.cancel()", model)
+        self.assertIn("selectedTask = TaskDetail(summary: task)", model)
+        self.assertIn("self.selectedTask?.taskID == requestedID", model)
+        self.assertIn("Task.detached(priority: .userInitiated)", model)
+        self.assertIn("selection: { nil }", model)
+        self.assertIn("backend.refresh(selectedTaskID: nil)", model)
+        self.assertIn("model.loadingTaskID == detail.taskID", task_center)
+        self.assertIn('"--compact", "--event-limit", "50"', command)
+
     def test_build10_personal_artifact_cannot_be_mistaken_for_distribution(
         self,
     ) -> None:

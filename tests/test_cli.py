@@ -95,6 +95,36 @@ class CLITests(unittest.TestCase):
             {"required": True, "confirmed": False, "confirmed_at": None},
         )
 
+    def test_compact_task_detail_bounds_events_and_omits_forensic_payloads(self) -> None:
+        self.fixture.add_task("compact-detail")
+        self.fixture.store.set_task_result(
+            "compact-detail", {"kind": "implementation", "summary": "x" * 20_000}
+        )
+        for index in range(75):
+            self.fixture.store.record_event(
+                task_id="compact-detail",
+                event_type="detail_event",
+                payload={"index": index},
+            )
+        code, output = self.invoke(
+            "tasks",
+            "show",
+            "compact-detail",
+            "--compact",
+            "--event-limit",
+            "10",
+            "--json",
+        )
+        value = json.loads(output)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(value["events"]), 10)
+        self.assertEqual(value["events"][0]["payload"]["index"], 65)
+        self.assertEqual(value["result"]["kind"], "implementation")
+        self.assertEqual(len(value["result"]["summary"]), 16_000)
+        self.assertNotIn("attempts", value)
+        self.assertNotIn("forensic_archive", value)
+        self.assertNotIn("analysis_result", value)
+
     def test_acceptance_cli_has_lifecycle_but_no_pass_override(self) -> None:
         code, created_output = self.invoke(
             "acceptance",
@@ -178,6 +208,8 @@ class CLITests(unittest.TestCase):
         code, output = self.invoke("health", "--json")
         value = json.loads(output)
         self.assertEqual(code, 0)
+        self.assertEqual(value["core_version"], "0.8.0")
+        self.assertIn("core_build_sha", value)
         names = {item["name"] for item in value["checks"]}
         self.assertIn("runtime_root", names)
         self.assertIn("database_schema", names)

@@ -264,6 +264,63 @@ class GitHubAdapterTests(unittest.TestCase):
         self.assertTrue(any("push" in call for call in calls))
         self.assertFalse(any("--force" in call for call in calls))
 
+    @patch("project_brain.github.git")
+    @patch("project_brain.github.run_command")
+    @patch("project_brain.github.assert_registered_origin")
+    def test_canonical_base_without_commit_is_still_a_first_publication(
+        self, origin_check, run_command, git_command
+    ) -> None:
+        candidate = "c" * 40
+        base = "a" * 40
+        calls: list[tuple[str, ...]] = []
+
+        def first_publication_git(_repo, *args, **kwargs):
+            calls.append(tuple(args))
+            if "ls-remote" in args:
+                observations = [call for call in calls if "ls-remote" in call]
+                output = "" if len(observations) == 1 else (
+                    f"{candidate}\trefs/heads/{self.task['branch']}\n"
+                )
+                return subprocess.CompletedProcess([], 0, output, "")
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        git_command.side_effect = first_publication_git
+        run_command.side_effect = [
+            subprocess.CompletedProcess([], 0, "[]", ""),
+            subprocess.CompletedProcess([], 0, "https://example.test/pr/first\n", ""),
+        ]
+        result = GitHubAdapter().publish(
+            task={
+                **self.task,
+                "base_sha": base,
+                "commit": None,
+                "local_candidate_sha": candidate,
+                "canonical_published_head_sha": base,
+            },
+            project=self.project,
+            worktree=self.worktree,
+        )
+        self.assertTrue(result["pushed"])
+        self.assertFalse(result["resumed"])
+        self.assertEqual(result["pr_url"], "https://example.test/pr/first")
+        self.assertTrue(any("push" in call for call in calls))
+        self.assertFalse(any("--force" in call for call in calls))
+
+    @patch("project_brain.github.assert_registered_origin")
+    def test_mismatched_canonical_and_recorded_commit_is_rejected(
+        self, origin_check
+    ) -> None:
+        with self.assertRaises(TaskHistoryError):
+            GitHubAdapter().publish(
+                task={
+                    **self.task,
+                    "canonical_published_head_sha": "b" * 40,
+                    "local_candidate_sha": "c" * 40,
+                },
+                project=self.project,
+                worktree=self.worktree,
+            )
+
     @patch("project_brain.github.run_command")
     @patch("project_brain.github.assert_registered_origin")
     def test_missing_remote_branch_is_fail_closed_after_published_head(

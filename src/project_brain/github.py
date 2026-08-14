@@ -183,15 +183,34 @@ class GitHubAdapter:
             or task.get("base_sha")
         )
         canonical_published_head = task.get("canonical_published_head_sha")
+        recorded_commit = task.get("commit")
+        if (
+            canonical_published_head
+            and recorded_commit
+            and canonical_published_head != recorded_commit
+        ):
+            raise TaskHistoryError(
+                "Canonical published head does not match the recorded task commit"
+            )
+        # A successful publication records the canonical head and commit in one
+        # transaction.  Older runtimes could contaminate a never-published MCP
+        # task with a canonical value copied from its base while leaving commit
+        # empty.  Treat only the atomic pair as proof that this exact task branch
+        # existed remotely; an absent branch is otherwise a valid first publish.
+        previously_published_head = (
+            canonical_published_head
+            if canonical_published_head and recorded_commit == canonical_published_head
+            else None
+        )
         if not candidate_sha or not expected:
             raise TaskHistoryError("Publication requires a candidate and an expected base head")
         observed = self._remote_task_head(worktree=worktree, branch=branch)
-        if observed is None and canonical_published_head:
+        if observed is None and previously_published_head:
             raise PublicationConflictError(
                 f"Published task branch disappeared before publication: {branch}",
                 conflict={
                     "branch": branch,
-                    "expected_remote_head_sha": canonical_published_head,
+                    "expected_remote_head_sha": previously_published_head,
                     "observed_remote_head_sha": "",
                     "publication_base_sha": expected,
                     "candidate_sha": candidate_sha,

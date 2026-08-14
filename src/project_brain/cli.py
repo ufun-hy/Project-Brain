@@ -128,6 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(task_list)
     task_show = task_sub.add_parser("show")
     task_show.add_argument("task_id")
+    task_show.add_argument("--compact", action="store_true")
+    task_show.add_argument("--event-limit", type=int)
     _add_json(task_show)
     task_enqueue = task_sub.add_parser(
         "enqueue", help="Import a canonical task JSON file"
@@ -918,7 +920,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "tasks" and args.tasks_command == "show":
             projects = {item["project_id"]: item for item in store.list_projects()}
             task = task_view(store.get_task(args.task_id), projects)
-            task["attempts"] = store.list_attempts(args.task_id)
+            if args.compact:
+                task.pop("analysis_result", None)
+                result = task.get("result")
+                if isinstance(result, dict):
+                    task["result"] = {
+                        key: redact_text(str(result[key]))[:16_000]
+                        for key in ("kind", "summary")
+                        if result.get(key) is not None
+                    }
+            else:
+                task["attempts"] = store.list_attempts(args.task_id)
             task["verification"] = store.list_verifications(args.task_id)
             task["verification_set"] = (
                 store.get_verification_set(int(task["verification_set_id"]))
@@ -926,8 +938,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else None
             )
             task["reviews"] = store.list_reviews(args.task_id)
-            task["forensic_archive"] = store.get_forensic_archive(args.task_id)
-            task["events"] = store.list_events(args.task_id)
+            if not args.compact:
+                task["forensic_archive"] = store.get_forensic_archive(args.task_id)
+            task["events"] = store.list_events(args.task_id, limit=args.event_limit)
             _render(task, json_output=args.json_output)
         elif args.command == "tasks" and args.tasks_command == "enqueue":
             with RuntimeLock(runtime.lock_file):
