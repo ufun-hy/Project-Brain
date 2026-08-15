@@ -199,7 +199,10 @@ summaries), exact-head review, and read-only recovery preview. Drafts use a
 task-bound confirmation gate in the canonical Core record; they cannot be claimed
 until the user has explicitly approved the returned plan and matching `plan_hash`.
 Review-driven `needs_changes` retries additionally require explicit exact-head
-redispatch authorization. A publication conflict preserves the canonical
+redispatch authorization. A published revision is bound to its current remote
+task-branch head. A pre-publication `verification_failed` revision is instead
+bound to its retained canonical-clean local candidate and is squashed back to
+one commit above the recorded base after correction. A publication conflict preserves the canonical
 published head and local forensic candidate and requires an explicit new
 revision from that canonical head. The new revision uses the same project and
 dedupe key with a greater revision, passes the normal draft confirmation gate,

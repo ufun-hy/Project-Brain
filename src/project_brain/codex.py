@@ -284,9 +284,17 @@ class CodexAdapter:
             )
         findings = self.store.active_review_findings(task["task_id"])
         if findings:
+            revision_boundary = (
+                "Core will squash the corrected unpublished candidate back to one "
+                "commit above the recorded base; do not push or publish it yourself."
+                if task.get("local_candidate_sha")
+                and not task.get("canonical_published_head_sha")
+                and not task.get("commit")
+                else "Preserve the prior published commit as an ancestor."
+            )
             prompt += (
                 "\n\nActive review findings for the current canonical commit. "
-                "Address every requirement and preserve the prior commit as an ancestor:\n"
+                f"Address every requirement. {revision_boundary}\n"
                 + json.dumps(
                     [
                         {

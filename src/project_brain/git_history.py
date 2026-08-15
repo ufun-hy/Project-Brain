@@ -15,6 +15,7 @@ class GitSnapshot:
     base_sha: str
     initial_head: str
     initial_status: str
+    squash_to_base: bool = False
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class GitHistoryNormalizer:
         *,
         expected_branch: str,
         base_sha: str,
+        squash_to_base: bool = False,
     ) -> GitSnapshot:
         path = Path(repo).resolve()
         branch = self._branch(path)
@@ -52,6 +54,7 @@ class GitHistoryNormalizer:
             base_sha=base_sha,
             initial_head=head,
             initial_status=status,
+            squash_to_base=squash_to_base,
         )
 
     def normalize(
@@ -82,10 +85,14 @@ class GitHistoryNormalizer:
             path, "rev-list", "--reverse", f"{snapshot.initial_head}..{head}"
         ).stdout.strip()
         source_commits = commits_output.splitlines() if commits_output else []
-        # Normalize only commits produced in this attempt. On a needs-changes
-        # attempt, the previous canonical commit remains an ancestor so a push
-        # never requires rewriting reviewed remote history.
-        git(path, "reset", "--soft", snapshot.initial_head)
+        # Published needs-changes revisions append to reviewed remote history.
+        # An unpublished verification-failed candidate may instead be replaced
+        # locally, preserving the one-commit task contract without rewriting a
+        # branch that another actor could have fetched.
+        reset_target = (
+            snapshot.base_sha if snapshot.squash_to_base else snapshot.initial_head
+        )
+        git(path, "reset", "--soft", reset_target)
         git(path, "add", "-A")
         if git(path, "diff", "--cached", "--quiet", check=False).returncode == 0:
             raise NoChangesError("Task history has no net file changes")

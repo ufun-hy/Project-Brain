@@ -374,30 +374,60 @@ class MCPAdapterService:
         def operation() -> dict[str, Any]:
             reject_forbidden_control_fields(value)
             request = TaskRedispatchInput.model_validate(value)
-            task = self.store.get_task(request.task_id)
-            project = self.store.task_execution_profile(task)
-            if not task.get("branch"):
-                raise StateConflictError("Task has no registered publication branch")
-            observed = GitHubAdapter().remote_head(
-                task=task,
-                project=project,
-                worktree=project["repo_path"],
-            )
-            if observed is None:
-                raise StateConflictError("Task publication branch does not exist remotely")
-            updated = self.store.authorize_redispatch(
-                request.task_id,
-                expected_remote_head_sha=request.expected_remote_head_sha,
-                observed_remote_head_sha=observed,
-                plan_sha256=request.redispatch_plan_sha256,
-                idempotency_key=request.idempotency_key,
-            )
+            with RuntimeLock(self.runtime.lock_file):
+                task = self.store.get_task(request.task_id)
+                project = self.store.task_execution_profile(task)
+                if not task.get("branch"):
+                    raise StateConflictError("Task has no registered publication branch")
+                published = task.get("canonical_published_head_sha") or task.get("commit")
+                retained_candidate = (
+                    task.get("local_candidate_sha") if not published else None
+                )
+                remote_head = GitHubAdapter().remote_head(
+                    task=task,
+                    project=project,
+                    worktree=project["repo_path"],
+                )
+                if retained_candidate:
+                    if remote_head is not None:
+                        raise StateConflictError(
+                            "Unpublished local candidate unexpectedly has a remote task branch"
+                        )
+                    worktree_state = WorktreeManager(
+                        self.store, self.runtime
+                    ).inspect_task_state(task, project)
+                    if not worktree_state.get("canonical_clean"):
+                        raise StateConflictError(
+                            "Retained local candidate worktree is not canonical and clean"
+                        )
+                    observed = worktree_state.get("observed_head")
+                    head_source = "local_candidate"
+                else:
+                    if remote_head is None:
+                        raise StateConflictError(
+                            "Task publication branch does not exist remotely"
+                        )
+                    observed = remote_head
+                    head_source = "remote"
+                if not isinstance(observed, str) or not observed:
+                    raise StateConflictError("Canonical redispatch head is unavailable")
+                updated = self.store.authorize_redispatch(
+                    request.task_id,
+                    expected_remote_head_sha=request.expected_remote_head_sha,
+                    observed_remote_head_sha=observed,
+                    plan_sha256=request.redispatch_plan_sha256,
+                    idempotency_key=request.idempotency_key,
+                )
             projects = {item["project_id"]: item for item in self.store.list_projects()}
             return {
                 "status": "redispatch_authorized",
                 "code": "ok",
                 "task": task_summary(updated, projects),
-                "observed_remote_head_sha": observed,
+                "observed_remote_head_sha": observed if head_source == "remote" else None,
+                "observed_local_candidate_sha": (
+                    observed if head_source == "local_candidate" else None
+                ),
+                "redispatch_head_source": head_source,
                 "next_action": "Call project_brain_queue_dispatch_next to start the explicitly authorized worker.",
             }
 
@@ -463,6 +493,26 @@ class MCPAdapterService:
                 )
             projects = {item["project_id"]: item for item in self.store.list_projects()}
             review = applied["review"]
+            retained_local_candidate = bool(
+                request.verdict == "needs_changes"
+                and applied["task"].get("local_candidate_sha")
+                and not applied["task"].get("canonical_published_head_sha")
+                and not applied["task"].get("commit")
+            )
+            if retained_local_candidate:
+                next_action = (
+                    "Call project_brain_tasks_redispatch with the exact retained "
+                    "local candidate head before dispatch."
+                )
+            elif request.verdict == "needs_changes":
+                next_action = (
+                    "Call project_brain_tasks_redispatch with the exact current "
+                    "remote head before dispatch."
+                )
+            else:
+                next_action = (
+                    "Await explicit user merge authorization; Project Brain will not merge."
+                )
             return {
                 "status": applied["task"]["status"],
                 "code": "ok",
@@ -474,11 +524,7 @@ class MCPAdapterService:
                     "finding_count": len(review.get("findings", [])),
                     "created_at": review["created_at"],
                 },
-                "next_action": (
-                    "Call project_brain_tasks_redispatch with the exact current remote head before dispatch."
-                    if request.verdict == "needs_changes"
-                    else "Await explicit user merge authorization; Project Brain will not merge."
-                ),
+                "next_action": next_action,
             }
 
         return _guard(operation)  # type: ignore[return-value]
@@ -691,7 +737,8 @@ def register_tools(mcp: FastMCP, service: MCPAdapterService) -> None:
         name="project_brain_tasks_redispatch",
         description=(
             "Explicitly authorize one needs_changes revision at the exact current "
-            "remote task-branch head. This does not dispatch or execute the task."
+            "remote task-branch head or retained verification-failed local candidate. "
+            "This does not dispatch or execute the task."
         ),
         annotations=CREATE_WRITE,
         structured_output=True,

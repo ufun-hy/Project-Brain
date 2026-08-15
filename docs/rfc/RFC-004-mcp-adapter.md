@@ -120,8 +120,11 @@ the old task's canonical publication base, and pass the normal confirmation
 gate before the old task is marked `superseded`. The old task, conflict, and
 forensic records remain immutable history. Review-driven `needs_changes`
 remains on the same canonical task, branch, and Draft PR only after an explicit
-`tasks_redispatch` authorization bound to the exact current remote head. It is
-not claimable by default.
+`tasks_redispatch` authorization bound to the exact current remote head. Before
+first publication, a `verification_failed` task instead binds review and
+redispatch to its retained local candidate only when the registered worktree is
+canonical and clean; Core squashes the corrected result back to one commit over
+the recorded base. Neither path is claimable by default.
 
 Review accepts only `task_id`, exact `head_sha`, `approved|needs_changes`, and
 bounded structured findings. It delegates the verdict, finding inserts, task

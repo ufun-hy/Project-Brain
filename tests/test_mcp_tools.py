@@ -4,10 +4,12 @@ import json
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from project_brain.models import TaskStatus
 from project_brain.mcp.tools import MCPAdapterService
 from project_brain.store import TaskStore
+from project_brain.worktrees import WorktreeManager
 
 from tests.helpers import CoreFixture, create_remote_clone, git
 
@@ -798,6 +800,115 @@ class MCPToolTests(unittest.TestCase):
             ].count("explicit_redispatch_authorized"),
             1,
         )
+
+    def test_verification_failed_local_candidate_redispatch_is_exact_and_clean(self) -> None:
+        repo, remote = create_remote_clone(self.fixture.root, "local-redispatch-mcp")
+        project = self.fixture.add_project(
+            project_id="local-redispatch-project",
+            repo_path=str(repo),
+            remote_url=str(remote),
+        )
+        task_id = "local-redispatch-mcp"
+        task = self.fixture.add_task(task_id, project_id=project["project_id"])
+        task = self.fixture.store.claim_next()
+        record = WorktreeManager(self.fixture.store, self.fixture.runtime).create(
+            task, project
+        )
+        worktree = Path(record["path"])
+        (worktree / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+        git(worktree, "add", "candidate.txt")
+        git(worktree, "commit", "-m", "candidate")
+        candidate = git(worktree, "rev-parse", "HEAD").stdout.strip()
+        self.fixture.store.record_candidate(
+            task_id, candidate, publication_base_sha=record["base_sha"]
+        )
+        self.fixture.store.set_attempt_phase(task_id, "verification")
+        self.fixture.store.transition(task_id, TaskStatus.VERIFICATION_FAILED)
+
+        reviewed = self.service.tasks_review(
+            {
+                "task_id": task_id,
+                "head_sha": candidate,
+                "verdict": "needs_changes",
+                "findings": [
+                    {
+                        "severity": "major",
+                        "evidence": "The verification command failed.",
+                        "requirement": "Repair the exact retained candidate.",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(reviewed["task"]["review_head_sha"], candidate)
+        value = {
+            "task_id": task_id,
+            "expected_remote_head_sha": candidate,
+            "redispatch_plan_sha256": "2" * 64,
+            "idempotency_key": "local-redispatch-mcp-revision-2",
+        }
+        first = self.service.tasks_redispatch(value)
+        second = self.service.tasks_redispatch(value)
+        self.assertEqual(first["status"], "redispatch_authorized")
+        self.assertEqual(second["status"], "redispatch_authorized")
+        self.assertEqual(first["redispatch_head_source"], "local_candidate")
+        self.assertEqual(first["observed_local_candidate_sha"], candidate)
+        self.assertIsNone(first["observed_remote_head_sha"])
+        self.assertEqual(
+            self.fixture.store.get_task(task_id)["status"],
+            TaskStatus.RETRY_PENDING.value,
+        )
+
+    def test_local_candidate_redispatch_rejects_dirty_worktree(self) -> None:
+        repo, remote = create_remote_clone(self.fixture.root, "dirty-local-redispatch")
+        project = self.fixture.add_project(
+            project_id="dirty-local-project",
+            repo_path=str(repo),
+            remote_url=str(remote),
+        )
+        task_id = "dirty-local-redispatch"
+        task = self.fixture.add_task(task_id, project_id=project["project_id"])
+        task = self.fixture.store.claim_next()
+        record = WorktreeManager(self.fixture.store, self.fixture.runtime).create(
+            task, project
+        )
+        worktree = Path(record["path"])
+        (worktree / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+        git(worktree, "add", "candidate.txt")
+        git(worktree, "commit", "-m", "candidate")
+        candidate = git(worktree, "rev-parse", "HEAD").stdout.strip()
+        self.fixture.store.record_candidate(
+            task_id, candidate, publication_base_sha=record["base_sha"]
+        )
+        self.fixture.store.set_attempt_phase(task_id, "verification")
+        self.fixture.store.transition(task_id, TaskStatus.VERIFICATION_FAILED)
+        self.fixture.store.apply_review_verdict(
+            task_id,
+            verdict="needs_changes",
+            head_sha=candidate,
+            findings=[
+                {
+                    "severity": "major",
+                    "evidence": "Verification failed.",
+                    "requirement": "Repair it.",
+                }
+            ],
+        )
+        (worktree / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        before_events = self.fixture.store.list_events(task_id)
+        result = self.service.tasks_redispatch(
+            {
+                "task_id": task_id,
+                "expected_remote_head_sha": candidate,
+                "redispatch_plan_sha256": "3" * 64,
+                "idempotency_key": "dirty-local-redispatch-revision-2",
+            }
+        )
+        self.assertEqual(result["code"], "state_conflict")
+        self.assertEqual(
+            self.fixture.store.get_task(task_id)["status"],
+            TaskStatus.NEEDS_CHANGES.value,
+        )
+        self.assertEqual(self.fixture.store.list_events(task_id), before_events)
 
     def test_recovery_preview_is_read_only_and_exposes_no_resolution(self) -> None:
         self.fixture.add_task("preview-mcp")

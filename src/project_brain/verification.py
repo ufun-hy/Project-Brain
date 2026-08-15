@@ -124,6 +124,7 @@ class VerificationRunner:
             )
 
         results: list[dict[str, Any]] = []
+        execution_cache: dict[str, tuple[str, int | None, str]] = {}
         if task.get("source_type") == ACCEPTANCE_SOURCE_TYPE:
             result = self._verify_acceptance_document(task, Path(worktree).resolve())
             result["verification_set_id"] = verification_set["verification_set_id"]
@@ -132,12 +133,27 @@ class VerificationRunner:
             )
             results.append(result)
         for index, spec in enumerate(specs, start=1):
+            command = spec.get("command")
+            cache_key = (
+                str(spec["verification_id"])
+                if spec.get("evidence_type") == "trusted_project_command"
+                and spec.get("verification_id")
+                and self._valid_command(command)
+                else None
+            )
+            execution_reused = bool(cache_key and cache_key in execution_cache)
+            execution = execution_cache.get(cache_key) if cache_key else None
+            if cache_key and execution is None:
+                execution = self._execute_command(command, Path(worktree).resolve())
+                execution_cache[cache_key] = execution
             result = self._run_one(
                 task["task_id"],
                 spec,
                 Path(worktree).resolve(),
                 verification_set=verification_set,
                 artifact_index=index,
+                execution=execution,
+                execution_reused=execution_reused,
             )
             result["verification_set_id"] = verification_set["verification_set_id"]
             self.store.record_verification(
@@ -218,12 +234,12 @@ class VerificationRunner:
         *,
         verification_set: dict[str, Any],
         artifact_index: int,
+        execution: tuple[str, int | None, str] | None = None,
+        execution_reused: bool = False,
     ) -> dict[str, Any]:
         command = spec.get("command")
         created_at = utc_now()
-        if not isinstance(command, list) or not command or not all(
-            isinstance(item, str) and item for item in command
-        ):
+        if not self._valid_command(command):
             return {
                 **spec,
                 "status": "failed" if spec.get("evidence_type") == "trusted_project_command" else "not_verified",
@@ -240,31 +256,9 @@ class VerificationRunner:
                 ) if spec.get("evidence_type") == "trusted_project_command" else None,
                 "created_at": created_at,
             }
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=str(worktree),
-                text=True,
-                capture_output=True,
-                timeout=900,
-                env={
-                    **os.environ,
-                    "GIT_CONFIG_GLOBAL": os.devnull,
-                    "GIT_CONFIG_SYSTEM": os.devnull,
-                    "GIT_TERMINAL_PROMPT": "0",
-                },
-            )
-            status = "passed" if completed.returncode == 0 else "failed"
-            exit_code: int | None = completed.returncode
-            output = redact_text((completed.stdout + "\n" + completed.stderr).strip())
-        except FileNotFoundError:
-            status = "failed"
-            exit_code = None
-            output = redact_text(f"Command not found: {command[0]}")
-        except subprocess.TimeoutExpired:
-            status = "failed"
-            exit_code = None
-            output = "Verification timed out after 900 seconds"
+        status, exit_code, output = execution or self._execute_command(
+            command, worktree
+        )
         try:
             artifact_dir = self.runtime.verification_set_dir(
                 task_id,
@@ -287,6 +281,7 @@ class VerificationRunner:
         os.chmod(artifact, 0o600)
         summary = (
             f"Command {status}; exit_code={exit_code}; artifact={artifact.name}"
+            + ("; execution_reused=true" if execution_reused else "")
         )
         return {
             **spec,
@@ -297,6 +292,42 @@ class VerificationRunner:
             "artifact_path": str(artifact),
             "created_at": created_at,
         }
+
+    @staticmethod
+    def _valid_command(command: Any) -> bool:
+        return (
+            isinstance(command, list)
+            and bool(command)
+            and all(isinstance(item, str) and item for item in command)
+        )
+
+    @staticmethod
+    def _execute_command(
+        command: list[str], worktree: Path
+    ) -> tuple[str, int | None, str]:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(worktree),
+                text=True,
+                capture_output=True,
+                timeout=900,
+                env={
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_SYSTEM": os.devnull,
+                    "GIT_TERMINAL_PROMPT": "0",
+                },
+            )
+            return (
+                "passed" if completed.returncode == 0 else "failed",
+                completed.returncode,
+                redact_text((completed.stdout + "\n" + completed.stderr).strip()),
+            )
+        except FileNotFoundError:
+            return "failed", None, redact_text(f"Command not found: {command[0]}")
+        except subprocess.TimeoutExpired:
+            return "failed", None, "Verification timed out after 900 seconds"
 
     def _write_bounded_artifact(
         self,

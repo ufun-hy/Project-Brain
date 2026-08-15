@@ -90,6 +90,40 @@ class GitHistoryTests(unittest.TestCase):
             0,
         )
 
+    def test_unpublished_review_revision_squashes_back_to_base(self) -> None:
+        first_snapshot = self.capture()
+        (self.repo / "result.txt").write_text("first\n", encoding="utf-8")
+        first = self.normalizer.normalize(
+            self.repo, first_snapshot, message="canonical one"
+        )
+        second_snapshot = self.normalizer.capture(
+            self.repo,
+            expected_branch="brain/task",
+            base_sha=self.base,
+            squash_to_base=True,
+        )
+        (self.repo / "result.txt").write_text("corrected\n", encoding="utf-8")
+        second = self.normalizer.normalize(
+            self.repo, second_snapshot, message="canonical corrected"
+        )
+        self.assertNotEqual(first.commit, second.commit)
+        self.assertEqual(
+            git(self.repo, "rev-list", "--count", f"{self.base}..HEAD").stdout.strip(),
+            "1",
+        )
+        self.assertNotEqual(
+            git(
+                self.repo,
+                "merge-base",
+                "--is-ancestor",
+                first.commit,
+                second.commit,
+                check=False,
+            ).returncode,
+            0,
+        )
+        self.assert_canonical(second, "corrected\n")
+
     def test_normalizes_ordinary_cherry_pick(self) -> None:
         git(self.repo, "checkout", "-b", "source", self.base)
         (self.repo / "result.txt").write_text("picked\n", encoding="utf-8")

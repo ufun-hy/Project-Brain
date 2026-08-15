@@ -32,12 +32,14 @@ SAFE_EVENT_PAYLOAD_FIELDS = {
     "by_task_id",
     "candidate_sha",
     "canonical_head_sha",
+    "expected_head_sha",
     "expected_remote_head_sha",
     "category",
     "dispatch_status",
     "dispatch_plan_sha256",
     "head_sha",
     "observed_remote_head_sha",
+    "head_source",
     "phase",
     "reason",
     "resolution",
@@ -57,6 +59,7 @@ SAFE_EVENT_PAYLOAD_FIELDS = {
     "observed_branch",
     "expected_head",
     "observed_head",
+    "observed_head_sha",
     "dirty",
     "conflict",
     "changed_path_count",
@@ -99,11 +102,22 @@ def task_summary(task: dict[str, Any], projects: dict[str, dict[str, Any]]) -> d
             value.get("canonical_published_head_sha"), limit=128
         ),
         "local_candidate_sha": bounded_text(value.get("local_candidate_sha"), limit=128),
+        "review_head_sha": bounded_text(value.get("review_head_sha"), limit=128),
         "published_head_sha": bounded_text(value.get("published_head_sha"), limit=128),
         "publication_conflict": value.get("publication_conflict"),
         "redispatch": {
             "required": value.get("status") == "needs_changes",
             "authorized": value.get("redispatch_authorized_at") is not None,
+            "head_source": (
+                "local_candidate"
+                if value.get("local_candidate_sha")
+                and not value.get("canonical_published_head_sha")
+                and not value.get("commit")
+                else "remote"
+            ),
+            "expected_head_sha": bounded_text(
+                value.get("redispatch_expected_remote_head_sha"), limit=128
+            ),
             "expected_remote_head_sha": bounded_text(
                 value.get("redispatch_expected_remote_head_sha"), limit=128
             ),

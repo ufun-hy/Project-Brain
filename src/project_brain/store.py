@@ -1831,14 +1831,18 @@ class TaskStore:
                     "Only needs_changes tasks can be explicitly redispatched"
                 )
             published = row["canonical_published_head_sha"] or row["commit_sha"]
-            if not published:
+            retained_candidate = row["local_candidate_sha"] if not published else None
+            redispatch_head = published or retained_candidate
+            if not redispatch_head:
                 raise StateConflictError(
-                    "Cannot redispatch a task without a canonical published head"
+                    "Cannot redispatch a task without a canonical published head "
+                    "or retained local candidate"
                 )
-            if published != expected_remote_head_sha:
+            if redispatch_head != expected_remote_head_sha:
                 raise StateConflictError(
-                    "Redispatch head is stale; create a new revision from the current remote head"
+                    "Redispatch head is stale; review the current canonical task head"
                 )
+            head_source = "remote" if published else "local_candidate"
             now = utc_now()
             connection.execute(
                 "UPDATE tasks SET status = ?, attempt_phase = ?, "
@@ -1864,10 +1868,19 @@ class TaskStore:
                 TaskStatus.NEEDS_CHANGES.value,
                 TaskStatus.RETRY_PENDING.value,
                 {
-                    "expected_remote_head_sha": expected_remote_head_sha,
-                    "observed_remote_head_sha": observed_remote_head_sha,
+                    "expected_head_sha": expected_remote_head_sha,
+                    "observed_head_sha": observed_remote_head_sha,
+                    "head_source": head_source,
                     "redispatch_plan_sha256": plan_sha256,
                     "idempotency_key": idempotency_key,
+                    **(
+                        {
+                            "expected_remote_head_sha": expected_remote_head_sha,
+                            "observed_remote_head_sha": observed_remote_head_sha,
+                        }
+                        if head_source == "remote"
+                        else {}
+                    ),
                 },
             )
         return self.get_task(task_id)
@@ -2636,11 +2649,18 @@ class TaskStore:
                 raise StateTransitionError(
                     "verification_failed task requires a needs_changes verdict"
                 )
-            canonical_head = task["commit_sha"] or task["head_sha"]
-            canonical_head = task["canonical_published_head_sha"] or canonical_head
+            if current is TaskStatus.VERIFICATION_FAILED:
+                canonical_head = task["local_candidate_sha"]
+                if not canonical_head:
+                    raise StateConflictError(
+                        "verification_failed task has no retained local candidate"
+                    )
+            else:
+                canonical_head = task["commit_sha"] or task["head_sha"]
+                canonical_head = task["canonical_published_head_sha"] or canonical_head
             if not canonical_head or head_sha != canonical_head:
                 raise InvalidTaskError(
-                    "review head_sha must exactly match the task canonical commit"
+                    "review head_sha must exactly match the task review head"
                 )
             if verdict == "approved":
                 if task["local_candidate_sha"]:
@@ -2779,7 +2799,12 @@ class TaskStore:
 
     def active_review_findings(self, task_id: str) -> list[dict[str, Any]]:
         task = self.get_task(task_id)
-        head_sha = task.get("commit") or task.get("head_sha")
+        head_sha = (
+            task.get("local_candidate_sha")
+            or task.get("canonical_published_head_sha")
+            or task.get("commit")
+            or task.get("head_sha")
+        )
         if not head_sha:
             return []
         with self.connect() as connection:

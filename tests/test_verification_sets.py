@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -143,6 +144,50 @@ class VerificationSetTests(unittest.TestCase):
             verification_set=verification_set,
         )
         self.assertEqual(results[0]["status"], "failed")
+
+    def test_same_trusted_verification_id_executes_once_for_multiple_criteria(self) -> None:
+        self.fixture.add_task(
+            "deduplicated-check",
+            task_type="write_files",
+            acceptance_criteria=[
+                {"id": "AC-01", "text": "First", "verification_id": "stable-check"},
+                {"id": "AC-02", "text": "Second", "verification_id": "stable-check"},
+            ],
+        )
+        task = self.fixture.store.claim_next()
+        record = WorktreeManager(self.fixture.store, self.fixture.runtime).create(
+            task, self.project
+        )
+        task = self.fixture.store.set_task_fields(
+            "deduplicated-check", commit=record["base_sha"], head_sha=record["base_sha"]
+        )
+        task = self.fixture.store.set_attempt_phase(
+            "deduplicated-check", AttemptPhase.VERIFICATION
+        )
+        verification_set = self.fixture.store.create_verification_set(
+            "deduplicated-check", canonical_head_sha=record["base_sha"]
+        )
+        completed = subprocess.CompletedProcess(
+            args=[sys.executable], returncode=0, stdout="shared output\n", stderr=""
+        )
+        with patch(
+            "project_brain.verification.subprocess.run", return_value=completed
+        ) as execute:
+            results = VerificationRunner(self.fixture.store, self.fixture.runtime).run(
+                task=task,
+                project=self.project,
+                worktree=record["path"],
+                verification_set=verification_set,
+            )
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual([item["status"] for item in results], ["passed", "passed"])
+        self.assertNotEqual(results[0]["artifact_path"], results[1]["artifact_path"])
+        self.assertNotIn("execution_reused=true", results[0]["evidence_summary"])
+        self.assertIn("execution_reused=true", results[1]["evidence_summary"])
+        self.assertEqual(
+            Path(results[0]["artifact_path"]).read_text(),
+            Path(results[1]["artifact_path"]).read_text(),
+        )
 
     def test_running_or_empty_verification_set_cannot_be_publication_evidence(self) -> None:
         self.fixture.add_task("incomplete-set", task_type="write_files")

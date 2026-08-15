@@ -5,9 +5,11 @@ import sqlite3
 import unittest
 from pathlib import Path
 
+from project_brain.codex import CodexAdapter
 from project_brain.engine import TaskEngine
 from project_brain.errors import InvalidTaskError, StateTransitionError
 from project_brain.models import AttemptPhase, TaskStatus
+from project_brain.worktrees import WorktreeManager
 
 from tests.helpers import CoreFixture, create_remote_clone, git
 
@@ -162,8 +164,13 @@ class ReviewLifecycleTests(unittest.TestCase):
     def test_verification_failed_accepts_only_needs_changes(self) -> None:
         self.fixture.add_task("verification-review")
         self.fixture.store.claim_next()
+        base = "b" * 40
+        candidate = "c" * 40
         self.fixture.store.set_task_fields(
-            "verification-review", commit="c" * 40, head_sha="c" * 40
+            "verification-review",
+            base_sha=base,
+            head_sha=base,
+            local_candidate_sha=candidate,
         )
         self.fixture.store.transition(
             "verification-review", TaskStatus.VERIFICATION_FAILED
@@ -172,13 +179,27 @@ class ReviewLifecycleTests(unittest.TestCase):
             self.fixture.store.apply_review_verdict(
                 "verification-review",
                 verdict="approved",
-                head_sha="c" * 40,
+                head_sha=candidate,
                 findings=[],
             )
+        with self.assertRaises(InvalidTaskError):
+            self.fixture.store.apply_review_verdict(
+                "verification-review",
+                verdict="needs_changes",
+                head_sha=base,
+                findings=[
+                    {
+                        "severity": "major",
+                        "evidence": "Verification command failed",
+                        "requirement": "Repair the failed verification",
+                    }
+                ],
+            )
+        self.assertEqual(self.fixture.store.list_reviews("verification-review"), [])
         applied = self.fixture.store.apply_review_verdict(
             "verification-review",
             verdict="needs_changes",
-            head_sha="c" * 40,
+            head_sha=candidate,
             findings=[
                 {
                     "severity": "major",
@@ -188,6 +209,107 @@ class ReviewLifecycleTests(unittest.TestCase):
             ],
         )
         self.assertEqual(applied["task"]["status"], TaskStatus.NEEDS_CHANGES.value)
+        self.assertEqual(applied["review"]["head_sha"], candidate)
+        self.assertEqual(
+            self.fixture.store.active_review_findings("verification-review")[0][
+                "requirement"
+            ],
+            "Repair the failed verification",
+        )
+        redispatched = self.fixture.store.authorize_redispatch(
+            "verification-review",
+            expected_remote_head_sha=candidate,
+            observed_remote_head_sha=candidate,
+            plan_sha256="e" * 64,
+            idempotency_key="verification-review-revision-2",
+        )
+        self.assertEqual(redispatched["status"], TaskStatus.RETRY_PENDING.value)
+        self.assertEqual(
+            self.fixture.store.list_events("verification-review")[-1]["payload"][
+                "head_source"
+            ],
+            "local_candidate",
+        )
+
+    def test_unpublished_candidate_revision_is_squashed_before_review(self) -> None:
+        task_id = "local-candidate-review"
+        self.fixture.add_task(
+            task_id,
+            task_type="write_files",
+            payload={
+                "files": [{"path": "result.txt", "content": "corrected\n"}],
+                "commit_message": "canonical",
+            },
+        )
+        task = self.fixture.store.claim_next()
+        manager = WorktreeManager(self.fixture.store, self.fixture.runtime)
+        record = manager.create(task, self.fixture.store.get_project("project-one"))
+        worktree = Path(record["path"])
+        (worktree / "result.txt").write_text("first candidate\n", encoding="utf-8")
+        git(worktree, "add", "result.txt")
+        git(worktree, "commit", "-m", "first candidate")
+        first_candidate = git(worktree, "rev-parse", "HEAD").stdout.strip()
+        self.fixture.store.record_candidate(
+            task_id, first_candidate, publication_base_sha=record["base_sha"]
+        )
+        self.fixture.store.set_attempt_phase(task_id, AttemptPhase.VERIFICATION)
+        self.fixture.store.transition(task_id, TaskStatus.VERIFICATION_FAILED)
+        self.fixture.store.finish_attempt(task_id, status="verification_failed")
+        self.fixture.store.apply_review_verdict(
+            task_id,
+            verdict="needs_changes",
+            head_sha=first_candidate,
+            findings=[
+                {
+                    "severity": "major",
+                    "evidence": "The first candidate is incomplete.",
+                    "requirement": "Write the corrected prompt evidence.",
+                }
+            ],
+        )
+        reviewed_task = self.fixture.store.get_task(task_id)
+        reviewed_task["payload"] = {
+            "prompt": "Repair the retained candidate",
+            "commit_message": "canonical",
+        }
+        prompt = CodexAdapter(self.fixture.store)._execution_prompt(reviewed_task)
+        self.assertIn("Write the corrected prompt evidence", prompt)
+        self.assertIn("squash the corrected unpublished candidate", prompt)
+        self.fixture.store.authorize_redispatch(
+            task_id,
+            expected_remote_head_sha=first_candidate,
+            observed_remote_head_sha=first_candidate,
+            plan_sha256="f" * 64,
+            idempotency_key="local-candidate-review-revision-2",
+        )
+
+        result = TaskEngine(self.fixture.store, self.fixture.runtime).apply_once()
+        corrected = result["task"]["commit"]
+        self.assertEqual(result["status"], TaskStatus.AWAITING_REVIEW.value)
+        self.assertNotEqual(corrected, first_candidate)
+        self.assertEqual(
+            git(
+                worktree,
+                "rev-list",
+                "--count",
+                f"{record['base_sha']}..{corrected}",
+            ).stdout.strip(),
+            "1",
+        )
+        self.assertNotEqual(
+            git(
+                worktree,
+                "merge-base",
+                "--is-ancestor",
+                first_candidate,
+                corrected,
+                check=False,
+            ).returncode,
+            0,
+        )
+        self.assertEqual(
+            (worktree / "result.txt").read_text(encoding="utf-8"), "corrected\n"
+        )
 
     def test_approval_rejects_missing_or_expired_criterion_evidence(self) -> None:
         self.fixture.add_task(

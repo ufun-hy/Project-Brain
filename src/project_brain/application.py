@@ -61,11 +61,28 @@ def task_view(
             "Publication conflict is preserved for forensics; create a new revision "
             "from the latest remote head. Do not resume or reuse this task."
         )
+    elif (
+        task["status"] == TaskStatus.NEEDS_CHANGES.value
+        and task.get("local_candidate_sha")
+        and not task.get("canonical_published_head_sha")
+        and not task.get("commit")
+    ):
+        next_action = (
+            "Explicitly authorize redispatch at the exact retained local candidate; "
+            "Core will verify its canonical clean worktree before retry."
+        )
+    review_head_sha = (
+        task.get("canonical_published_head_sha")
+        or task.get("commit")
+        or task.get("local_candidate_sha")
+        or task.get("head_sha")
+    )
     return {
         **safe_task,
         "project": projects.get(task["project_id"], {}).get("name", task["project_id"]),
         "elapsed_seconds": elapsed,
         "next_action": next_action,
+        "review_head_sha": review_head_sha,
         "plan_hash": task.get("dispatch_plan_sha256"),
         "dispatch_confirmation": {
             "required": bool(task.get("dispatch_confirmation_required")),

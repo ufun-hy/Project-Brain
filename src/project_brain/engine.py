@@ -85,6 +85,11 @@ class TaskEngine:
                     worktree,
                     expected_branch=worktree_record["branch"],
                     base_sha=worktree_record["base_sha"],
+                    squash_to_base=bool(
+                        task.get("local_candidate_sha")
+                        and not task.get("canonical_published_head_sha")
+                        and not task.get("commit")
+                    ),
                 )
                 if self._workflow_kind(task) == "analyze":
                     analysis = self.codex.execute(
