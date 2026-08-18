@@ -1,93 +1,58 @@
 # Current State
 
-Last updated: 2026-07-27
+Last updated: 2026-08-18
 
-## Current stage
+## Current direction
 
-PR #17 / Build 7 was merged at exact base
-`main@7259acfa1c38e30f3f8c2126eb7c7c3f8c271e3f`. RFC-008 local task intake is
-implemented on the independent `codex/project-brain-local-task-intake-v1`
-branch for Draft PR #18. Build 9 is immutable internal history. Project Brain
-0.8.0 build 10 supports a no-secret unsigned Personal Build for the owner's
-internal use and retains a fail-closed Developer ID signing/notarization
-pipeline for future public distribution without changing local task semantics.
+Project Brain is being simplified back to a thin personal bridge between ChatGPT and local Codex execution.
 
-## Local task intake
+The target flow is:
 
-- Menu bar and Task Center expose review-first New Task actions; the empty
-  state and one-time guided first run lead to the same sheet.
-- Analyze/Review and Implement change use one schema-v1, source-neutral stdin
-  JSON contract. Swift cannot supply command, argv, cwd, environment, SQL,
-  paths, executables, branches, worktrees, credentials, or sandbox policy.
-- SQLite schema v10 persists canonical local-task requests, exact request and
-  plan hashes, execution
-  snapshots, delivery, task type, and schema-v1 results while preserving old
-  and external-source tasks.
-- The transient `local-v2:` token is returned only to the App; SQLite stores its
-  SHA-256. Confirmation contains only token and expected plan hash. RuntimeLock,
-  remote Base, project revision/hash/path, delivery policy, readiness, expiry,
-  transaction, and dedupe checks fail closed at confirmation.
-- Analyze runs in a read-only isolated worktree, accepts no changes as normal
-  success, records `completed`, and cannot commit, push, or create a PR.
-- Implement retains the canonical commit, verification seal, bounded project
-  push/Draft PR policy, review, retry, recovery, and worktree safety model.
-- Task Center displays authoritative source/type/status/phase, execution
-  snapshot, results, files, verification, publication, errors, recovery, and
-  events. Menu counts update from the same Core observation stream.
+`ChatGPT -> MCP -> Project Brain -> isolated worktree -> Codex CLI -> checks -> ChatGPT review`
 
-## Packaging and verification
+ChatGPT handles discussion, analysis, decisions, task framing, and final review. Project Brain only has to locate the registered project, create an isolated worktree, run Codex, run the required checks, persist minimal task state, and return the result.
 
-- App/Core are 0.8.0 with CLI contract 1.2.0, request/confirmation/result schema
-  1, and database schema 10.
-- English and Simplified Chinese strings are packaged by SwiftPM and Xcode.
-- Build 9 remains immutable. Pull-request CI creates and uploads the distinct
-  `Project-Brain-Build10-Personal-Unsigned-arm64` package for regression and
-  personal internal use. Its schema-v5 manifest marks it unsigned,
-  `personal_internal_only`, and non-distributable.
-- A manual exact-SHA `macOS Personal Build` workflow produces the DMG, App ZIP,
-  manifest, and checksums without secrets. Per-artifact Open Anyway approval is
-  required; Gatekeeper is never disabled globally.
-- The manually triggered, exact-SHA `macOS Developer ID release` workflow
-  requires protected Apple credentials. It signs the helper, nested code, and
-  App from the inside out with Hardened Runtime and secure timestamps,
-  notarizes and staples the App and DMG, and uploads only
-  `Project-Brain-Build10-arm64`.
-- GitHub requires a manually dispatched workflow to exist on the default branch.
-  PR workflows never receive the release credentials; after review and merge,
-  the default-branch workflow can still check out the exact reviewed SHA.
-- Final-DMG CI mounts and installs the App, invokes the App/Core typed adapter in
-  an isolated HOME, migrates a preserved schema-v9 database, creates and completes
-  the reported exact-Chinese-goal Analyze task, restarts the App, records timing
-  budgets, and proves the main checkout is
-  unchanged. Implement worktree behavior is covered in Core integration tests;
-  no unauthorized real GitHub PR is created.
-- Local Python and Swift compilation must pass before push. SwiftPM XCTest,
-  Xcode, real launchd, final DMG, and artifact hashes are authoritative on the
-  exact-head macOS GitHub Actions run.
+## Product boundary
 
-## Preserved guarantees
+The simplified Core should initially support only:
 
-- The registered main checkout is never switched, reset, cleaned, or used as
-  an agent working directory.
-- Existing SQLite, projects, tasks, Keychain, Tunnel state, and user untracked
-  files are not cleared, migrated outside schema rules, or altered for tests.
-- Gmail legacy remains frozen and has zero tracked diff from the exact base.
-- Core never merges automatically. Draft PR and review boundaries remain.
+- registered projects;
+- MCP ingress for ChatGPT;
+- isolated Git worktrees;
+- Codex CLI execution;
+- simple persisted task state such as `queued`, `running`, `completed`, and `failed`;
+- changed files / diff, Codex summary, test output, and blockers;
+- safe process/runtime handling needed to avoid duplicate or destructive execution.
 
-## External acceptance
+Normal tasks do not need Analyze tasks, draft/confirm flows, plan hashes, Project Brain review verdicts, automatic retries, canonical publication commits, push, Draft PR creation, merge handling, or a macOS App.
 
-Secure MCP Tunnel, real credentials, ChatGPT connector discovery and trusted
-control-plane attribution remain **Pending**. Local task and artifact tests do
-not satisfy or replace external ChatGPT acceptance. Developer ID signing, Apple
-notarization/stapling, and Fresh-Mac public-distribution acceptance are
-**Deferred — personal use** and do not block PR #18. They return to Pending if
-public distribution resumes.
+## Failure behavior
 
-## Read next
+Codex completes the requested implementation and runs the required checks. If a check or execution fails, the task stops. The code changes and failure evidence remain available for ChatGPT review. A later repair is a new explicit user-approved execution, not an automatic retry lifecycle.
 
-- `docs/rfc/RFC-008-local-task-intake-and-guided-first-run-v1.md`
-- `docs/product-shell.md`
-- `docs/product-shell-build10-personal-build.md`
-- `docs/product-shell-build10-signing-notarization.md`
-- `docs/product-shell-build9-plan-confirm-verification.md`
-- `docs/troubleshooting-recovery.md`
+## Git behavior
+
+Project Brain works only in its managed task worktree. It does not modify the user's main checkout. Normal task completion does not automatically commit, push, open a pull request, or merge. The user decides when a larger body of work is ready to commit or integrate.
+
+## Runtime and history
+
+The existing Project Brain runtime, database, Build history, old task records, review/publication state, and prior recovery attempts have no migration requirement for the simplified Core. A fresh runtime/database may start from a new minimal schema.
+
+The old Gmail Bridge is useful as a simplicity reference but is not the desired transport. The early MCP/Core code around `12251944c3dfa66ae49032c8710c4a9d142f59a9` is a useful source for MCP, worktree, Codex subprocess, and SQLite pieces, but its verification/publication/review state machine should not be restored wholesale.
+
+## Deferred
+
+- macOS Product Shell and Task Center;
+- local New Task UI;
+- onboarding wizard and Tunnel installer UI;
+- Developer ID signing, notarization, Sparkle, and public distribution;
+- Analyze -> Implement workflow;
+- confirmation token / plan hash flow;
+- automatic Draft PR / publication lifecycle;
+- exact-head Project Brain review / `needs_changes` / redispatch;
+- automatic retry;
+- `team-mode` integration for Codex.
+
+## Next step
+
+Build a clean Simplified Core from the smallest reusable early components, with a fresh runtime and a minimal end-to-end acceptance target: one ChatGPT request starts Codex in the correct isolated worktree and returns code changes plus test results for ChatGPT review.
