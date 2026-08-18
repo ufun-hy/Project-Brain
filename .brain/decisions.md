@@ -2,284 +2,64 @@
 
 ## D-001: Project state belongs to the project
 
-The durable context must live with the project rather than inside ChatGPT, Codex, Notion, Obsidian, or any single tool.
+Durable project context should live with the project rather than depend on one ChatGPT conversation, one Codex session, or one machine.
 
-## D-002: GitHub is a synchronization carrier
+## D-002: ChatGPT plans and reviews; Codex executes
 
-GitHub is currently used to version and synchronize Project Brain files across computers. It is not Project Brain itself.
+ChatGPT owns clarification, product and architecture decisions, task framing, and final review. Codex is used for repository-level implementation and required checks after the work is already decided.
 
-## D-003: Separate planning from execution
+## D-003: Project Brain is a thin execution bridge
 
-ChatGPT is used primarily for planning, clarification, and reasoning. Codex is used only when code execution or repository-level implementation is needed.
+The normal product flow is:
 
-## D-004: Use a local Bridge for execution (legacy)
+`ChatGPT -> MCP -> Project Brain -> isolated worktree -> Codex CLI -> checks -> ChatGPT review`
 
-Because the ChatGPT GitHub connection is read-only, a local Bridge receives structured tasks through Gmail and performs controlled Git operations.
-This records the original experiment; D-012 supersedes Gmail as a Core
-architecture decision while leaving the live legacy implementation frozen.
+Project Brain should not recreate planning, review, or engineering-management features that already belong to ChatGPT or Codex.
 
-## D-005: Keep the first state model minimal
+## D-004: MCP is transport, not the Core
 
-The first context experiment used only `problem.md`, `current.md`, and
-`decisions.md`. Those project-owned context files remain minimal. Bridge usage
-subsequently proved the need for operational task/event persistence, which is
-now owned by Core SQLite rather than added to the context documents.
+MCP is the preferred ChatGPT ingress. A Tunnel or MCP outage may make the local Core temporarily unreachable from ChatGPT, but it must not define the Core state model or make local execution data invalid.
 
-## D-006: Do not execute arbitrary remote shell commands
+The old Gmail Bridge remains only a historical simplicity reference; Gmail is not the target transport.
 
-Core may write files, invoke Codex in registered repositories, or run locally
-allowlisted commands. It must not execute command or argv supplied by any
-external source adapter.
+## D-005: Execute only in registered isolated worktrees
 
-## D-007: Separate runtime state from source
+Project Brain knows a small set of registered repositories and creates a managed worktree for each execution. The user's main checkout is never the Codex working directory and must not be switched, reset, or cleaned by Project Brain.
 
-Configuration, SQLite state, worktrees, evidence artifacts, logs, OAuth tokens,
-and other mutable runtime files live under an overridable
-`~/.project-brain/`. Git contains only source, examples, documentation, and
-tests.
+## D-006: Use Codex CLI for bounded local implementation
 
-## D-008: Use stable identities and SQLite events
+Project Brain launches the configured Codex CLI in the task worktree and gives it the final implementation brief. Codex returns what changed, which files were touched, checks performed, results, and blockers.
 
-Projects use stable `project_id` values and tasks use `task_id`, `dedupe_key`,
-and revision. Transport-specific message IDs are source metadata only.
-Transactional SQLite state and append-only events are the Core source of truth.
+Codex may run task-specific or project-default checks. Those checks are execution evidence for ChatGPT review, not a separate Project Brain acceptance system.
 
-## D-009: Execute only in registered task worktrees
+## D-007: Stop on failure
 
-Core fetches the latest remote default branch and creates one worktree per task.
-The registered main checkout may be dirty or on any branch and must never be
-checked out, reset, cleaned, or used as the Codex working directory.
+If Codex execution or required checks fail, the task stops and returns the code state and failure evidence. Project Brain does not automatically retry, enter `needs_changes`, or create a redispatch lifecycle. A repair happens only after a new explicit user decision in ChatGPT.
 
-## D-010: Separate execution from review and acceptance
+## D-008: Normal tasks stay local
 
-A successful execution records criterion-specific evidence and enters
-`awaiting_review`. ChatGPT can review evidence, but the user controls acceptance
-and merge authorization. Core does not automatically merge.
+Project Brain does not automatically commit, push, create Draft PRs, publish, merge, or manage exact-head review states for normal work. The user decides when a larger body of local work is ready to commit or integrate.
 
-## D-011: Use one-shot locked execution
+## D-009: Keep task state minimal
 
-Manual and scheduled apply commands share a runtime `flock`. Each process
-claims at most one task and exits so the next launch loads current code.
+The initial simplified task model should stay close to `queued`, `running`, `completed`, and `failed`, plus only the runtime metadata required for safe execution and recovery from process interruption.
 
-## D-012: Keep Core source-neutral and freeze the live Gmail Bridge
+Internal identifiers, process metadata, worktree paths, dedupe protections, and similar safety details may exist, but they must not become normal user workflow steps.
 
-Core accepts canonical task envelopes and trusted verification IDs. The live
-legacy Gmail Bridge remains unchanged and outside Core. Future MCP/DevSpace
-transport work requires its own adapter decision and review.
+## D-010: Personal use first; no App requirement
 
-## D-013: Model attempts by phase and bind review to commits
+Project Brain is currently a personal/internal tool. A macOS App, Task Center, local New Task UI, onboarding wizard, signing, notarization, auto-update, and public distribution are deferred until real usage creates a need.
 
-Implementation, verification, publication, and review are durable phases.
-Review findings bind to a canonical SHA; `needs_changes` reruns implementation
-and appends a new canonical commit, while publication-only failures resume
-publication.
+## D-011: Start the Simplified Core with fresh runtime data
 
-## D-014: Prefer deterministic recovery over implicit reclamation
+Old Project Brain task history, Build state, review/publication state, acceptance records, and recovery attempts have no migration requirement. The simplified Core may use a fresh runtime and a new minimal SQLite schema.
 
-Interrupted tasks are reconciled from runtime and Git evidence under the flock.
-Only exact registered remote branches can reconstruct released worktrees.
-Unsafe running state fails closed. Terminal worktrees are removed only after
-their failure evidence is persisted in an immutable manifest-hashed archive;
-archive or cleanup safety failure retains the worktree.
+## D-012: Reuse proven early components, not the old state machine
 
-## D-015: Supervise agents and bind evidence to canonical state
+The early Core/MCP code around `12251944c3dfa66ae49032c8710c4a9d142f59a9` is a useful implementation source for MCP, isolated worktrees, Codex subprocess execution, and SQLite persistence.
 
-Codex owns a persisted process group with birth/executable identity and
-background heartbeats. Recovery re-verifies identity before every signal and
-returns a global claim-safety report before scheduling. The engine never claims
-the same or a different task while any task remains `running` or
-`recovery_blocked`. Missing or ambiguous identity enters an operator-resolved
-`recovery_blocked` state.
-Verification results belong to append-only verification sets identified
-independently from retry attempt counts and bound to one canonical commit.
-Review verdicts are applied as one transaction against that same canonical
-head.
+Do not restore its publication, verification-set, review, retry, merge, forensic, or canonical-commit lifecycle wholesale. Reuse only the parts that directly serve the thin-bridge flow.
 
-## D-016: Human-owned local refs are detect-only
+## D-013: Add complexity only from observed need
 
-Repository seals may restore Core-owned remote-tracking metadata, but a changed
-local default-branch ref blocks publication without restoration or deletion.
-Bridge records and retains evidence instead of rewriting a branch owned by the
-user’s primary checkout.
-
-## D-017: MCP is a controlled Core adapter over a private tunnel
-
-Project Brain exposes only allowlisted canonical task, status, dispatch,
-review, and recovery-preview operations through MCP. It does not expose a
-shell, arbitrary files, Git mutation, cleanup, recovery resolution, acceptance,
-or merge. The no-auth Streamable HTTP listener is loopback-only. ChatGPT remote
-access uses OpenAI Secure MCP Tunnel's outbound HTTPS path; Project Brain does
-not provide or endorse a public unauthenticated endpoint. The long-running MCP
-server starts fixed one-shot Core workers asynchronously, while RuntimeLock,
-the global claim gate, and the existing state machine remain authoritative.
-Dispatch is annotated as potentially destructive and open-world because the
-worker may call Codex and GitHub. A daemon reaper waits for spawned workers and
-audits bounded exit metadata without terminating safely running detached
-processes. Supersession remains an atomic Store/state-machine operation: active
-execution/recovery/merge ownership is protected, revisions increase strictly,
-and terminal history is never rewritten. The adapter pins `mcp==1.28.1` until
-its private generated-model hardening passes the documented upgrade gate.
-
-## D-018: Bind every task to an immutable project execution snapshot
-
-SQLite is authoritative for project configuration; JSON is explicit
-bootstrap/import/export only. Execution-affecting project changes create a
-monotonic revision and canonical SHA-256. Task creation atomically stores that
-revision, hash, and full execution profile. All later execution, retry, review
-revision, recovery, verification, publication, release, cleanup, and forensics
-use the stored snapshot and fail closed if it is missing or changed. Display
-name changes do not create an execution revision. MCP remains read/control only
-and gains no configuration mutation tool.
-
-## D-019: Make external acceptance an MCP-ingress authority (superseded)
-
-External acceptance is a durable Core schema-v7 state machine, not a UI flag or
-operator declaration. One-time challenge plaintext is returned once and never
-persisted; only its SHA-256 is stored. A run binds app/Core versions,
-installation identity, Tunnel fingerprint, and expiry. Only the registered,
-strict, no-side-effect MCP probe can consume a waiting challenge and write
-`passed`; Core CLI and Swift expose no pass command. Historical pass remains
-independent from current Tunnel health. Fixture and CI probes never represent
-real ChatGPT external acceptance. D-021 supersedes the authority conclusion:
-loopback MCP ingress is not source-authenticated.
-
-## D-020: Import reviewed Tunnel binaries; never silently download them
-
-Product Shell opens the official Platform entry point but does not fetch or
-execute arbitrary URLs. The user selects one regular executable. A static
-bundled manifest allowlists reviewed version/platform/architecture/runtime-
-contract combinations, beginning with Tunnel Client 0.0.10 arm64. The app uses
-fixed `--version`, bounded output/time, Mach-O and SHA-256 validation, private
-same-directory staging, fsync, atomic replacement, rollback, and fail-closed
-removal after confirmed stop. User confirmation of official origin is shown as
-such and is never mislabeled as cryptographic supply-chain verification.
-
-## D-021: Keep MCP transport evidence distinct from ChatGPT authority
-
-The Secure MCP Tunnel contract currently supplies no signed request attestation,
-mTLS identity, or other source signal that a loopback client cannot forge.
-Therefore schema v8 migrates legacy `passed` rows and records challenge
-completion only as `mcp_transport_probe_passed` with unattributed ingress.
-`external_chatgpt_verified` remains Pending, and the future real-project task
-fails closed. Historical evidence is applicable to the current transport only
-when installation, app, Core, Tunnel fingerprint, acceptance contract, and
-readiness all match; applicability still does not elevate it to ChatGPT proof.
-
-Tunnel selection is zero-execution static preflight. Fixed `--version` requires
-explicit user authorization. Installation additionally proves the reviewed
-read-only `runtimes list --json` contract under an isolated temporary HOME while
-the old binary is still available for rollback; invalid contracts remove fresh
-installs or restore the previous SHA.
-
-## D-022: Resolve onboarding identity before mutation and require Applications
-
-Native onboarding uses a dedicated Core mode that compares canonical repository
-real path and normalized origin before stable ID and case-folded display-name
-owners. A matching registration keeps its authoritative ID and name and yields
-`use_existing` or an execution-profile `update`; it never becomes a duplicate
-`add`. ID, name, and path collisions are structured plan errors. Apply repeats
-resolution under RuntimeLock, and SQLite retains the final transactional name,
-path, revision, hash, and action checks. The ordinary CLI add contract remains
-strict unless the native onboarding flag is explicitly supplied.
-
-An app bundle is formally installed only at
-`/Applications/Project Brain.app`. DMG and other locations remain usable for
-exploration but cannot complete local readiness or onboarding. Build 5 uses
-distinct artifact names and supersedes immutable Build 4 without overwriting it.
-
-## D-023: Make installation and process lifecycle explicit
-
-The Release app declares `LSMultipleInstancesProhibited` so Launch Services
-rejects a second instance even when a user opens different bundle copies. The
-final generated `Info.plist` is authoritative; packaging and mounted-artifact
-verification assert its Boolean value rather than trusting only project source.
-
-Quitting is a first-class user action in both the menu-bar panel and Settings.
-It terminates the app process without deleting or resetting services, projects,
-tasks, Keychain values, or runtime data.
-
-The internal RC DMG contains `Project Brain.app`, an `Applications` symlink to
-`/Applications`, and a bilingual file whose name and contents instruct the user
-to drag the app onto that folder. CI mounts the completed image and validates
-the visible install components. Build 6 supersedes immutable Builds 4 and 5
-using new artifact names; it never overwrites either historical build.
-
-## D-024: Treat the native App as a source-neutral, review-first task ingress
-
-The macOS App sends only a strict schema-v1 local task document over stdin to
-fixed Core commands. Goal and criteria are content, never command, argv, cwd,
-environment, path, SQL, executable, branch, worktree, credential, or sandbox
-authority. Core, not Swift, creates task/dedupe identities and binds the exact
-remote Base, project revision/hash, execution profile, delivery policy,
-readiness, expiry, and single-use plan token in SQLite schema v9.
-
-Analyze and Implement share the authoritative task engine and isolated
-worktrees. Analyze runs read-only, treats no changes as success, persists a
-structured result, and never publishes. Implement keeps canonical commit,
-verification seal, optional bounded push/Draft PR, review, recovery, and
-cleanup rules. ChatGPT, Secure MCP Tunnel, and Gmail are optional or separate
-ingresses; local success never changes external ChatGPT acceptance from
-Pending.
-
-## D-025: Make the persisted plan the sole confirmation authority
-
-Build 9 moves local-task plan authority to schema v10. Core canonicalizes the
-request once during planning, binds it to the exact project configuration and
-remote Base, persists request and plan SHA-256 values, and stores only the
-SHA-256 of the transient `local-v2:` token. The App confirms with only the
-opaque token and expected plan hash; it never rebuilds goal, task type, project,
-delivery, executable, verification, or Base fields from mutable SwiftUI state.
-
-RuntimeLock protects the minimal external revalidation path. The task insert
-and one-time token consumption share one immediate SQLite transaction. Expiry,
-hash mismatch, supersession, repetition, and concurrent second consumption all
-fail closed. The minimal create response opens Task Center immediately; one
-selected-task refresh runs in the background. CLI contract 1.2.0 makes this
-request/confirmation split explicit. External ChatGPT acceptance remains
-Pending and is not inferred from any Build 9 local or artifact test.
-
-## D-026: Fail closed between unsigned personal builds and distributable macOS bytes
-
-Build 9 is immutable internal-build history. Ordinary pull-request CI may build
-and upload `Project-Brain-Build10-Personal-Unsigned-arm64` to exercise the final DMG App,
-embedded helper, onboarding, local task, timing, lifecycle, and preserved-data
-flows and support the owner's day-to-day testing. Its schema-v5 manifest says
-`artifact_classification: unsigned_personal_build`,
-`usage_scope: personal_internal_only`, and `distribution_eligible: false`. It
-requires a per-artifact Gatekeeper authorization and cannot be relabeled as a
-signed, notarized, or publicly accepted artifact.
-
-The exact-SHA `macOS Personal Build` workflow uses no Apple or repository
-secrets and uploads only the DMG, App ZIP, manifest, and checksum set bound by
-that manifest. Developer ID signing, Apple notarization/stapling, and Fresh-Mac
-public distribution acceptance are `deferred_personal_use` while Project Brain
-is a personal internal tool. This deferral does not weaken the retained public
-release pipeline. It also does not change External ChatGPT acceptance, which
-remains Pending.
-
-Only the manually triggered `macOS Developer ID release` workflow may create
-`Project-Brain-Build10-arm64`. It binds checkout to a caller-supplied exact
-40-character SHA and requires a protected release environment with a Developer
-ID Application identity and App Store Connect notary API key. Missing
-credentials fail before packaging. The workflow signs the embedded helper,
-other nested code, and App from the inside out using Hardened Runtime and secure timestamps, verifies
-that `get-task-allow` is absent, notarizes and staples the App, creates and
-signs the DMG, notarizes and staples the DMG, and verifies the final bytes with
-`codesign`, `spctl`, and `stapler`.
-
-The release workflow has no pull-request or task-branch push trigger. GitHub
-requires `workflow_dispatch` workflows to exist on the default branch; after
-the reviewed workflow is merged, it can still package an explicitly supplied
-reviewed SHA. This prevents unmerged workflow code from reading release private
-keys merely to produce a pre-merge artifact.
-
-Signed output paths refuse overwrite. The final schema-v5 manifest binds the
-App executable, Core helper, CLI contract, DMG, App ZIP, sanitized notarization
-receipts, exact source SHA, CI run, signing team, and Apple submission IDs.
-Automated Gatekeeper checks are evidence, not the final ordinary-user verdict.
-`distribution_eligible` remains false and
-`fresh_mac_quarantine_acceptance` remains `pending_manual` in a future signed
-release manifest until a
-browser-downloaded quarantined DMG passes the drag-to-Applications and
-double-click flow on a Mac that has never trusted Project Brain. External
-ChatGPT acceptance remains independently Pending.
+Do not add a new abstraction, UI, lifecycle state, acceptance mechanism, or automation simply because it is architecturally possible. Add it only when repeated real use shows that the simpler flow is insufficient.
