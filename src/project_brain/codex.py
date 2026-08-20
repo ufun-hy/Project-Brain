@@ -20,6 +20,7 @@ from .errors import (
     TransientTaskError,
 )
 from .git_history import GitHistoryNormalizer, GitSnapshot, NormalizedHistory
+from .ponytail import codex_environment
 from .process_supervision import capture_process_identity, terminate_process_group
 from .store import TaskStore
 from .security import redact_text
@@ -75,6 +76,7 @@ class CodexAdapter:
             process = subprocess.Popen(
                 command,
                 cwd=str(Path(worktree).resolve()),
+                env=codex_environment(task),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
