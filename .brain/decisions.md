@@ -63,3 +63,9 @@ Do not restore its publication, verification-set, review, retry, merge, forensic
 ## D-013: Add complexity only from observed need
 
 Do not add a new abstraction, UI, lifecycle state, acceptance mechanism, or automation simply because it is architecturally possible. Add it only when repeated real use shows that the simpler flow is insufficient.
+
+## D-014: Ponytail is a Codex execution policy, not Core state
+
+Project Brain may select an optional Ponytail mode for Codex to encourage reuse, native capabilities, and minimal correct diffs. The default is `lite`; stronger `full` or `ultra` modes are explicit execution choices rather than new task lifecycle states.
+
+Project Brain does not vendor Ponytail, make Ponytail review an acceptance authority, or let it override repository instructions, explicit acceptance criteria, validation, security, accessibility, required tests, or product contracts. The integration remains a thin Codex child-process environment policy so it can be removed or changed without migrating Project Brain state.
