@@ -1,8 +1,7 @@
 """Ponytail mode resolution for Codex child processes.
 
 Project Brain does not vendor Ponytail or make it part of Core state. It only
-selects the mode exposed by the official Ponytail Codex plugin through
-PONYTAIL_DEFAULT_MODE.
+selects the mode used by the official Ponytail Codex plugin.
 """
 
 from __future__ import annotations
@@ -33,9 +32,15 @@ def resolve_ponytail_mode(
 
 
 def codex_environment(task: Mapping[str, Any]) -> dict[str, str]:
-    """Return the inherited child environment with Ponytail's official mode key."""
+    """Return the inherited child environment with Ponytail's default mode key."""
     environment = dict(os.environ)
     environment["PONYTAIL_DEFAULT_MODE"] = resolve_ponytail_mode(
         task, environment=environment
     )
     return environment
+
+
+def codex_prompt(task: Mapping[str, Any], prompt: str) -> str:
+    """Explicitly activate Ponytail before the actual Codex task prompt."""
+    mode = resolve_ponytail_mode(task)
+    return f"@ponytail {mode}\n\n{prompt}"
