@@ -66,6 +66,8 @@ Do not add a new abstraction, UI, lifecycle state, acceptance mechanism, or auto
 
 ## D-014: Ponytail is a Codex execution policy, not Core state
 
-Project Brain may select an optional Ponytail mode for Codex to encourage reuse, native capabilities, and minimal correct diffs. The default is `lite`; stronger `full` or `ultra` modes are explicit execution choices rather than new task lifecycle states.
+Project Brain may select an optional Ponytail mode for Codex to encourage reuse, native capabilities, and minimal correct diffs. The default is `lite`; stronger `full` or `ultra` modes are explicit execution choices rather than new task lifecycle states, and `off` disables the policy for that task.
 
-Project Brain does not vendor Ponytail, make Ponytail review an acceptance authority, or let it override repository instructions, explicit acceptance criteria, validation, security, accessibility, required tests, or product contracts. The integration remains a thin Codex child-process environment policy so it can be removed or changed without migrating Project Brain state.
+Project Brain does not vendor Ponytail, make Ponytail review an acceptance authority, or let it override repository instructions, explicit acceptance criteria, validation, security, accessibility, required tests, or product contracts.
+
+The integration stays a thin Codex execution policy: set `PONYTAIL_DEFAULT_MODE` on the child process and explicitly prefix the Codex task with `@ponytail <mode>`. The explicit prompt activation is required because verified Codex 0.149.0 sessions received the environment variable without reliably activating Ponytail through SessionStart. This remains removable or changeable without migrating Project Brain state.
