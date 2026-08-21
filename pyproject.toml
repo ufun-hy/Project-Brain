@@ -19,6 +19,7 @@ packaging = [
 
 [project.scripts]
 project-brain = "project_brain.cli:main"
+project-brain-simplified = "project_brain_simplified.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
