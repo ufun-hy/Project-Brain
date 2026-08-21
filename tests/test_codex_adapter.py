@@ -58,7 +58,10 @@ class CodexAdapterTests(unittest.TestCase):
             worktree=record["path"],
             snapshot=snapshot,
         )
-        self.assertEqual(Path(record["path"], "agent.txt").read_text(), "worktree only\n")
+        self.assertEqual(
+            Path(record["path"], "agent.txt").read_text(),
+            "@ponytail lite\n\nworktree only\n",
+        )
         self.assertFalse((self.repo / "agent.txt").exists())
         self.assertEqual(
             git(Path(record["path"]), "rev-list", "--count", f"{record['base_sha']}..HEAD").stdout.strip(),
@@ -97,6 +100,7 @@ class CodexAdapterTests(unittest.TestCase):
             "analysis_result_sha256": digest,
         }
         prompt = CodexAdapter(self.fixture.store)._execution_prompt(linked)
+        self.assertTrue(prompt.startswith("@ponytail lite\n\n"))
         self.assertIn("Fixed result from the approved Analyze task", prompt)
         self.assertIn("analysis-source", prompt)
         self.assertIn(digest, prompt)
