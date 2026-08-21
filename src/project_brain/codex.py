@@ -20,7 +20,7 @@ from .errors import (
     TransientTaskError,
 )
 from .git_history import GitHistoryNormalizer, GitSnapshot, NormalizedHistory
-from .ponytail import codex_environment
+from .ponytail import codex_environment, codex_prompt
 from .process_supervision import capture_process_identity, terminate_process_group
 from .store import TaskStore
 from .security import redact_text
@@ -303,7 +303,7 @@ class CodexAdapter:
                     indent=2,
                 )
             )
-        return prompt
+        return codex_prompt(task, prompt)
 
     @staticmethod
     def _execution_command(
