@@ -108,7 +108,10 @@ class CleanupTests(unittest.TestCase):
         bridge.RESULTS_DIR = self.previous_results_dir
         self.temp.cleanup()
 
-    def make_task(self, *, branch="brain/codex-a123", push=True):
+    def make_task(
+        self, *, branch=None, push=True, message_id="message-a123"
+    ):
+        branch = branch or bridge.task_branch(message_id, "codex")
         command(self.repo, "git", "checkout", "-b", branch)
         (self.repo / "task.txt").write_text("done\n")
         command(self.repo, "git", "add", ".")
@@ -118,15 +121,16 @@ class CleanupTests(unittest.TestCase):
             command(self.repo, "git", "push", "-u", "origin", branch)
         command(self.repo, "git", "checkout", "main")
         result = {
-            "message_id": "message-a123",
+            "message_id": message_id,
             "task_status": "completed",
             "project": "test",
             "repo": str(self.repo),
+            "type": "codex",
             "branch": branch,
             "commit": commit,
             "pushed": True,
         }
-        result_path = self.results / "message-a123.json"
+        result_path = self.results / f"{message_id}.json"
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(json.dumps(result), encoding="utf-8")
         return result, result_path, commit
@@ -158,9 +162,49 @@ class CleanupTests(unittest.TestCase):
             "invalid_result",
         )
 
+    def test_persisted_result_mismatch_is_retained(self):
+        result, result_path, _ = self.make_task()
+        result["commit"] = "b" * 40
+        cleanup = bridge.cleanup_local_branch(result, self.config, result_path)
+        self.assertEqual(cleanup["reason"], "persisted_result_mismatch")
+        self.assertTrue(bridge.local_branch_exists(self.repo, result["branch"]))
+
+    def test_invalid_persisted_result_is_retained(self):
+        result, result_path, _ = self.make_task()
+        result_path.write_text("not-json\n", encoding="utf-8")
+        cleanup = bridge.cleanup_local_branch(result, self.config, result_path)
+        self.assertEqual(cleanup["reason"], "invalid_result")
+        self.assertTrue(bridge.local_branch_exists(self.repo, result["branch"]))
+
+    def test_other_valid_task_branch_is_retained(self):
+        result, result_path, _ = self.make_task()
+        result["branch"] = "brain/codex-other"
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        cleanup = bridge.cleanup_local_branch(result, self.config, result_path)
+        self.assertEqual(cleanup["reason"], "task_branch_mismatch")
+        self.assertTrue(bridge.local_branch_exists(self.repo, "brain/codex-ssage-a123"))
+
+    def test_message_suffix_mismatch_is_retained(self):
+        result, _result_path, _ = self.make_task()
+        result["message_id"] = "message-z999"
+        result_path = self.results / "message-z999.json"
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        cleanup = bridge.cleanup_local_branch(result, self.config, result_path)
+        self.assertEqual(cleanup["reason"], "task_branch_mismatch")
+        self.assertTrue(bridge.local_branch_exists(self.repo, "brain/codex-ssage-a123"))
+
+    def test_task_type_branch_mismatch_is_retained(self):
+        result, result_path, _ = self.make_task()
+        result["type"] = "write_files"
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        cleanup = bridge.cleanup_local_branch(result, self.config, result_path)
+        self.assertEqual(cleanup["reason"], "task_branch_mismatch")
+        self.assertTrue(bridge.local_branch_exists(self.repo, "brain/codex-ssage-a123"))
+
     def test_invalid_repo_is_retained(self):
         result, result_path, _ = self.make_task()
         result["repo"] = str(self.root / "other")
+        result_path.write_text(json.dumps(result), encoding="utf-8")
         self.assertEqual(
             bridge.cleanup_local_branch(result, self.config, result_path)["reason"],
             "repo_mismatch",
@@ -210,9 +254,32 @@ class CleanupTests(unittest.TestCase):
         finally:
             lock.unlink()
 
+    def test_rebase_operation_markers_are_retained(self):
+        for marker, suffix in (
+            ("rebase-merge", "rebasemerge"),
+            ("rebase-apply", "rebaseapply"),
+            ("sequencer", "sequencer"),
+        ):
+            with self.subTest(marker=marker):
+                message_id = f"message-{suffix}"
+                result, result_path, _ = self.make_task(
+                    branch=bridge.task_branch(message_id, "codex"),
+                    message_id=message_id,
+                )
+                marker_path = bridge._git_path(self.repo, marker)
+                marker_path.mkdir(parents=True, exist_ok=True)
+                try:
+                    cleanup = bridge.cleanup_local_branch(
+                        result, self.config, result_path
+                    )
+                    self.assertEqual(cleanup["reason"], "git_operation_in_progress")
+                finally:
+                    marker_path.rmdir()
+
     def test_local_sha_mismatch_is_retained(self):
         result, result_path, _ = self.make_task()
         result["commit"] = command(self.repo, "git", "rev-parse", "main")
+        result_path.write_text(json.dumps(result), encoding="utf-8")
         self.assertEqual(
             bridge.cleanup_local_branch(result, self.config, result_path)["reason"],
             "local_sha_mismatch",
@@ -221,6 +288,7 @@ class CleanupTests(unittest.TestCase):
     def test_not_pushed_is_retained(self):
         result, result_path, _ = self.make_task()
         result["pushed"] = False
+        result_path.write_text(json.dumps(result), encoding="utf-8")
         self.assertEqual(
             bridge.cleanup_local_branch(result, self.config, result_path)["reason"],
             "not_pushed",
@@ -262,6 +330,21 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(cleanup["status"], "pending")
         self.assertEqual(failures_path.read_text(), '{"message-a123":{"attempt_count":1}}\n')
 
+    def test_cleanup_failure_keeps_processed_identity_and_does_not_rerun_codex(self):
+        result, result_path, _ = self.make_task()
+        result["cleanup"] = bridge.initial_cleanup(result)
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        state_path = self.root / "processed.json"
+        failures_path = self.root / "failures.json"
+        state_path.write_text('{"processed_message_ids":["message-a123"]}\n')
+        failures_path.write_text('{}\n')
+        with patch.object(bridge, "run_codex", side_effect=AssertionError("Codex must not run")), \
+             patch.object(bridge, "_remote_branch_sha", side_effect=bridge.BridgeError("temporary")):
+            retry = bridge.retry_pending_cleanups(self.config)
+        self.assertEqual(retry[0]["cleanup"]["status"], "pending")
+        self.assertIn("message-a123", state_path.read_text())
+        self.assertEqual(failures_path.read_text(), '{}\n')
+
     def test_pending_cleanup_retry_does_not_call_codex(self):
         result, result_path, _ = self.make_task()
         result["cleanup"] = bridge.initial_cleanup(result)
@@ -290,6 +373,7 @@ class CleanupTests(unittest.TestCase):
     def test_incomplete_task_result_is_retained(self):
         result, result_path, _ = self.make_task()
         result["task_status"] = "failed"
+        result_path.write_text(json.dumps(result), encoding="utf-8")
         cleanup = bridge.cleanup_local_branch(result, self.config, result_path)
         self.assertEqual(cleanup["status"], "retained")
         self.assertEqual(cleanup["reason"], "invalid_result")
@@ -300,7 +384,8 @@ class CleanupTests(unittest.TestCase):
             "task_status": "completed",
             "project": "recovery",
             "repo": str(bridge.SCRIPT_DIR.parent.parent),
-            "branch": "brain/codex-a123",
+            "type": "codex",
+            "branch": bridge.task_branch("message-a123", "codex"),
             "commit": "a" * 40,
             "pushed": True,
         }

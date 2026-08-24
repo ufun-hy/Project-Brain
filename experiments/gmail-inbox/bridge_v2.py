@@ -68,6 +68,9 @@ CLEANUP_OPERATION_MARKERS = (
     "REVERT_HEAD",
     "BISECT_LOG",
     "REBASE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "sequencer",
 )
 
 
@@ -384,7 +387,30 @@ def cleanup_local_branch(
         )
 
     try:
-        if not result_path.is_file() or result_path.stem != result.get("message_id"):
+        try:
+            persisted_result = load_json(result_path)
+        except BridgeError:
+            raise CleanupGuardError("invalid_result")
+        if not isinstance(persisted_result, dict):
+            raise CleanupGuardError("invalid_result")
+        persisted_fields = (
+            "message_id",
+            "project",
+            "repo",
+            "type",
+            "branch",
+            "commit",
+            "pushed",
+            "task_status",
+        )
+        if any(persisted_result.get(field) != result.get(field) for field in persisted_fields):
+            raise CleanupGuardError("persisted_result_mismatch")
+        result = persisted_result
+        branch = result.get("branch")
+        commit = result.get("commit")
+        message_id = result.get("message_id")
+        task_type = result.get("type")
+        if not isinstance(message_id, str) or result_path.stem != message_id:
             raise CleanupGuardError("invalid_result")
         if result.get("task_status") != "completed":
             raise CleanupGuardError("invalid_result")
@@ -394,6 +420,10 @@ def cleanup_local_branch(
             raise CleanupGuardError("protected_branch")
         if not CLEANUP_BRANCH_PATTERN.fullmatch(branch):
             raise CleanupGuardError("untrusted_branch_name")
+        if task_type not in {"codex", "write_files", "command"}:
+            raise CleanupGuardError("task_branch_mismatch")
+        if branch != task_branch(message_id, task_type):
+            raise CleanupGuardError("task_branch_mismatch")
         if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise CleanupGuardError("invalid_result")
         if result.get("pushed") is not True:
