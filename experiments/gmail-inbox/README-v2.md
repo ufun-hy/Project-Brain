@@ -134,7 +134,9 @@ After fixing the underlying problem, remove only that message ID from
 ### Branch cleanup and recovery
 
 After a successful push and Draft PR, the bridge checks out the configured base
-branch and verifies that the worktree is clean; the pushed PR branch is kept.
+branch and verifies that the worktree is clean; it persists the completed result
+before attempting to delete the exact local task branch. Local cleanup is
+idempotent and never deletes a remote branch.
 On task failure it discards only changes made on the deterministic task branch,
 returns to the base branch, and removes that local task branch. The preflight
 clean-worktree check prevents overwriting existing user work.
@@ -143,6 +145,23 @@ If a task branch already exists, the bridge removes it only when it is an
 unchanged, unpushed stale branch. A pushed branch or a local branch containing
 commits stops with an actionable error. Inspect its PR/commits and resolve it
 manually; the bridge never force-deletes a remote PR branch.
+
+Cleanup results are stored in `results/<message_id>.json`. A successful cleanup
+is `completed`; an already missing local branch is `already_absent`; safety
+guards produce `retained`; and a retryable Git failure remains `pending` for a
+later `--apply`. Cleanup failures do not enter `failures.json`, remove the
+message from `processed.json`, or invoke Codex again. The cleanup target comes
+only from the Bridge-generated result, never from email branch or path fields.
+
+The safe defaults are:
+
+```json
+"cleanup_local_task_branches": true,
+"cleanup_remote_task_branches": false
+```
+
+The remote cleanup setting is informational only in v2; this version never
+deletes remote branches.
 
 ### Push and PR
 
