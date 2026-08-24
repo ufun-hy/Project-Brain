@@ -38,5 +38,7 @@
       }
     }
   },
-  "max_attempts": 3
+  "max_attempts": 3,
+  "cleanup_local_task_branches": true,
+  "cleanup_remote_task_branches": false
 }

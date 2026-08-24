@@ -59,10 +59,26 @@ DEFAULT_ALLOWED_SENDER = "hy404051@gmail.com"
 PROTECTED_BRANCHES = {"main", "master"}
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_CODEX_COMMAND = ["codex", "exec", "--sandbox", "workspace-write", "-"]
+CLEANUP_BRANCH_PATTERN = re.compile(
+    r"^brain/(?:codex|write_files|command)-[A-Za-z0-9-]{1,64}\Z"
+)
+CLEANUP_OPERATION_MARKERS = (
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "BISECT_LOG",
+    "REBASE_HEAD",
+)
 
 
 class BridgeError(RuntimeError):
     pass
+
+
+class CleanupGuardError(BridgeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def run(
@@ -297,6 +313,225 @@ def cleanup_failed_task(repo: Path, base: str, branch: str) -> None:
 def task_branch(message_id: str, task_type: str) -> str:
     suffix = re.sub(r"[^a-zA-Z0-9-]", "-", message_id[-10:])
     return f"brain/{task_type}-{suffix}"
+
+
+def _git_path(repo: Path, name: str) -> Path:
+    value = Path(git(repo, "rev-parse", "--git-path", name).stdout.strip())
+    return value if value.is_absolute() else (repo / value).resolve()
+
+
+def _git_operation_in_progress(repo: Path) -> bool:
+    if _git_path(repo, "index.lock").exists():
+        return True
+    return any(_git_path(repo, marker).exists() for marker in CLEANUP_OPERATION_MARKERS)
+
+
+def _checked_out_branches(repo: Path) -> set[str]:
+    branches: set[str] = set()
+    for line in git(repo, "worktree", "list", "--porcelain").stdout.splitlines():
+        if line.startswith("branch refs/heads/"):
+            branches.add(line.removeprefix("branch refs/heads/"))
+    return branches
+
+
+def _remote_branch_sha(repo: Path, branch: str) -> str | None:
+    completed = git(repo, "ls-remote", "--heads", "origin", branch, check=False)
+    if completed.returncode != 0:
+        raise CleanupGuardError("github_check_failed")
+    for line in completed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1] == f"refs/heads/{branch}":
+            return fields[0]
+    return None
+
+
+def _cleanup_record(
+    *,
+    status: str,
+    attempted: bool,
+    branch: str | None,
+    commit: str | None,
+    reason: str | None = None,
+    local_branch_removed: bool = False,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "attempted": attempted,
+        "local_branch": branch,
+        "expected_commit": commit,
+        "local_branch_removed": local_branch_removed,
+        "remote_branch_removed": False,
+        "reason": reason,
+        "last_attempt_timestamp": (
+            datetime.now(timezone.utc).isoformat() if attempted else None
+        ),
+    }
+
+
+def cleanup_local_branch(
+    result: dict[str, Any], config: dict[str, Any], result_path: Path
+) -> dict[str, Any]:
+    """Delete one exact pushed task branch after all independent safety checks."""
+    branch = result.get("branch")
+    commit = result.get("commit")
+    if config.get("cleanup_local_task_branches", True) is not True:
+        return _cleanup_record(
+            status="retained",
+            attempted=False,
+            branch=branch if isinstance(branch, str) else None,
+            commit=commit if isinstance(commit, str) else None,
+            reason="cleanup_disabled",
+        )
+
+    try:
+        if not result_path.is_file() or result_path.stem != result.get("message_id"):
+            raise CleanupGuardError("invalid_result")
+        if result.get("task_status") != "completed":
+            raise CleanupGuardError("invalid_result")
+        if not isinstance(branch, str):
+            raise CleanupGuardError("untrusted_branch_name")
+        if branch in PROTECTED_BRANCHES or branch.startswith(("restore/", "feature/")):
+            raise CleanupGuardError("protected_branch")
+        if not CLEANUP_BRANCH_PATTERN.fullmatch(branch):
+            raise CleanupGuardError("untrusted_branch_name")
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise CleanupGuardError("invalid_result")
+        if result.get("pushed") is not True:
+            raise CleanupGuardError("not_pushed")
+
+        project_name = result.get("project")
+        project_cfg = config.get("projects", {}).get(project_name)
+        if not isinstance(project_cfg, dict):
+            raise CleanupGuardError("repo_mismatch")
+        repo = Path(project_cfg.get("path", "")).expanduser().resolve()
+        result_repo = Path(str(result.get("repo", ""))).expanduser().resolve()
+        if repo != result_repo or not (repo / ".git").exists():
+            raise CleanupGuardError("repo_mismatch")
+        if repo == SCRIPT_DIR.parent.parent.resolve():
+            raise CleanupGuardError("recovery_worktree")
+
+        base = project_cfg.get("base_branch", "main")
+        if current_branch(repo) != base:
+            raise CleanupGuardError("wrong_base_branch")
+        if git(repo, "status", "--porcelain").stdout.strip():
+            raise CleanupGuardError("dirty_repository")
+        if _git_operation_in_progress(repo):
+            raise CleanupGuardError("git_operation_in_progress")
+
+        if not local_branch_exists(repo, branch):
+            return _cleanup_record(
+                status="already_absent",
+                attempted=True,
+                branch=branch,
+                commit=commit,
+                local_branch_removed=True,
+            )
+        local_sha = git(repo, "rev-parse", branch).stdout.strip()
+        if local_sha != commit:
+            raise CleanupGuardError("local_sha_mismatch")
+        if branch in _checked_out_branches(repo):
+            raise CleanupGuardError("branch_checked_out_elsewhere")
+        remote_sha = _remote_branch_sha(repo, branch)
+        if remote_sha is None:
+            raise CleanupGuardError("remote_branch_missing")
+        if remote_sha != commit:
+            raise CleanupGuardError("remote_sha_mismatch")
+
+        git(repo, "branch", "-D", "--", branch)
+        return _cleanup_record(
+            status="completed",
+            attempted=True,
+            branch=branch,
+            commit=commit,
+            local_branch_removed=True,
+        )
+    except CleanupGuardError as exc:
+        return _cleanup_record(
+            status="retained",
+            attempted=True,
+            branch=branch if isinstance(branch, str) else None,
+            commit=commit if isinstance(commit, str) else None,
+            reason=exc.reason,
+        )
+    except BridgeError:
+        return _cleanup_record(
+            status="pending",
+            attempted=True,
+            branch=branch if isinstance(branch, str) else None,
+            commit=commit if isinstance(commit, str) else None,
+            reason="cleanup_command_failed",
+        )
+    except Exception:
+        return _cleanup_record(
+            status="error",
+            attempted=True,
+            branch=branch if isinstance(branch, str) else None,
+            commit=commit if isinstance(commit, str) else None,
+            reason="cleanup_unexpected_error",
+        )
+
+
+def initial_cleanup(result: dict[str, Any]) -> dict[str, Any]:
+    return _cleanup_record(
+        status="pending",
+        attempted=False,
+        branch=result.get("branch") if isinstance(result.get("branch"), str) else None,
+        commit=result.get("commit") if isinstance(result.get("commit"), str) else None,
+    )
+
+
+def retry_pending_cleanups(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Retry only persisted cleanup work; never reparse or execute the task."""
+    retry_results: list[dict[str, Any]] = []
+    if not RESULTS_DIR.exists():
+        return retry_results
+    for result_path in sorted(RESULTS_DIR.glob("*.json")):
+        try:
+            result = load_json(result_path)
+        except BridgeError:
+            continue
+        if not isinstance(result, dict):
+            continue
+        cleanup = result.get("cleanup")
+        if not isinstance(cleanup, dict) or cleanup.get("status") != "pending":
+            continue
+        updated = cleanup_local_branch(result, config, result_path)
+        result["cleanup"] = updated
+        save_json(result_path, result)
+        retry_results.append(
+            {
+                "message_id": result.get("message_id"),
+                "status": "cleanup_retry",
+                "cleanup": updated,
+            }
+        )
+    return retry_results
+
+
+def reconcile_completed_results(
+    state: dict[str, Any], processed: set[str]
+) -> set[str]:
+    """Recover processed identity after a crash between result and state writes."""
+    changed = False
+    if RESULTS_DIR.exists():
+        for result_path in sorted(RESULTS_DIR.glob("*.json")):
+            try:
+                result = load_json(result_path)
+            except BridgeError:
+                continue
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            if (
+                isinstance(message_id, str)
+                and result_path.stem == message_id
+                and result.get("task_status") == "completed"
+                and message_id not in processed
+            ):
+                processed.add(message_id)
+                changed = True
+    if changed:
+        state["processed_message_ids"] = sorted(processed)
+        save_json(STATE_PATH, state)
+    return processed
 
 
 def read_messages(query: str, max_results: int, allowed_sender: str) -> list[dict[str, str]]:
@@ -539,13 +774,16 @@ def main() -> int:
         if not isinstance(failures, dict):
             raise BridgeError("failures.json must contain an object")
         processed = set(state.get("processed_message_ids", []))
+        if args.apply:
+            processed = reconcile_completed_results(state, processed)
         max_attempts = int(config.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
         if max_attempts < 1:
             raise BridgeError("max_attempts must be at least 1")
+        cleanup_results = retry_pending_cleanups(config) if args.apply else []
         allowed_sender = os.environ.get("PB_ALLOWED_SENDER", DEFAULT_ALLOWED_SENDER)
         messages = read_messages(args.query, args.max_results, allowed_sender)
 
-        results: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = cleanup_results
         for message in messages:
             if message["message_id"] in processed:
                 continue
@@ -563,7 +801,6 @@ def main() -> int:
             try:
                 task = parse_task(message["body"])
                 result = process_task(message, task, config, apply=args.apply)
-                results.append(result)
             except (BridgeError, HttpError) as exc:
                 if not args.apply:
                     raise
@@ -578,13 +815,19 @@ def main() -> int:
                 continue
 
             if args.apply:
+                result["task_status"] = "completed"
+                result["cleanup"] = initial_cleanup(result)
+                RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+                result_path = RESULTS_DIR / f"{message_id}.json"
+                save_json(result_path, result)
                 processed.add(message_id)
                 failures.pop(message_id, None)
                 state["processed_message_ids"] = sorted(processed)
                 save_json(STATE_PATH, state)
                 save_json(FAILURES_PATH, failures)
-                RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-                save_json(RESULTS_DIR / f"{message_id}.json", result)
+                result["cleanup"] = cleanup_local_branch(result, config, result_path)
+                save_json(result_path, result)
+            results.append(result)
 
         print(json.dumps({
             "mode": "apply" if args.apply else "dry_run",
